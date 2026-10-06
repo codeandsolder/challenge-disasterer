@@ -1,4 +1,5 @@
 mod anubis;
+#[cfg(feature = "gpu")]
 mod gpu;
 mod service;
 mod stats;
@@ -19,15 +20,14 @@ use tracing::info;
 struct Args {
     #[arg(long, default_value = "127.0.0.1:17417")]
     listen: SocketAddr,
-    #[arg(long, default_value_t = 100)]
-    cpu_spillover_ms: u64,
     #[arg(long, default_value_t = 4)]
-    cpu_fallback_workers: usize,
+    cpu_workers: usize,
     #[arg(long, default_value_t = 2_000_000)]
     cpu_calibration_hashes: u64,
+    #[cfg(feature = "gpu")]
     #[arg(long, default_value_t = 64_000_000)]
     gpu_calibration_hashes: u64,
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    #[arg(long, default_value_t = cfg!(feature = "gpu"), action = clap::ArgAction::Set)]
     gpu: bool,
 }
 
@@ -41,9 +41,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let args = Args::parse();
     let config = Config {
-        spillover_ms: args.cpu_spillover_ms,
-        cpu_workers: args.cpu_fallback_workers,
+        cpu_workers: args.cpu_workers,
         cpu_calibration_hashes: args.cpu_calibration_hashes,
+        #[cfg(feature = "gpu")]
         gpu_calibration_hashes: args.gpu_calibration_hashes,
         gpu_enabled: args.gpu,
     };

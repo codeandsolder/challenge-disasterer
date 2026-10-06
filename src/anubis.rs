@@ -26,10 +26,12 @@ impl Challenge {
         Ok(())
     }
 
+    #[cfg(feature = "gpu")]
     pub fn expected_work(&self) -> u64 {
         16_u64.saturating_pow(u32::from(self.difficulty))
     }
 
+    #[cfg(feature = "gpu")]
     pub fn gpu_compatible(&self) -> bool {
         self.data.len().is_multiple_of(64)
     }
@@ -96,13 +98,17 @@ pub fn calibrate_cpu(hash_limit: u64) -> anyhow::Result<f64> {
     for sample in 0_u8..8 {
         let mut prefix = vec![b'a'; 128];
         prefix[0] = sample;
-        let message = SingleBlockMessage::new(&prefix, 0).context("calibration message rejected")?;
+        let message =
+            SingleBlockMessage::new(&prefix, 0).context("calibration message rejected")?;
         let mut solver = SingleBlockSolver::from(message);
         solver.set_limit(hash_limit);
         let _ = solver.solve_nonce_only::<SOLVE_TYPE_MASK>(0, calibration_mask);
         attempted_total = attempted_total.saturating_add(solver.get_attempted_nonces());
     }
     let elapsed = started.elapsed().as_secs_f64();
-    anyhow::ensure!(attempted_total > 0 && elapsed > 0.0, "invalid CPU calibration sample");
+    anyhow::ensure!(
+        attempted_total > 0 && elapsed > 0.0,
+        "invalid CPU calibration sample"
+    );
     Ok(attempted_total as f64 / elapsed)
 }

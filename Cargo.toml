@@ -4,19 +4,23 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
+[features]
+default = ["gpu"]
+gpu = ["dep:bytemuck", "dep:wgpu"]
+
 [dependencies]
 anyhow = "1"
 axum = "0.8"
-bytemuck = { version = "1", features = ["derive"] }
+bytemuck = { version = "1", features = ["derive"], optional = true }
 clap = { version = "4", features = ["derive"] }
 pow-buster = { git = "https://github.com/eternal-flame-AD/pow-buster", rev = "d359adb3a692", default-features = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-wgpu = "30.0.1"
+wgpu = { version = "30.0.1", optional = true }
 
 [profile.release]
 lto = "thin"
