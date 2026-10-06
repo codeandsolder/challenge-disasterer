@@ -1041,7 +1041,7 @@ dependencies = [
 [[package]]
 name = "pow-buster"
 version = "0.2.0"
-source = "git+https://github.com/eternal-flame-AD/pow-buster?rev=d359adb3a692#d359adb3a692ba6be27fc5c1d5efdbbd7439434d"
+source = "git+https://github.com/codeandsolder/pow-buster-imp?rev=3bb952617e94dff2a83e1b82ab041d953c757104#3bb952617e94dff2a83e1b82ab041d953c757104"
 dependencies = [
  "blake3",
  "cfg-if",
