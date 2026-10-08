@@ -120,14 +120,14 @@ tools/anubis-e2e/target/release/challenge-disasterer-anubis-e2e \
   --benchmark --benchmark-samples 12
 ```
 
-`--benchmark` reports two intentionally separate rates:
+`--benchmark` reports two complementary metrics:
 
-- `solutions_s`: complete challenge-page -> solve -> Anubis verification ->
-  protected-upstream round trips per second.
+- `avg_answer_ms`: mean complete challenge-page -> solve -> Anubis verification ->
+  protected-upstream latency per accepted answer.
 - `effective_h_s` / `effective_mh_s`: geometric expected work for the issued
   difficulty divided by solver time. This is the useful hash-rate estimate for
-  stochastic PoW solves; `mean_solver_ms` and `mean_wall_ms` keep setup/compile
-  overhead visible.
+  stochastic PoW solves; `mean_solver_ms` keeps backend setup/compile overhead
+  visible alongside the end-to-end answer latency.
 
 When `--browser-reference=true` (the default), the benchmark also launches real
 headless Chromium against the same Anubis process. This measures the **stock
@@ -135,7 +135,4 @@ Anubis HEAD client code** rather than a reimplementation: `fast` uses the shippe
 WebCrypto/JS worker, while `hashx`, `sha256`, and `argon2id` use the shipped WASM
 workers. Those browser proofs must also be accepted by the same live server.
 
-The current HashX GPU integration is the already-validated challenge-specialized
-WGSL path. It intentionally includes per-challenge shader compilation in its
-solution latency; replacing that stage with the experimental native GFX9 emitter
-can be benchmarked without changing the correctness harness.
+The HashX GPU integration uses the persistent fixed-block passthrough SPIR-V kernel with extended 64-bit multiplies through difficulty 20, avoiding per-challenge shader compilation on the latency-sensitive range. Higher difficulties currently retain the challenge-specialized fallback. The benchmark includes all backend setup in `mean_solver_ms`, so future native GFX9 specialization can be compared without changing the correctness or reporting contract.

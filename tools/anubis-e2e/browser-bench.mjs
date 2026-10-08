@@ -134,7 +134,7 @@ try {
     times.sort((a, b) => a - b);
     const p50 = times[Math.floor(times.length / 2)];
     const p90 = times[Math.min(times.length - 1, Math.floor(times.length * 0.9))];
-    console.log(`BENCH reference=browser algorithm=${spec.algorithm} difficulty=${spec.difficulty} n=${times.length} solutions_s=${solutionsS.toFixed(3)} effective_h_s=${(effectiveMhS * 1e6).toFixed(3)} effective_mh_s=${effectiveMhS.toFixed(3)} mean_wall_ms=${meanMs.toFixed(3)} p50_ms=${p50.toFixed(3)} p90_ms=${p90.toFixed(3)}`);
+    console.log(`BENCH reference=browser algorithm=${spec.algorithm} difficulty=${spec.difficulty} n=${times.length} avg_answer_ms=${meanMs.toFixed(3)} effective_h_s=${(effectiveMhS * 1e6).toFixed(3)} effective_mh_s=${effectiveMhS.toFixed(3)} p50_ms=${p50.toFixed(3)} p90_ms=${p90.toFixed(3)}`);
   }
   cdp.close();
 } finally {

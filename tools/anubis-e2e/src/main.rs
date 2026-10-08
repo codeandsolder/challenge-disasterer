@@ -552,22 +552,20 @@ fn print_benchmark(case: &CaseSpec, trials: &[TrialResult]) {
     let solve_ms: f64 = trials.iter().map(|trial| trial.solve_ms).sum();
     let sample_count = u32::try_from(trials.len()).expect("benchmark sample count fits u32");
     let sample_count = f64::from(sample_count);
-    let solutions_per_s = sample_count * 1000.0 / wall_ms.max(f64::MIN_POSITIVE);
     let hashes_per_s = expected_hashes(case) * sample_count * 1000.0
         / solve_ms.max(f64::MIN_POSITIVE);
     let backend = trials.first().map_or("unknown", |trial| trial.backend.as_str());
     println!(
-        "BENCH algorithm={} solver={} backend={} difficulty={} n={} solutions_s={:.3} effective_h_s={:.3} effective_mh_s={:.3} mean_solver_ms={:.3} mean_wall_ms={:.3}",
+        "BENCH algorithm={} solver={} backend={} difficulty={} n={} avg_answer_ms={:.3} effective_h_s={:.3} effective_mh_s={:.3} mean_solver_ms={:.3}",
         case.algorithm,
         case.solver,
         backend,
         case.difficulty,
         trials.len(),
-        solutions_per_s,
+        wall_ms / sample_count,
         hashes_per_s,
         hashes_per_s / 1e6,
         solve_ms / sample_count,
-        wall_ms / sample_count,
     );
 }
 

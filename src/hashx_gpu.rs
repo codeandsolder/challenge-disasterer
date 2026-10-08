@@ -8,7 +8,10 @@ use serde::Deserialize;
 use crate::anubis::{Answer, BackendResult};
 
 const WG_SIZE: u32 = 64;
-const BATCH: u32 = 262_144;
+const SPECIALIZED_BATCH: u32 = 262_144;
+const PERSISTENT_MAX_BATCH: u32 = 262_144;
+const PERSISTENT_CROSSOVER_DIFFICULTY: u32 = 20;
+const PROGRAM_BYTES: u64 = 512 * 16;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Challenge {
@@ -45,8 +48,11 @@ pub struct GpuSolver {
     queue: wgpu::Queue,
     adapter: String,
     params: wgpu::Buffer,
+    program: wgpu::Buffer,
     solution: wgpu::Buffer,
     staging: wgpu::Buffer,
+    persistent_pipeline: Option<wgpu::ComputePipeline>,
+    persistent_bind_group: Option<wgpu::BindGroup>,
 }
 
 impl GpuSolver {
@@ -60,15 +66,22 @@ impl GpuSolver {
             })
             .await
             .context("no WebGPU/Vulkan adapter for HashX")?;
+        let adapter_features = adapter.features();
         anyhow::ensure!(
-            adapter.features().contains(wgpu::Features::SHADER_INT64),
+            adapter_features.contains(wgpu::Features::SHADER_INT64),
             "HashX GPU backend requires shaderInt64"
         );
+        let persistent_supported = adapter_features.contains(wgpu::Features::PASSTHROUGH_SHADERS);
+        let required_features = if persistent_supported {
+            wgpu::Features::SHADER_INT64 | wgpu::Features::PASSTHROUGH_SHADERS
+        } else {
+            wgpu::Features::SHADER_INT64
+        };
         let info = adapter.get_info();
         let adapter_name = format!("{} ({:?}, {})", info.name, info.backend, info.driver);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                required_features: wgpu::Features::SHADER_INT64,
+                required_features,
                 required_limits: wgpu::Limits::downlevel_defaults(),
                 ..Default::default()
             })
@@ -77,6 +90,12 @@ impl GpuSolver {
         let params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hashx-params"),
             size: 64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let program = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hashx-program"),
+            size: PROGRAM_BYTES,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -94,13 +113,63 @@ impl GpuSolver {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+
+        let (persistent_pipeline, persistent_bind_group) = if persistent_supported {
+            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("hashx-persistent-layout"),
+                entries: &[
+                    storage_layout_entry(0, true),
+                    storage_layout_entry(1, true),
+                    storage_layout_entry(2, false),
+                ],
+            });
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("hashx-persistent-pipeline-layout"),
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+            let module = create_persistent_shader_module(&device);
+            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("hashx-persistent-extmul-solve"),
+                layout: Some(&pipeline_layout),
+                module: &module,
+                entry_point: Some("solve"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("hashx-persistent-bind"),
+                layout: &layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: program.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: params.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: solution.as_entire_binding(),
+                    },
+                ],
+            });
+            (Some(pipeline), Some(bind_group))
+        } else {
+            (None, None)
+        };
+
         Ok(Self {
             device,
             queue,
             adapter: adapter_name,
             params,
+            program,
             solution,
             staging,
+            persistent_pipeline,
+            persistent_bind_group,
         })
     }
 
@@ -110,10 +179,77 @@ impl GpuSolver {
 
     pub fn solve(&mut self, challenge: &Challenge) -> anyhow::Result<BackendResult> {
         challenge.validate()?;
+        let started = Instant::now();
         let seed = hex::decode(&challenge.data).context("decode HashX challenge")?;
         let (hashx, key, program) = describe(&seed)?;
-        let started = Instant::now();
-        let shader = specialized_shader(&program);
+
+        if challenge.difficulty <= PERSISTENT_CROSSOVER_DIFFICULTY
+            && self.persistent_pipeline.is_some()
+        {
+            self.solve_persistent(challenge, &hashx, &key, &program, started)
+        } else {
+            self.solve_specialized(challenge, &hashx, &key, &program, started)
+        }
+    }
+
+    fn solve_persistent(
+        &mut self,
+        challenge: &Challenge,
+        hashx: &HashX,
+        key: &[u64; 4],
+        program: &[Instr],
+        started: Instant,
+    ) -> anyhow::Result<BackendResult> {
+        let pipeline = self
+            .persistent_pipeline
+            .as_ref()
+            .context("persistent HashX pipeline unavailable")?;
+        let bind_group = self
+            .persistent_bind_group
+            .as_ref()
+            .context("persistent HashX bind group unavailable")?;
+        self.queue
+            .write_buffer(&self.program, 0, bytemuck::cast_slice(program));
+        self.queue
+            .write_buffer(&self.solution, 0, &u32::MAX.to_le_bytes());
+
+        let batch_size = persistent_batch(challenge.difficulty);
+        let mut base = 0_u64;
+        while base <= u64::from(u32::MAX) {
+            let remaining = u64::from(u32::MAX) + 1 - base;
+            let batch = u64::from(batch_size).min(remaining) as u32;
+            self.write_params(key, base, challenge.difficulty);
+            let mut encoder = self.device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_compute_pass(&Default::default());
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.dispatch_workgroups(batch.div_ceil(WG_SIZE), 1, 1);
+            }
+            encoder.copy_buffer_to_buffer(&self.solution, 0, &self.staging, 0, 4);
+            let submission = self.queue.submit([encoder.finish()]);
+            self.device.poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: None,
+            })?;
+            let nonce = self.read_solution()?;
+            if nonce != u32::MAX {
+                return validated_result(hashx, nonce, challenge.difficulty, started);
+            }
+            base += u64::from(batch);
+        }
+        Err(anyhow!("HashX GPU search exhausted u32 nonce space"))
+    }
+
+    fn solve_specialized(
+        &mut self,
+        challenge: &Challenge,
+        hashx: &HashX,
+        key: &[u64; 4],
+        program: &[Instr],
+        started: Instant,
+    ) -> anyhow::Result<BackendResult> {
+        let shader = specialized_shader(program);
         let module = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -131,7 +267,7 @@ impl GpuSolver {
                 cache: None,
             });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("hashx-bind"),
+            label: Some("hashx-specialized-bind"),
             layout: &pipeline.get_bind_group_layout(0),
             entries: &[
                 wgpu::BindGroupEntry {
@@ -149,16 +285,8 @@ impl GpuSolver {
         let mut base = 0_u64;
         while base <= u64::from(u32::MAX) {
             let remaining = u64::from(u32::MAX) + 1 - base;
-            let batch = u64::from(BATCH).min(remaining) as u32;
-            let mut words = [0_u32; 16];
-            for (index, value) in key.into_iter().enumerate() {
-                words[index * 2] = value as u32;
-                words[index * 2 + 1] = (value >> 32) as u32;
-            }
-            words[8] = base as u32;
-            words[9] = challenge.difficulty;
-            self.queue
-                .write_buffer(&self.params, 0, bytemuck::cast_slice(&words));
+            let batch = u64::from(SPECIALIZED_BATCH).min(remaining) as u32;
+            self.write_params(key, base, challenge.difficulty);
             let mut encoder = self.device.create_command_encoder(&Default::default());
             {
                 let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -174,22 +302,23 @@ impl GpuSolver {
             })?;
             let nonce = self.read_solution()?;
             if nonce != u32::MAX {
-                let hash = hashx.hash_to_bytes(u64::from(nonce));
-                anyhow::ensure!(
-                    valid_prefix(&hash, challenge.difficulty),
-                    "HashX GPU solver returned nonce with invalid difficulty"
-                );
-                return Ok(BackendResult {
-                    answer: Answer {
-                        nonce: nonce.to_string(),
-                        hash: hex::encode(hash),
-                    },
-                    solve_ms: started.elapsed().as_secs_f64() * 1000.0,
-                });
+                return validated_result(hashx, nonce, challenge.difficulty, started);
             }
             base += u64::from(batch);
         }
         Err(anyhow!("HashX GPU search exhausted u32 nonce space"))
+    }
+
+    fn write_params(&self, key: &[u64; 4], base: u64, difficulty: u32) {
+        let mut words = [0_u32; 16];
+        for (index, value) in key.iter().copied().enumerate() {
+            words[index * 2] = value as u32;
+            words[index * 2 + 1] = (value >> 32) as u32;
+        }
+        words[8] = base as u32;
+        words[9] = difficulty;
+        self.queue
+            .write_buffer(&self.params, 0, bytemuck::cast_slice(&words));
     }
 
     fn read_solution(&self) -> anyhow::Result<u32> {
@@ -206,6 +335,71 @@ impl GpuSolver {
         self.staging.unmap();
         Ok(result)
     }
+}
+
+fn storage_layout_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+#[allow(unsafe_code)]
+fn create_persistent_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
+    let bytes = include_bytes!("hashx_blocksolve_extmul.spv");
+    let words = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| u32::from_le_bytes(*chunk))
+        .collect::<Vec<_>>();
+    // SAFETY: the embedded module is generated from blocksolve08.wgsl, patched only to replace
+    // the two validated 64x64 high-half multiply helpers with SPIR-V extended-multiply ops, and
+    // checked by spirv-val. The passthrough path is required because Naga rejects those ops.
+    unsafe {
+        device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough {
+            label: Some("hashx-persistent-extmul"),
+            entry_points: Cow::Owned(vec![wgpu::PassthroughShaderEntryPoint {
+                name: Cow::Borrowed("solve"),
+                workgroup_size: (WG_SIZE, 1, 1),
+            }]),
+            spirv: Some(Cow::Owned(words)),
+            ..Default::default()
+        })
+    }
+}
+
+fn persistent_batch(difficulty: u32) -> u32 {
+    let expected = 1_u64 << difficulty.min(PERSISTENT_CROSSOVER_DIFFICULTY);
+    expected
+        .div_ceil(4)
+        .clamp(u64::from(WG_SIZE), u64::from(PERSISTENT_MAX_BATCH)) as u32
+}
+
+fn validated_result(
+    hashx: &HashX,
+    nonce: u32,
+    difficulty: u32,
+    started: Instant,
+) -> anyhow::Result<BackendResult> {
+    let hash = hashx.hash_to_bytes(u64::from(nonce));
+    anyhow::ensure!(
+        valid_prefix(&hash, difficulty),
+        "HashX GPU solver returned nonce with invalid difficulty"
+    );
+    Ok(BackendResult {
+        answer: Answer {
+            nonce: nonce.to_string(),
+            hash: hex::encode(hash),
+        },
+        solve_ms: started.elapsed().as_secs_f64() * 1000.0,
+    })
 }
 
 fn build_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX)> {
