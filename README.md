@@ -55,4 +55,44 @@ CPU-only build:
 cargo run --release --no-default-features -- --listen 127.0.0.1:17417
 ```
 
-Rust 1.99 is the development baseline.
+The repository currently pins `nightly-2026-10-08`; Anubis assets are built with Rust 1.99 in the live-compatibility workflow.
+
+## Live Anubis compatibility test
+
+`tools/anubis-e2e` is an end-to-end compatibility harness. It does not duplicate
+Anubis verification logic. Instead it starts the actual Anubis binary built from
+the upstream revision under test, lets that server issue a challenge, sends the
+issued challenge through challenge-disasterer's HTTP API, submits the returned
+proof to Anubis's real `pass-challenge` endpoint, and only passes after the
+resulting authorization cookie reaches a protected test upstream.
+
+The case syntax is `ANUBIS_ALGORITHM:DISASTERER_SOLVER:DIFFICULTY`. The current
+compatibility case is the legacy/current `fast` Anubis SHA-256 protocol:
+
+```sh
+cargo run --release --manifest-path tools/anubis-e2e/Cargo.toml -- \
+  --anubis-bin target/anubis-live-bin \
+  --solver-bin target/release/challenge-disasterer \
+  --case fast:anubis:2
+```
+
+`ci/live-anubis-e2e.sh` can clone/build `TecharoHQ/anubis` main and run the same
+check locally. `ANUBIS_REF` selects another upstream ref; `ANUBIS_SRC`,
+`ANUBIS_BIN`, `ANUBIS_SKIP_BUILD`, and `ANUBIS_UPDATE` allow CI or local tooling
+to provide an existing checkout/build.
+
+`.github/workflows/live-anubis.yml` deliberately checks out **current upstream
+Anubis main** on every run (and once daily), builds its generated web/WASM
+assets, and exercises the solver against it. This is intended to catch upstream
+wire-format and validation changes rather than merely proving that our own
+local verifier still agrees with itself.
+
+Adding a solver family only needs another case once challenge-disasterer exposes
+it. For example, a future HashX backend can be exercised with a case such as
+`hashx:anubis-hashx:16` without changing the harness protocol.
+
+For a from-source local Anubis build, its current asset pipeline additionally
+requires Node 22+, `brotli`, `zstd`, and the Rust `wasm32-unknown-unknown`
+target. The GitHub workflow installs these explicitly; the local shell wrapper
+fails early with a clear message when the external compressors or Node version
+are missing.

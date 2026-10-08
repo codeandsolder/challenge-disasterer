@@ -1,0 +1,68 @@
+name: Live Anubis compatibility
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  live-anubis-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out challenge-disasterer
+        uses: actions/checkout@v7
+
+      - name: Check out live Anubis main
+        uses: actions/checkout@v7
+        with:
+          repository: TecharoHQ/anubis
+          ref: main
+          path: target/anubis-live
+          fetch-depth: 1
+
+      - name: Set up Go used by Anubis
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: target/anubis-live/go.mod
+          cache-dependency-path: target/anubis-live/go.sum
+
+      - name: Set up Node used by Anubis assets
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: target/anubis-live/package-lock.json
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.99.0
+          rustup toolchain install nightly-2026-10-08 --profile minimal --component clippy,rustfmt
+
+      - name: Install Anubis asset compressors
+        run: sudo apt-get update -qq && sudo apt-get install -y brotli zstd
+
+      - name: Build live Anubis
+        working-directory: target/anubis-live
+        run: |
+          npm ci --ignore-scripts
+          RUSTUP_TOOLCHAIN=1.99.0 npm run assets
+          go build -o ../anubis-live-bin ./cmd/anubis
+
+      - name: Build challenge-disasterer and E2E wrapper
+        run: |
+          cargo build --locked --no-default-features
+          cargo build --locked --manifest-path tools/anubis-e2e/Cargo.toml
+
+      - name: Exercise solver against live Anubis
+        run: |
+          tools/anubis-e2e/target/debug/challenge-disasterer-anubis-e2e \
+            --anubis-bin target/anubis-live-bin \
+            --solver-bin target/debug/challenge-disasterer \
+            --case fast:anubis:2
