@@ -2,7 +2,7 @@
 
 A small local service for routing proof-of-work / anti-bot challenge solvers to an available backend.
 
-Current solver: **Anubis SHA-256 PoW**. The API is intentionally solver-generic so more challenge families can be added without changing callers.
+Current solvers: **Anubis SHA-256 PoW** (CPU/SHA-NI and GPU) and **Anubis HashX PoW** (GPU when the `gpu` feature is enabled). The API remains solver-generic so more challenge families can be added without changing callers.
 
 ## API
 
@@ -66,8 +66,8 @@ issued challenge through challenge-disasterer's HTTP API, submits the returned
 proof to Anubis's real `pass-challenge` endpoint, and only passes after the
 resulting authorization cookie reaches a protected test upstream.
 
-The case syntax is `ANUBIS_ALGORITHM:DISASTERER_SOLVER:DIFFICULTY`. The current
-compatibility case is the legacy/current `fast` Anubis SHA-256 protocol:
+The case syntax is `ANUBIS_ALGORITHM:DISASTERER_SOLVER:DIFFICULTY`. Individual
+cases can target an exact backend, for example:
 
 ```sh
 cargo run --release --manifest-path tools/anubis-e2e/Cargo.toml -- \
@@ -87,12 +87,55 @@ assets, and exercises the solver against it. This is intended to catch upstream
 wire-format and validation changes rather than merely proving that our own
 local verifier still agrees with itself.
 
-Adding a solver family only needs another case once challenge-disasterer exposes
-it. For example, a future HashX backend can be exercised with a case such as
-`hashx:anubis-hashx:16` without changing the harness protocol.
+Adding another solver family only needs another case once challenge-disasterer
+exposes it; HashX now uses the same harness contract as SHA via cases such as
+`hashx:anubis-hashx:16`.
 
 For a from-source local Anubis build, its current asset pipeline additionally
 requires Node 22+, `brotli`, `zstd`, and the Rust `wasm32-unknown-unknown`
 target. The GitHub workflow installs these explicitly; the local shell wrapper
 fails early with a clear message when the external compressors or Node version
 are missing.
+
+
+### Fuzz matrix and benchmark
+
+The same wrapper can exercise a matrix of fresh challenges rather than one fixed
+case. `--fuzz` currently covers `fast` and deprecated `slow` through the explicit
+CPU and GPU SHA-256 backends, the normal automatic SHA route, and HashX through
+the GPU backend. The matrix spans cheap boundary cases through representative
+higher difficulties. Every fuzz trial obtains new random challenge data from the
+running Anubis HEAD, submits a deliberately corrupted proof that **must** be
+rejected, then requires the real proof to reach the protected upstream.
+
+```sh
+cargo build --release --features gpu
+cargo build --release --manifest-path tools/anubis-e2e/Cargo.toml
+
+tools/anubis-e2e/target/release/challenge-disasterer-anubis-e2e \
+  --anubis-bin target/anubis-live-bin \
+  --solver-bin target/release/challenge-disasterer \
+  --solver-gpu \
+  --fuzz --fuzz-repeats 4 \
+  --benchmark --benchmark-samples 12
+```
+
+`--benchmark` reports two intentionally separate rates:
+
+- `solutions_s`: complete challenge-page -> solve -> Anubis verification ->
+  protected-upstream round trips per second.
+- `effective_h_s` / `effective_mh_s`: geometric expected work for the issued
+  difficulty divided by solver time. This is the useful hash-rate estimate for
+  stochastic PoW solves; `mean_solver_ms` and `mean_wall_ms` keep setup/compile
+  overhead visible.
+
+When `--browser-reference=true` (the default), the benchmark also launches real
+headless Chromium against the same Anubis process. This measures the **stock
+Anubis HEAD client code** rather than a reimplementation: `fast` uses the shipped
+WebCrypto/JS worker, while `hashx`, `sha256`, and `argon2id` use the shipped WASM
+workers. Those browser proofs must also be accepted by the same live server.
+
+The current HashX GPU integration is the already-validated challenge-specialized
+WGSL path. It intentionally includes per-challenge shader compilation in its
+solution latency; replacing that stage with the experimental native GFX9 emitter
+can be benchmarked without changing the correctness harness.

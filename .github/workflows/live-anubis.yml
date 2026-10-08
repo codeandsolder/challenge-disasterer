@@ -65,4 +65,6 @@ jobs:
           tools/anubis-e2e/target/debug/challenge-disasterer-anubis-e2e \
             --anubis-bin target/anubis-live-bin \
             --solver-bin target/debug/challenge-disasterer \
-            --case fast:anubis:2
+            --fuzz \
+            --fuzz-repeats 2 \
+            --browser-reference=false

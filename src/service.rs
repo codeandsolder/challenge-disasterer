@@ -7,6 +7,8 @@ use std::{
     time::Instant,
 };
 
+#[cfg(feature = "gpu")]
+use anyhow::Context;
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,11 +17,14 @@ use tokio::sync::{RwLock, Semaphore};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
-#[cfg(feature = "gpu")]
-use crate::gpu::GpuSolver;
 use crate::{
     anubis::{self, Challenge},
     stats::{Calibration, StatsStore},
+};
+#[cfg(feature = "gpu")]
+use crate::{
+    gpu::GpuSolver,
+    hashx_gpu::{self, GpuSolver as HashxGpuSolver},
 };
 
 #[derive(Debug, Clone)]
@@ -39,12 +44,21 @@ struct GpuJob {
     result: oneshot::Sender<anyhow::Result<anubis::BackendResult>>,
 }
 
+#[cfg(feature = "gpu")]
+struct HashxGpuJob {
+    challenge: hashx_gpu::Challenge,
+    result: oneshot::Sender<anyhow::Result<anubis::BackendResult>>,
+}
+
 pub struct AppState {
     config: Config,
     calibration: Calibration,
     #[cfg(feature = "gpu")]
     gpu_tx: Option<mpsc::Sender<GpuJob>>,
+    #[cfg(feature = "gpu")]
+    hashx_gpu_tx: Option<mpsc::Sender<HashxGpuJob>>,
     gpu_operational: bool,
+    hashx_gpu_operational: bool,
     gpu_queue_work: Arc<AtomicU64>,
     gpu_queue_depth: Arc<AtomicU64>,
     gpu_active_work: Arc<AtomicU64>,
@@ -148,6 +162,32 @@ impl AppState {
             (None, None, false)
         };
 
+        #[cfg(feature = "gpu")]
+        let (hashx_gpu_tx, hashx_gpu_operational) = if config.gpu_enabled {
+            match HashxGpuSolver::create().await {
+                Ok(mut gpu) => {
+                    info!(adapter = %gpu.adapter(), "HashX GPU backend ready");
+                    let (tx, mut rx) = mpsc::channel::<HashxGpuJob>(128);
+                    tokio::spawn(async move {
+                        while let Some(job) = rx.recv().await {
+                            let result = gpu.solve(&job.challenge);
+                            let _ = job.result.send(result);
+                        }
+                    });
+                    (Some(tx), true)
+                }
+                Err(err) => {
+                    warn!(%err, "HashX GPU unavailable");
+                    (None, false)
+                }
+            }
+        } else {
+            (None, false)
+        };
+
+        #[cfg(not(feature = "gpu"))]
+        let hashx_gpu_operational = false;
+
         Ok(Self {
             config: config.clone(),
             calibration: Calibration {
@@ -157,7 +197,10 @@ impl AppState {
             },
             #[cfg(feature = "gpu")]
             gpu_tx,
+            #[cfg(feature = "gpu")]
+            hashx_gpu_tx,
             gpu_operational,
+            hashx_gpu_operational,
             gpu_queue_work: queue_work,
             gpu_queue_depth: queue_depth,
             gpu_active_work: active_work,
@@ -184,6 +227,91 @@ impl AppState {
             backend: "cpu",
             answer: result.answer,
             queue_ms,
+            solve_ms: result.solve_ms,
+            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    #[cfg(feature = "gpu")]
+    async fn run_gpu_only(
+        &self,
+        challenge: Challenge,
+        queued_at: Instant,
+    ) -> anyhow::Result<SolveResponse> {
+        challenge.validate()?;
+        anyhow::ensure!(
+            challenge.gpu_compatible(),
+            "challenge shape is not GPU-compatible"
+        );
+        let tx = self
+            .gpu_tx
+            .as_ref()
+            .context("SHA GPU backend unavailable")?;
+        let expected_work = challenge.expected_work();
+        let (started_tx, started_rx) = oneshot::channel();
+        let (result_tx, result_rx) = oneshot::channel();
+        self.gpu_queue_work
+            .fetch_add(expected_work, Ordering::Relaxed);
+        self.gpu_queue_depth.fetch_add(1, Ordering::Relaxed);
+        if tx
+            .send(GpuJob {
+                challenge,
+                expected_work,
+                started: started_tx,
+                result: result_tx,
+            })
+            .await
+            .is_err()
+        {
+            self.gpu_queue_work
+                .fetch_sub(expected_work, Ordering::Relaxed);
+            self.gpu_queue_depth.fetch_sub(1, Ordering::Relaxed);
+            anyhow::bail!("SHA GPU worker unavailable");
+        }
+        started_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("SHA GPU worker dropped start signal"))?;
+        let started = Instant::now();
+        let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
+        let result = result_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("SHA GPU worker dropped result"))??;
+        Ok(SolveResponse {
+            solver: "anubis-gpu",
+            backend: "gpu",
+            answer: result.answer,
+            queue_ms,
+            solve_ms: result.solve_ms,
+            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    #[cfg(feature = "gpu")]
+    async fn run_hashx_gpu(
+        &self,
+        challenge: hashx_gpu::Challenge,
+        queued_at: Instant,
+    ) -> anyhow::Result<SolveResponse> {
+        challenge.validate()?;
+        let tx = self
+            .hashx_gpu_tx
+            .as_ref()
+            .context("HashX GPU backend unavailable")?;
+        let (result_tx, result_rx) = oneshot::channel();
+        tx.send(HashxGpuJob {
+            challenge,
+            result: result_tx,
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("HashX GPU worker unavailable"))?;
+        let result = result_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("HashX GPU worker dropped result"))??;
+        Ok(SolveResponse {
+            solver: "anubis-hashx",
+            backend: "gpu",
+            answer: result.answer,
+            queue_ms: 0.0,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
         })
@@ -251,25 +379,83 @@ pub async fn solve(
     State(state): State<Arc<AppState>>,
     Json(request): Json<SolveRequest>,
 ) -> ApiResult<SolveResponse> {
-    if request.solver != "anubis" {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!("unknown solver: {}", request.solver),
-            }),
-        ));
-    }
-    let challenge: Challenge = serde_json::from_value(request.challenge).map_err(|err| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: err.to_string(),
-            }),
-        )
-    })?;
-    let difficulty = challenge.difficulty;
-    match state.route_anubis(challenge).await {
-        Ok(response) => {
+    let queued_at = Instant::now();
+    let (difficulty, result) = match request.solver.as_str() {
+        "anubis" | "anubis-cpu" | "anubis-gpu" => {
+            let challenge: Challenge =
+                serde_json::from_value(request.challenge).map_err(|err| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: err.to_string(),
+                        }),
+                    )
+                })?;
+            let difficulty = challenge.difficulty;
+            let result = match request.solver.as_str() {
+                "anubis-cpu" => {
+                    challenge.validate().map_err(|err| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse {
+                                error: err.to_string(),
+                            }),
+                        )
+                    })?;
+                    state.run_cpu(challenge, queued_at).await
+                }
+                "anubis-gpu" => {
+                    #[cfg(feature = "gpu")]
+                    {
+                        state.run_gpu_only(challenge, queued_at).await
+                    }
+                    #[cfg(not(feature = "gpu"))]
+                    {
+                        Err(anyhow::anyhow!("SHA GPU backend not compiled"))
+                    }
+                }
+                _ => state.route_anubis(challenge).await,
+            };
+            (difficulty, result)
+        }
+        "anubis-hashx" => {
+            #[cfg(feature = "gpu")]
+            {
+                let challenge: hashx_gpu::Challenge = serde_json::from_value(request.challenge)
+                    .map_err(|err| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse {
+                                error: err.to_string(),
+                            }),
+                        )
+                    })?;
+                let difficulty = u8::try_from(challenge.difficulty).unwrap_or(u8::MAX);
+                (difficulty, state.run_hashx_gpu(challenge, queued_at).await)
+            }
+            #[cfg(not(feature = "gpu"))]
+            {
+                (0, Err(anyhow::anyhow!("HashX GPU backend not compiled")))
+            }
+        }
+        other => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("unknown solver: {other}"),
+                }),
+            ));
+        }
+    };
+
+    match result {
+        Ok(mut response) => {
+            response.solver = match request.solver.as_str() {
+                "anubis-cpu" => "anubis-cpu",
+                "anubis-gpu" => "anubis-gpu",
+                "anubis-hashx" => "anubis-hashx",
+                _ => "anubis",
+            };
             state
                 .stats
                 .write()
@@ -291,7 +477,7 @@ pub async fn solve(
 
 #[derive(Serialize)]
 pub struct StatsResponse {
-    available_solvers: [&'static str; 1],
+    available_solvers: [&'static str; 4],
     calibration: Calibration,
     config: StatsConfig,
     gpu_queue_depth: u64,
@@ -308,6 +494,7 @@ pub struct StatsConfig {
     gpu_compiled: bool,
     gpu_enabled: bool,
     gpu_operational: bool,
+    hashx_gpu_operational: bool,
 }
 
 pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
@@ -327,13 +514,14 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
     }
     let general = state.stats.read().await.snapshot();
     Json(StatsResponse {
-        available_solvers: ["anubis"],
+        available_solvers: ["anubis", "anubis-cpu", "anubis-gpu", "anubis-hashx"],
         calibration: state.calibration.clone(),
         config: StatsConfig {
             cpu_workers: state.config.cpu_workers,
             gpu_compiled: cfg!(feature = "gpu"),
             gpu_enabled: state.config.gpu_enabled,
             gpu_operational: state.gpu_operational,
+            hashx_gpu_operational: state.hashx_gpu_operational,
         },
         gpu_queue_depth,
         gpu_queue_expected_work: queued_work,

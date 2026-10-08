@@ -76,6 +76,7 @@ fn validate_token(label: &str, value: &str) -> anyhow::Result<()> {
 
 #[derive(Parser, Debug)]
 #[command(about = "Exercise challenge-disasterer against a real Anubis server")]
+#[allow(clippy::struct_excessive_bools, reason = "independent CLI feature switches are clearer as booleans")]
 struct Args {
     /// Current upstream Anubis binary, built from the source revision under test.
     #[arg(long)]
@@ -97,6 +98,38 @@ struct Args {
     /// Extra argument forwarded verbatim to challenge-disasterer.
     #[arg(long = "solver-arg")]
     solver_forwarded: Vec<String>,
+
+    /// Run a fresh-challenge correctness fuzz matrix before explicit cases.
+    #[arg(long, default_value_t = false)]
+    fuzz: bool,
+
+    /// Fresh random challenges per fuzz matrix entry.
+    #[arg(long, default_value_t = 4)]
+    fuzz_repeats: usize,
+
+    /// Benchmark representative solver/backend combinations after correctness fuzzing.
+    #[arg(long, default_value_t = false)]
+    benchmark: bool,
+
+    /// Fresh random challenges per benchmark entry.
+    #[arg(long, default_value_t = 12)]
+    benchmark_samples: usize,
+
+    /// Submit a deliberately corrupted proof before each fuzz proof and require rejection.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    negative_checks: bool,
+
+    /// Benchmark the stock Anubis HEAD browser implementations in Chromium too.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    browser_reference: bool,
+
+    /// Chromium executable used for stock-browser benchmarks.
+    #[arg(long, default_value = "chromium")]
+    chromium_bin: PathBuf,
+
+    /// Node/CDP driver for stock-browser benchmarks.
+    #[arg(long, default_value = "tools/anubis-e2e/browser-bench.mjs")]
+    browser_script: PathBuf,
 
     /// Preserve logs and generated policy after success as well as failure.
     #[arg(long, default_value_t = false)]
@@ -133,6 +166,14 @@ struct SolverResponse {
     solver: String,
     backend: String,
     answer: SolverAnswer,
+    solve_ms: f64,
+}
+
+#[derive(Debug)]
+struct TrialResult {
+    wall_ms: f64,
+    solve_ms: f64,
+    backend: String,
 }
 
 struct ManagedChild {
@@ -326,12 +367,15 @@ fn extract_json_script<T: for<'de> Deserialize<'de>>(html: &str, id: &str) -> an
         .with_context(|| format!("decode JSON script {id}"))
 }
 
+#[allow(clippy::too_many_lines, reason = "keeps one complete protocol round trip together")]
 fn solve_case(
     index: usize,
     case: &CaseSpec,
     anubis_base: &str,
     solver_base: &str,
-) -> anyhow::Result<()> {
+    negative_check: bool,
+) -> anyhow::Result<TrialResult> {
+    let wall_started = Instant::now();
     let user_agent = format!("challenge-disasterer-e2e/{index}/{}", case.algorithm);
     let client = build_client(&user_agent)?;
 
@@ -389,6 +433,30 @@ fn solve_case(
         "{anubis_base}/.within.website/x/cmd/anubis/api/pass-challenge"
     ))
     .context("construct pass-challenge URL")?;
+    if negative_check {
+        let mut corrupted = solved.answer.hash.clone().into_bytes();
+        if let Some(first) = corrupted.first_mut() {
+            *first = if *first == b'0' { b'1' } else { b'0' };
+        }
+        let corrupted = String::from_utf8(corrupted).context("corrupt proof hash")?;
+        let rejected = client
+            .get(pass_url.clone())
+            .query(&[
+                ("id", envelope.challenge.id.as_str()),
+                ("response", corrupted.as_str()),
+                ("nonce", solved.answer.nonce.as_str()),
+                ("redir", "/"),
+                ("elapsedTime", "1"),
+            ])
+            .send()
+            .context("submit deliberately corrupted proof")?;
+        let rejected_body = rejected.text().context("read corrupted-proof response")?;
+        ensure!(
+            !rejected_body.contains(BACKEND_MARKER),
+            "Anubis accepted a deliberately corrupted proof"
+        );
+    }
+
     let accepted = client
         .get(pass_url)
         .query(&[
@@ -409,18 +477,101 @@ fn solve_case(
         body.chars().take(300).collect::<String>()
     );
 
+    let wall_ms = wall_started.elapsed().as_secs_f64() * 1000.0;
     println!(
-        "PASS algorithm={} solver={} backend={} difficulty={} nonce={} final_url={}",
+        "PASS algorithm={} solver={} backend={} difficulty={} nonce={} solver_ms={:.3} wall_ms={:.3} final_url={}",
         case.algorithm,
         case.solver,
         solved.backend,
         case.difficulty,
         solved.answer.nonce,
+        solved.solve_ms,
+        wall_ms,
         final_url
     );
-    Ok(())
+    Ok(TrialResult {
+        wall_ms,
+        solve_ms: solved.solve_ms,
+        backend: solved.backend,
+    })
 }
 
+fn expected_hashes(case: &CaseSpec) -> f64 {
+    match case.algorithm.as_str() {
+        "fast" | "slow" => 16_f64.powi(i32::try_from(case.difficulty).unwrap_or(i32::MAX)),
+        "hashx" | "argon2id" | "sha256" => 2_f64.powi(i32::try_from(case.difficulty).unwrap_or(i32::MAX)),
+        _ => f64::NAN,
+    }
+}
+
+fn fuzz_matrix(gpu: bool) -> anyhow::Result<Vec<CaseSpec>> {
+    let mut specs = Vec::new();
+    for difficulty in [1_u32, 2, 3, 4, 5] {
+        specs.push(format!("fast:anubis-cpu:{difficulty}").parse()?);
+    }
+    for difficulty in [2_u32, 4] {
+        specs.push(format!("fast:anubis:{difficulty}").parse()?);
+    }
+    for difficulty in [1_u32, 3] {
+        specs.push(format!("slow:anubis-cpu:{difficulty}").parse()?);
+    }
+    if gpu {
+        for difficulty in [1_u32, 2, 3, 4, 5] {
+            specs.push(format!("fast:anubis-gpu:{difficulty}").parse()?);
+        }
+        for difficulty in [1_u32, 3] {
+            specs.push(format!("slow:anubis-gpu:{difficulty}").parse()?);
+        }
+        for difficulty in [1_u32, 2, 4, 8, 12, 16, 20] {
+            specs.push(format!("hashx:anubis-hashx:{difficulty}").parse()?);
+        }
+    }
+    Ok(specs)
+}
+
+fn benchmark_matrix(gpu: bool) -> anyhow::Result<Vec<CaseSpec>> {
+    let mut specs = vec!["fast:anubis-cpu:5".parse()?];
+    if gpu {
+        specs.push("fast:anubis-gpu:5".parse()?);
+        specs.push("hashx:anubis-hashx:18".parse()?);
+    }
+    Ok(specs)
+}
+
+fn browser_benchmark_matrix() -> anyhow::Result<Vec<CaseSpec>> {
+    Ok(vec![
+        "fast:browser:5".parse()?,
+        "hashx:browser:18".parse()?,
+        "sha256:browser:18".parse()?,
+        "argon2id:browser:4".parse()?,
+    ])
+}
+
+fn print_benchmark(case: &CaseSpec, trials: &[TrialResult]) {
+    let wall_ms: f64 = trials.iter().map(|trial| trial.wall_ms).sum();
+    let solve_ms: f64 = trials.iter().map(|trial| trial.solve_ms).sum();
+    let sample_count = u32::try_from(trials.len()).expect("benchmark sample count fits u32");
+    let sample_count = f64::from(sample_count);
+    let solutions_per_s = sample_count * 1000.0 / wall_ms.max(f64::MIN_POSITIVE);
+    let hashes_per_s = expected_hashes(case) * sample_count * 1000.0
+        / solve_ms.max(f64::MIN_POSITIVE);
+    let backend = trials.first().map_or("unknown", |trial| trial.backend.as_str());
+    println!(
+        "BENCH algorithm={} solver={} backend={} difficulty={} n={} solutions_s={:.3} effective_h_s={:.3} effective_mh_s={:.3} mean_solver_ms={:.3} mean_wall_ms={:.3}",
+        case.algorithm,
+        case.solver,
+        backend,
+        case.difficulty,
+        trials.len(),
+        solutions_per_s,
+        hashes_per_s,
+        hashes_per_s / 1e6,
+        solve_ms / sample_count,
+        wall_ms / sample_count,
+    );
+}
+
+#[allow(clippy::too_many_lines, reason = "top-level test orchestration is intentionally linear")]
 fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
     ensure!(
         args.anubis_bin.is_file(),
@@ -433,11 +584,25 @@ fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
         args.solver_bin.display()
     );
 
-    let cases = if args.cases.is_empty() {
-        vec!["fast:anubis:2".parse()?]
+    let mut cases = args.cases;
+    if args.fuzz {
+        cases.extend(fuzz_matrix(args.solver_gpu)?);
+    }
+    let benchmark_cases = if args.benchmark {
+        benchmark_matrix(args.solver_gpu)?
     } else {
-        args.cases
+        Vec::new()
     };
+    let browser_cases = if args.benchmark && args.browser_reference {
+        browser_benchmark_matrix()?
+    } else {
+        Vec::new()
+    };
+    cases.extend(benchmark_cases.iter().cloned());
+    cases.extend(browser_cases.iter().cloned());
+    if cases.is_empty() {
+        cases.push("fast:anubis:2".parse()?);
+    }
 
     let temp = tempfile::tempdir().context("create e2e temp directory")?;
     let policy_path = temp.path().join("anubis.yaml");
@@ -488,20 +653,83 @@ fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
     )?;
     wait_ready(&format!("{anubis_base}/"), &mut anubis)?;
 
-    for (index, case) in cases.iter().enumerate() {
-        if let Err(error) = solve_case(index, case, &anubis_base, &solver_base) {
-            eprintln!("\n--- challenge-disasterer log ---\n{}", solver.log_tail());
-            eprintln!("\n--- Anubis log ---\n{}", anubis.log_tail());
-            return Err(error).with_context(|| {
-                format!(
-                    "end-to-end case failed: {}:{}:{}",
-                    case.algorithm, case.solver, case.difficulty
-                )
-            });
+    let benchmark_start = cases
+        .len()
+        .saturating_sub(benchmark_cases.len() + browser_cases.len());
+    let mut fuzz_trials = 0_usize;
+    for (index, case) in cases[..benchmark_start].iter().enumerate() {
+        let repeats = if args.fuzz { args.fuzz_repeats } else { 1 };
+        for _ in 0..repeats {
+            if let Err(error) = solve_case(
+                index,
+                case,
+                &anubis_base,
+                &solver_base,
+                args.fuzz && args.negative_checks,
+            ) {
+                eprintln!("\n--- challenge-disasterer log ---\n{}", solver.log_tail());
+                eprintln!("\n--- Anubis log ---\n{}", anubis.log_tail());
+                return Err(error).with_context(|| {
+                    format!(
+                        "end-to-end case failed: {}:{}:{}",
+                        case.algorithm, case.solver, case.difficulty
+                    )
+                });
+            }
+            fuzz_trials += 1;
         }
     }
 
-    println!("PASS all {} live-Anubis end-to-end case(s)", cases.len());
+    for (offset, case) in benchmark_cases.iter().enumerate() {
+        let index = benchmark_start + offset;
+        let mut trials = Vec::with_capacity(args.benchmark_samples);
+        for _ in 0..args.benchmark_samples {
+            let trial = solve_case(index, case, &anubis_base, &solver_base, false)
+                .with_context(|| format!("benchmark case failed: {}:{}:{}", case.algorithm, case.solver, case.difficulty))?;
+            trials.push(trial);
+        }
+        print_benchmark(case, &trials);
+    }
+
+    if !browser_cases.is_empty() {
+        let browser_base = benchmark_start + benchmark_cases.len();
+        let specs = browser_cases
+            .iter()
+            .enumerate()
+            .map(|(offset, case)| {
+                let samples = if case.algorithm == "argon2id" {
+                    args.benchmark_samples.min(4)
+                } else {
+                    args.benchmark_samples
+                };
+                json!({
+                    "index": browser_base + offset,
+                    "algorithm": case.algorithm,
+                    "difficulty": case.difficulty,
+                    "samples": samples,
+                })
+            })
+            .collect::<Vec<_>>();
+        let output = Command::new("node")
+            .arg(&args.browser_script)
+            .arg("--chromium")
+            .arg(&args.chromium_bin)
+            .arg("--url")
+            .arg(&anubis_base)
+            .arg("--cases")
+            .arg(serde_json::to_string(&specs).context("encode browser benchmark matrix")?)
+            .arg("--timeoutMs")
+            .arg("60000")
+            .output()
+            .context("run stock Anubis browser benchmark")?;
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        if !output.status.success() {
+            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+            bail!("stock Anubis browser benchmark failed with {}", output.status);
+        }
+    }
+
+    println!("PASS {fuzz_trials} live-Anubis correctness trial(s)");
     if args.keep_temp {
         let kept = temp.keep();
         println!("kept e2e artifacts at {}", kept.display());

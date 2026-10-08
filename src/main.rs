@@ -3,6 +3,8 @@
 mod anubis;
 #[cfg(feature = "gpu")]
 mod gpu;
+#[cfg(feature = "gpu")]
+mod hashx_gpu;
 mod service;
 mod stats;
 
