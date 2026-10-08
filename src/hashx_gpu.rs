@@ -8,7 +8,9 @@ use crate::{
     hashx::{Challenge, Instr, describe, valid_prefix},
 };
 
-const WG_SIZE: u32 = 64;
+const AMD_WG_SIZE: u32 = 64;
+const NVIDIA_WG_SIZE: u32 = 32;
+const SPECIALIZED_WG_SIZE: u32 = 64;
 const SPECIALIZED_BATCH: u32 = 262_144;
 const PERSISTENT_MAX_BATCH: u32 = 262_144;
 const PERSISTENT_CROSSOVER_DIFFICULTY: u32 = 20;
@@ -24,6 +26,7 @@ pub struct GpuSolver {
     staging: wgpu::Buffer,
     persistent_pipeline: Option<wgpu::ComputePipeline>,
     persistent_bind_group: Option<wgpu::BindGroup>,
+    persistent_wg_size: u32,
 }
 
 impl GpuSolver {
@@ -45,6 +48,12 @@ impl GpuSolver {
             wgpu::Features::SHADER_INT64
         };
         let info = adapter.get_info();
+        let is_nvidia = info.vendor == 0x10de;
+        let persistent_wg_size = if is_nvidia {
+            NVIDIA_WG_SIZE
+        } else {
+            AMD_WG_SIZE
+        };
         let adapter_name = format!("{} ({:?}, {})", info.name, info.backend, info.driver);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -95,9 +104,13 @@ impl GpuSolver {
                 bind_group_layouts: &[Some(&layout)],
                 immediate_size: 0,
             });
-            let module = create_persistent_shader_module(&device);
+            let module = create_persistent_shader_module(&device, is_nvidia, persistent_wg_size);
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("hashx-persistent-extmul-solve"),
+                label: Some(if is_nvidia {
+                    "hashx-persistent-nvidia-u32-solve"
+                } else {
+                    "hashx-persistent-extmul-solve"
+                }),
                 layout: Some(&pipeline_layout),
                 module: &module,
                 entry_point: Some("solve"),
@@ -137,6 +150,7 @@ impl GpuSolver {
             staging,
             persistent_pipeline,
             persistent_bind_group,
+            persistent_wg_size,
         })
     }
 
@@ -180,7 +194,7 @@ impl GpuSolver {
         self.queue
             .write_buffer(&self.solution, 0, &u32::MAX.to_le_bytes());
 
-        let batch_size = persistent_batch(challenge.difficulty);
+        let batch_size = persistent_batch(challenge.difficulty, self.persistent_wg_size);
         let mut base = 0_u64;
         while base <= u64::from(u32::MAX) {
             let remaining = u64::from(u32::MAX) + 1 - base;
@@ -191,7 +205,7 @@ impl GpuSolver {
                 let mut pass = encoder.begin_compute_pass(&Default::default());
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, bind_group, &[]);
-                pass.dispatch_workgroups(batch.div_ceil(WG_SIZE), 1, 1);
+                pass.dispatch_workgroups(batch.div_ceil(self.persistent_wg_size), 1, 1);
             }
             encoder.copy_buffer_to_buffer(&self.solution, 0, &self.staging, 0, 4);
             let submission = self.queue.submit([encoder.finish()]);
@@ -259,7 +273,7 @@ impl GpuSolver {
                 let mut pass = encoder.begin_compute_pass(&Default::default());
                 pass.set_pipeline(&pipeline);
                 pass.set_bind_group(0, &bind_group, &[]);
-                pass.dispatch_workgroups(batch.div_ceil(WG_SIZE), 1, 1);
+                pass.dispatch_workgroups(batch.div_ceil(SPECIALIZED_WG_SIZE), 1, 1);
             }
             encoder.copy_buffer_to_buffer(&self.solution, 0, &self.staging, 0, 4);
             let submission = self.queue.submit([encoder.finish()]);
@@ -318,23 +332,38 @@ fn storage_layout_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutE
 }
 
 #[allow(unsafe_code)]
-fn create_persistent_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
-    let bytes = include_bytes!("hashx_blocksolve_extmul.spv");
+fn create_persistent_shader_module(
+    device: &wgpu::Device,
+    is_nvidia: bool,
+    workgroup_size: u32,
+) -> wgpu::ShaderModule {
+    let (bytes, label): (&[u8], &str) = if is_nvidia {
+        (
+            include_bytes!("hashx_nvidia_interpreter_solve.spv"),
+            "hashx-persistent-nvidia-u32",
+        )
+    } else {
+        (
+            include_bytes!("hashx_blocksolve_extmul.spv"),
+            "hashx-persistent-extmul",
+        )
+    };
     let words = bytes
         .as_chunks::<4>()
         .0
         .iter()
         .map(|chunk| u32::from_le_bytes(*chunk))
         .collect::<Vec<_>>();
-    // SAFETY: the embedded module is generated from blocksolve08.wgsl, patched only to replace
-    // the two validated 64x64 high-half multiply helpers with SPIR-V extended-multiply ops, and
-    // checked by spirv-val. The passthrough path is required because Naga rejects those ops.
+    // SAFETY: both embedded modules are generated from validated WGSL and checked by spirv-val.
+    // RADV uses the extended-multiply fixed-block kernel; NVIDIA uses a warp-sized interpreter
+    // whose 64-bit multiplies are explicitly decomposed into 32-bit operations. Passthrough is
+    // required for the RADV extended-multiply operations and keeps both persistent paths uniform.
     unsafe {
         device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough {
-            label: Some("hashx-persistent-extmul"),
+            label: Some(label),
             entry_points: Cow::Owned(vec![wgpu::PassthroughShaderEntryPoint {
                 name: Cow::Borrowed("solve"),
-                workgroup_size: (WG_SIZE, 1, 1),
+                workgroup_size: (workgroup_size, 1, 1),
             }]),
             spirv: Some(Cow::Owned(words)),
             ..Default::default()
@@ -342,11 +371,11 @@ fn create_persistent_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule 
     }
 }
 
-fn persistent_batch(difficulty: u32) -> u32 {
+fn persistent_batch(difficulty: u32, workgroup_size: u32) -> u32 {
     let expected = 1_u64 << difficulty.min(PERSISTENT_CROSSOVER_DIFFICULTY);
     expected
         .div_ceil(4)
-        .clamp(u64::from(WG_SIZE), u64::from(PERSISTENT_MAX_BATCH)) as u32
+        .clamp(u64::from(workgroup_size), u64::from(PERSISTENT_MAX_BATCH)) as u32
 }
 
 fn validated_result(
