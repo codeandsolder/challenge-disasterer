@@ -16,7 +16,7 @@ clap = { version = "4", features = ["derive"] }
 pow-buster = { git = "https://github.com/codeandsolder/pow-buster-imp", rev = "20bd176437b22b5a92ec2c5d5a137910c81000b2", default-features = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
