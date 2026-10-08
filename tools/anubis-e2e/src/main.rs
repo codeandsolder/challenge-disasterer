@@ -626,7 +626,7 @@ fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
         .arg("--gpu")
         .arg(args.solver_gpu.to_string())
         .arg("--cpu-workers")
-        .arg("2")
+        .arg(if args.benchmark { "1" } else { "2" })
         .args(&args.solver_forwarded);
     let mut solver = ManagedChild::spawn(
         "challenge-disasterer",
