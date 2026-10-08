@@ -18,7 +18,7 @@ use tracing::{info, warn};
 
 use crate::{
     anubis::{self, Challenge},
-    hashx, hashx_cpu_simd,
+    hashx, hashx_cpu_jit,
     stats::{Calibration, StatsStore},
 };
 #[cfg(feature = "gpu")]
@@ -283,7 +283,7 @@ impl AppState {
         })
     }
 
-    async fn run_hashx_simd(
+    async fn run_hashx_jit(
         &self,
         challenge: hashx::Challenge,
         queued_at: Instant,
@@ -296,12 +296,12 @@ impl AppState {
         let queue_ms = start.duration_since(queued_at).as_secs_f64() * 1000.0;
         let result = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            hashx_cpu_simd::solve(&challenge, worker_count)
+            hashx_cpu_jit::solve(&challenge, worker_count)
         })
         .await??;
         Ok(SolveResponse {
-            solver: "anubis-hashx-simd",
-            backend: "cpu-simd",
+            solver: "anubis-hashx-jit",
+            backend: "cpu-jit",
             answer: result.answer,
             queue_ms,
             solve_ms: result.solve_ms,
@@ -441,7 +441,7 @@ pub async fn solve(
             };
             (difficulty, result)
         }
-        "anubis-hashx" | "anubis-hashx-simd" => {
+        "anubis-hashx" | "anubis-hashx-jit" => {
             let challenge: hashx::Challenge =
                 serde_json::from_value(request.challenge).map_err(|err| {
                     (
@@ -452,8 +452,8 @@ pub async fn solve(
                     )
                 })?;
             let difficulty = u8::try_from(challenge.difficulty).unwrap_or(u8::MAX);
-            let result = if request.solver == "anubis-hashx-simd" {
-                state.run_hashx_simd(challenge, queued_at).await
+            let result = if request.solver == "anubis-hashx-jit" {
+                state.run_hashx_jit(challenge, queued_at).await
             } else {
                 #[cfg(feature = "gpu")]
                 {
@@ -482,7 +482,7 @@ pub async fn solve(
                 "anubis-cpu" => "anubis-cpu",
                 "anubis-gpu" => "anubis-gpu",
                 "anubis-hashx" => "anubis-hashx",
-                "anubis-hashx-simd" => "anubis-hashx-simd",
+                "anubis-hashx-jit" => "anubis-hashx-jit",
                 _ => "anubis",
             };
             state
@@ -548,7 +548,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             "anubis-cpu",
             "anubis-gpu",
             "anubis-hashx",
-            "anubis-hashx-simd",
+            "anubis-hashx-jit",
         ],
         calibration: state.calibration.clone(),
         config: StatsConfig {

@@ -2,7 +2,7 @@
 
 A small local service for routing proof-of-work / anti-bot challenge solvers to an available backend.
 
-Current solvers: **Anubis SHA-256 PoW** (CPU/SHA-NI and GPU) and **Anubis HashX PoW** (auto-vectorized CPU plus GPU when the `gpu` feature is enabled). The API remains solver-generic so more challenge families can be added without changing callers.
+Current solvers: **Anubis SHA-256 PoW** (CPU/SHA-NI and GPU) and **Anubis HashX PoW** (upstream native JIT on CPU plus GPU when the `gpu` feature is enabled). The API remains solver-generic so more challenge families can be added without changing callers.
 
 ## API
 
@@ -137,28 +137,8 @@ workers. Those browser proofs must also be accepted by the same live server.
 
 The HashX GPU integration uses the persistent fixed-block passthrough SPIR-V kernel with extended 64-bit multiplies through difficulty 20, avoiding per-challenge shader compilation on the latency-sensitive range. Higher difficulties currently retain the challenge-specialized fallback. The benchmark includes all backend setup in `mean_solver_ms`, so future native GFX9 specialization can be compared without changing the correctness or reporting contract.
 
-### Auto-vectorized HashX CPU backend
+### HashX CPU backend
 
-`anubis-hashx-simd` is the explicit CPU HashX backend. It keeps a **256-nonce
-structure-of-arrays batch** to amortize the one runtime opcode dispatch over many
-hashes, but deliberately does not encode 256 nonces as one SIMD value. The hot
-per-op lane loops are ordinary branchless Rust and LLVM chooses the vectorization
-factor and interleave for the target CPU.
+`anubis-hashx-jit` uses HashX 0.8's upstream native compiler directly. For each fresh challenge HashX emits its 512-op program with `dynasmrt` into an executable mapping; the eight virtual registers live in real x86-64 registers (`r8`..`r15`) and operations become direct `imul`/`mul`/`xor`/`sub`/`lea` plus the generated branch. Worker threads share the immutable compiled program and search disjoint nonce ranges.
 
-On the Ryzen 7 4700U (`-C target-cpu=native`) LLVM lowers those loops to AVX2
-YMM operations: four `u64` lanes per hardware vector, including `vpmuludq`
-expansions for HashX's 64-bit multiplies. This separates the **interpreter batch
-size** from the **hardware SIMD width** and avoids the register-spill explosion
-seen with explicit `Simd<u64, 16/32>` values.
-
-Fixed-work `perf stat` testing over 32,768 hashes found the batch-size knee at
-roughly 256 nonces: 128 = 26.68M cycles, 256 = 25.56M, 512 = 25.85M, and
-1024 = 26.88M. The backend spreads disjoint 256-nonce batches across the
-configured CPU worker pool and scalar-validates a winning nonce with upstream
-HashX before returning it.
-
-The upstream HashX dynasm JIT remains faster per core on AVX2 because it removes
-runtime opcode dispatch entirely and Zen 2 lacks AVX-512DQ-style packed 64-bit
-integer multiplication. The CPU vector backend stays explicit so callers and CI
-can benchmark it independently; it is also available in `--no-default-features`
-CPU-only builds.
+On the Ryzen 7 4700U this beat the experimental auto-vectorized interpreter decisively: in a 64-sample live Anubis d18 comparison with two CPU workers, upstream JIT measured **28.01 ms/accepted answer and 14.73 MH/s**, versus **37.60 ms and 9.29 MH/s** for the auto-vectorized interpreter. A separate fixed-work upstream benchmark scaled to **25.42 MH/s at 8 threads** on the concurrently loaded laptop. The custom SIMD interpreter has therefore been retired from active code; its experiments remain in git history.

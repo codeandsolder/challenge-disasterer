@@ -4,7 +4,7 @@ mod anubis;
 #[cfg(feature = "gpu")]
 mod gpu;
 mod hashx;
-mod hashx_cpu_simd;
+mod hashx_cpu_jit;
 #[cfg(feature = "gpu")]
 mod hashx_gpu;
 mod service;

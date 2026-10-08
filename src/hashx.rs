@@ -1,4 +1,6 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
+#[cfg(feature = "gpu")]
+use anyhow::anyhow;
 use hashx08::{HashX, HashXBuilder, RuntimeOption};
 use serde::Deserialize;
 
@@ -23,6 +25,7 @@ impl Challenge {
     }
 }
 
+#[cfg(feature = "gpu")]
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "gpu", derive(bytemuck::Pod, bytemuck::Zeroable))]
@@ -33,7 +36,7 @@ pub(crate) struct Instr {
     pub(crate) imm: u32,
 }
 
-fn build_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX)> {
+pub(crate) fn build_compiled_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX)> {
     let mut candidate = seed.to_vec();
     let mut counter = 0_u32;
     loop {
@@ -50,8 +53,9 @@ fn build_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX)> {
     }
 }
 
+#[cfg(feature = "gpu")]
 pub(crate) fn describe(seed: &[u8]) -> anyhow::Result<(HashX, [u64; 4], Vec<Instr>)> {
-    let (usable_seed, compiled) = build_seed(seed)?;
+    let (usable_seed, compiled) = build_compiled_seed(seed)?;
     let mut builder = HashXBuilder::new();
     builder.runtime(RuntimeOption::InterpretOnly);
     let interpreted = builder
@@ -139,12 +143,14 @@ pub(crate) fn describe(seed: &[u8]) -> anyhow::Result<(HashX, [u64; 4], Vec<Inst
     Ok((compiled, key, program))
 }
 
+#[cfg(feature = "gpu")]
 fn after<'a>(text: &'a str, key: &str) -> anyhow::Result<&'a str> {
     text.find(key)
         .map(|offset| &text[offset + key.len()..])
         .with_context(|| format!("missing {key} in HashX debug output"))
 }
 
+#[cfg(feature = "gpu")]
 fn reg(text: &str, key: &str) -> anyhow::Result<u32> {
     after(text, key)?
         .chars()
@@ -153,6 +159,7 @@ fn reg(text: &str, key: &str) -> anyhow::Result<u32> {
         .context("parse HashX register")
 }
 
+#[cfg(feature = "gpu")]
 fn number<T: std::str::FromStr>(text: &str, key: &str) -> anyhow::Result<T>
 where
     T::Err: std::error::Error + Send + Sync + 'static,
@@ -162,6 +169,7 @@ where
     tail[..end].parse().context("parse HashX immediate")
 }
 
+#[cfg(feature = "gpu")]
 fn binary(text: &str, op: u32) -> anyhow::Result<Instr> {
     Ok(Instr {
         op,
