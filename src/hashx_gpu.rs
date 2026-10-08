@@ -30,11 +30,7 @@ impl GpuSolver {
     pub async fn create() -> anyhow::Result<Self> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                ..Default::default()
-            })
+        let adapter = wgpu::util::initialize_adapter_from_env_or_default(&instance, None)
             .await
             .context("no WebGPU/Vulkan adapter for HashX")?;
         let adapter_features = adapter.features();

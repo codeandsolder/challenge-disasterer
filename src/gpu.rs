@@ -44,11 +44,7 @@ pub struct GpuSolver {
 impl GpuSolver {
     pub async fn create() -> anyhow::Result<Self> {
         let instance = wgpu::Instance::default();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                ..Default::default()
-            })
+        let adapter = wgpu::util::initialize_adapter_from_env_or_default(&instance, None)
             .await
             .context("no WebGPU/Vulkan adapter")?;
         let info = adapter.get_info();
