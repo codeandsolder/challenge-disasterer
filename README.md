@@ -136,3 +136,18 @@ WebCrypto/JS worker, while `hashx`, `sha256`, and `argon2id` use the shipped WAS
 workers. Those browser proofs must also be accepted by the same live server.
 
 The HashX GPU integration uses the persistent fixed-block passthrough SPIR-V kernel with extended 64-bit multiplies through difficulty 20, avoiding per-challenge shader compilation on the latency-sensitive range. Higher difficulties currently retain the challenge-specialized fallback. The benchmark includes all backend setup in `mean_solver_ms`, so future native GFX9 specialization can be compared without changing the correctness or reporting contract.
+
+### Nightly portable-SIMD HashX CPU backend
+
+`anubis-hashx-simd` is an explicit CPU HashX backend built on nightly
+`std::simd` (`portable_simd`). It evaluates 32 nonces per logical SIMD batch,
+keeps HashX branch state as a per-lane mask, replays the one allowed branch only
+for taking lanes, and spreads disjoint batches across the configured CPU worker
+pool. Candidate nonces are validated with the upstream HashX implementation
+before they are returned.
+
+For native deployments, build with `RUSTFLAGS="-C target-cpu=native"` so LLVM
+can lower the portable vectors for the actual host. On AVX2 Renoir the existing
+HashX scalar dynasm JIT is still faster per core because AVX2 lacks packed 64-bit
+integer multiply; the SIMD backend is therefore exposed explicitly rather than
+replacing the JIT/GPU routing. It should be re-benchmarked on AVX-512-class CPUs.

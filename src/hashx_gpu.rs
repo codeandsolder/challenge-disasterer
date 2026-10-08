@@ -36,11 +36,11 @@ impl Challenge {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-struct Instr {
-    op: u32,
-    dst: u32,
-    src: u32,
-    imm: u32,
+pub(crate) struct Instr {
+    pub(crate) op: u32,
+    pub(crate) dst: u32,
+    pub(crate) src: u32,
+    pub(crate) imm: u32,
 }
 
 pub struct GpuSolver {
@@ -419,7 +419,7 @@ fn build_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX)> {
     }
 }
 
-fn describe(seed: &[u8]) -> anyhow::Result<(HashX, [u64; 4], Vec<Instr>)> {
+pub(crate) fn describe(seed: &[u8]) -> anyhow::Result<(HashX, [u64; 4], Vec<Instr>)> {
     let (usable_seed, compiled) = build_seed(seed)?;
     let mut builder = HashXBuilder::new();
     builder.runtime(RuntimeOption::InterpretOnly);
@@ -537,7 +537,7 @@ fn binary(text: &str, op: u32) -> anyhow::Result<Instr> {
     })
 }
 
-fn valid_prefix(hash: &[u8; 32], difficulty: u32) -> bool {
+pub(crate) fn valid_prefix(hash: &[u8; 32], difficulty: u32) -> bool {
     let whole = (difficulty / 8) as usize;
     let rem = difficulty % 8;
     hash[..whole].iter().all(|&byte| byte == 0)

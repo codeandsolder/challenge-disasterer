@@ -24,6 +24,7 @@ use crate::{
 #[cfg(feature = "gpu")]
 use crate::{
     gpu::GpuSolver,
+    hashx_cpu_simd,
     hashx_gpu::{self, GpuSolver as HashxGpuSolver},
 };
 
@@ -287,6 +288,33 @@ impl AppState {
     }
 
     #[cfg(feature = "gpu")]
+    async fn run_hashx_simd(
+        &self,
+        challenge: hashx_gpu::Challenge,
+        queued_at: Instant,
+    ) -> anyhow::Result<SolveResponse> {
+        challenge.validate()?;
+        let worker_count = self.config.cpu_workers;
+        let permits = u32::try_from(worker_count).context("too many CPU workers")?;
+        let permit = self.cpu_slots.clone().acquire_many_owned(permits).await?;
+        let start = Instant::now();
+        let queue_ms = start.duration_since(queued_at).as_secs_f64() * 1000.0;
+        let result = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            hashx_cpu_simd::solve(&challenge, worker_count)
+        })
+        .await??;
+        Ok(SolveResponse {
+            solver: "anubis-hashx-simd",
+            backend: "cpu-simd",
+            answer: result.answer,
+            queue_ms,
+            solve_ms: result.solve_ms,
+            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    #[cfg(feature = "gpu")]
     async fn run_hashx_gpu(
         &self,
         challenge: hashx_gpu::Challenge,
@@ -418,7 +446,7 @@ pub async fn solve(
             };
             (difficulty, result)
         }
-        "anubis-hashx" => {
+        "anubis-hashx" | "anubis-hashx-simd" => {
             #[cfg(feature = "gpu")]
             {
                 let challenge: hashx_gpu::Challenge = serde_json::from_value(request.challenge)
@@ -431,11 +459,16 @@ pub async fn solve(
                         )
                     })?;
                 let difficulty = u8::try_from(challenge.difficulty).unwrap_or(u8::MAX);
-                (difficulty, state.run_hashx_gpu(challenge, queued_at).await)
+                let result = if request.solver == "anubis-hashx-simd" {
+                    state.run_hashx_simd(challenge, queued_at).await
+                } else {
+                    state.run_hashx_gpu(challenge, queued_at).await
+                };
+                (difficulty, result)
             }
             #[cfg(not(feature = "gpu"))]
             {
-                (0, Err(anyhow::anyhow!("HashX GPU backend not compiled")))
+                (0, Err(anyhow::anyhow!("HashX backend not compiled")))
             }
         }
         other => {
@@ -454,6 +487,7 @@ pub async fn solve(
                 "anubis-cpu" => "anubis-cpu",
                 "anubis-gpu" => "anubis-gpu",
                 "anubis-hashx" => "anubis-hashx",
+                "anubis-hashx-simd" => "anubis-hashx-simd",
                 _ => "anubis",
             };
             state
@@ -477,7 +511,7 @@ pub async fn solve(
 
 #[derive(Serialize)]
 pub struct StatsResponse {
-    available_solvers: [&'static str; 4],
+    available_solvers: [&'static str; 5],
     calibration: Calibration,
     config: StatsConfig,
     gpu_queue_depth: u64,
@@ -514,7 +548,13 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
     }
     let general = state.stats.read().await.snapshot();
     Json(StatsResponse {
-        available_solvers: ["anubis", "anubis-cpu", "anubis-gpu", "anubis-hashx"],
+        available_solvers: [
+            "anubis",
+            "anubis-cpu",
+            "anubis-gpu",
+            "anubis-hashx",
+            "anubis-hashx-simd",
+        ],
         calibration: state.calibration.clone(),
         config: StatsConfig {
             cpu_workers: state.config.cpu_workers,
