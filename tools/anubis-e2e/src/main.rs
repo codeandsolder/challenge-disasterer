@@ -515,6 +515,9 @@ fn fuzz_matrix(gpu: bool) -> anyhow::Result<Vec<CaseSpec>> {
     for difficulty in [1_u32, 3] {
         specs.push(format!("slow:anubis-cpu:{difficulty}").parse()?);
     }
+    for difficulty in [1_u32, 2, 4, 8, 12, 16] {
+        specs.push(format!("hashx:anubis-hashx-simd:{difficulty}").parse()?);
+    }
     if gpu {
         for difficulty in [1_u32, 2, 3, 4, 5] {
             specs.push(format!("fast:anubis-gpu:{difficulty}").parse()?);
@@ -530,7 +533,10 @@ fn fuzz_matrix(gpu: bool) -> anyhow::Result<Vec<CaseSpec>> {
 }
 
 fn benchmark_matrix(gpu: bool) -> anyhow::Result<Vec<CaseSpec>> {
-    let mut specs = vec!["fast:anubis-cpu:5".parse()?];
+    let mut specs = vec![
+        "fast:anubis-cpu:5".parse()?,
+        "hashx:anubis-hashx-simd:18".parse()?,
+    ];
     if gpu {
         specs.push("fast:anubis-gpu:5".parse()?);
         specs.push("hashx:anubis-hashx:18".parse()?);

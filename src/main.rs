@@ -1,10 +1,9 @@
 #![recursion_limit = "256"]
-#![cfg_attr(feature = "gpu", feature(portable_simd))]
 
 mod anubis;
 #[cfg(feature = "gpu")]
 mod gpu;
-#[cfg(feature = "gpu")]
+mod hashx;
 mod hashx_cpu_simd;
 #[cfg(feature = "gpu")]
 mod hashx_gpu;

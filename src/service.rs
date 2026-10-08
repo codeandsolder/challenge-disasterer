@@ -7,7 +7,6 @@ use std::{
     time::Instant,
 };
 
-#[cfg(feature = "gpu")]
 use anyhow::Context;
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
@@ -19,14 +18,11 @@ use tracing::{info, warn};
 
 use crate::{
     anubis::{self, Challenge},
+    hashx, hashx_cpu_simd,
     stats::{Calibration, StatsStore},
 };
 #[cfg(feature = "gpu")]
-use crate::{
-    gpu::GpuSolver,
-    hashx_cpu_simd,
-    hashx_gpu::{self, GpuSolver as HashxGpuSolver},
-};
+use crate::{gpu::GpuSolver, hashx_gpu::GpuSolver as HashxGpuSolver};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -47,7 +43,7 @@ struct GpuJob {
 
 #[cfg(feature = "gpu")]
 struct HashxGpuJob {
-    challenge: hashx_gpu::Challenge,
+    challenge: hashx::Challenge,
     result: oneshot::Sender<anyhow::Result<anubis::BackendResult>>,
 }
 
@@ -287,10 +283,9 @@ impl AppState {
         })
     }
 
-    #[cfg(feature = "gpu")]
     async fn run_hashx_simd(
         &self,
-        challenge: hashx_gpu::Challenge,
+        challenge: hashx::Challenge,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
         challenge.validate()?;
@@ -317,7 +312,7 @@ impl AppState {
     #[cfg(feature = "gpu")]
     async fn run_hashx_gpu(
         &self,
-        challenge: hashx_gpu::Challenge,
+        challenge: hashx::Challenge,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
         challenge.validate()?;
@@ -447,29 +442,29 @@ pub async fn solve(
             (difficulty, result)
         }
         "anubis-hashx" | "anubis-hashx-simd" => {
-            #[cfg(feature = "gpu")]
-            {
-                let challenge: hashx_gpu::Challenge = serde_json::from_value(request.challenge)
-                    .map_err(|err| {
-                        (
-                            StatusCode::BAD_REQUEST,
-                            Json(ErrorResponse {
-                                error: err.to_string(),
-                            }),
-                        )
-                    })?;
-                let difficulty = u8::try_from(challenge.difficulty).unwrap_or(u8::MAX);
-                let result = if request.solver == "anubis-hashx-simd" {
-                    state.run_hashx_simd(challenge, queued_at).await
-                } else {
+            let challenge: hashx::Challenge =
+                serde_json::from_value(request.challenge).map_err(|err| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: err.to_string(),
+                        }),
+                    )
+                })?;
+            let difficulty = u8::try_from(challenge.difficulty).unwrap_or(u8::MAX);
+            let result = if request.solver == "anubis-hashx-simd" {
+                state.run_hashx_simd(challenge, queued_at).await
+            } else {
+                #[cfg(feature = "gpu")]
+                {
                     state.run_hashx_gpu(challenge, queued_at).await
-                };
-                (difficulty, result)
-            }
-            #[cfg(not(feature = "gpu"))]
-            {
-                (0, Err(anyhow::anyhow!("HashX backend not compiled")))
-            }
+                }
+                #[cfg(not(feature = "gpu"))]
+                {
+                    Err(anyhow::anyhow!("HashX GPU backend not compiled"))
+                }
+            };
+            (difficulty, result)
         }
         other => {
             return Err((

@@ -57,14 +57,14 @@ jobs:
 
       - name: Build challenge-disasterer and E2E wrapper
         run: |
-          cargo build --locked --no-default-features
+          RUSTFLAGS="-C target-cpu=native" cargo build --locked --release --no-default-features
           cargo build --locked --manifest-path tools/anubis-e2e/Cargo.toml
 
       - name: Exercise solver against live Anubis
         run: |
           tools/anubis-e2e/target/debug/challenge-disasterer-anubis-e2e \
             --anubis-bin target/anubis-live-bin \
-            --solver-bin target/debug/challenge-disasterer \
+            --solver-bin target/release/challenge-disasterer \
             --fuzz \
             --fuzz-repeats 2 \
             --browser-reference=false
