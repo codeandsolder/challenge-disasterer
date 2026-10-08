@@ -13,7 +13,7 @@ anyhow = "1"
 axum = "0.8"
 bytemuck = { version = "1", features = ["derive"], optional = true }
 clap = { version = "4", features = ["derive"] }
-pow-buster = { git = "https://github.com/codeandsolder/pow-buster-imp", rev = "20bd176437b22b5a92ec2c5d5a137910c81000b2", default-features = true }
+pow-buster = { git = "https://github.com/codeandsolder/pow-buster-imp", rev = "baa1b10a5bd63e26a80fe1ba97ccf05fbbf2e404", default-features = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
