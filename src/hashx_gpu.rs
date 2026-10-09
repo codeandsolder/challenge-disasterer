@@ -27,6 +27,25 @@ pub(crate) struct GpuResult {
     pub(crate) implementation: &'static str,
 }
 
+pub async fn adapter_names() -> Vec<String> {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let mut names = instance
+        .enumerate_adapters(wgpu::Backends::VULKAN)
+        .await
+        .into_iter()
+        .filter_map(|adapter| {
+            let info = adapter.get_info();
+            (adapter.features().contains(wgpu::Features::SHADER_INT64)
+                && info.device_type != wgpu::DeviceType::Cpu)
+                .then_some(info.name)
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
+}
+
 pub struct GpuSolver {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -194,11 +213,72 @@ impl GpuSolver {
         &self.adapter
     }
 
-    pub fn solve(&mut self, challenge: &Challenge) -> anyhow::Result<GpuResult> {
+    pub fn implementations(&self) -> Vec<&'static str> {
+        let mut implementations = Vec::with_capacity(3);
+        if let Some(native) = self.native_backend.as_ref() {
+            implementations.push(native.implementation());
+        }
+        if self.persistent_pipeline.is_some() {
+            implementations.push(self.persistent_implementation);
+        }
+        implementations.push(SPECIALIZED_IMPLEMENTATION);
+        implementations
+    }
+
+    pub fn solve_with_implementation(
+        &mut self,
+        challenge: &Challenge,
+        requested: Option<&str>,
+    ) -> anyhow::Result<GpuResult> {
         challenge.validate()?;
         let started = Instant::now();
         let seed = hex::decode(&challenge.data).context("decode HashX challenge")?;
         let (hashx, program) = describe(&seed)?;
+
+        if let Some(requested) = requested {
+            if requested == SPECIALIZED_IMPLEMENTATION {
+                return self.solve_specialized(
+                    challenge,
+                    &hashx,
+                    program.key(),
+                    program.instructions(),
+                    started,
+                );
+            }
+            if requested == self.persistent_implementation {
+                anyhow::ensure!(
+                    self.persistent_pipeline.is_some(),
+                    "HashX GPU implementation {requested} is unavailable on {}",
+                    self.adapter
+                );
+                return self.solve_persistent(
+                    challenge,
+                    &hashx,
+                    program.key(),
+                    program.instructions(),
+                    started,
+                    self.persistent_implementation,
+                );
+            }
+            if let Some(native) = self.native_backend.as_mut()
+                && requested == native.implementation()
+            {
+                let implementation = native.implementation();
+                let nonce = native.solve(&program, challenge.difficulty)?;
+                return validated_result(
+                    &hashx,
+                    nonce,
+                    challenge.difficulty,
+                    started,
+                    implementation,
+                );
+            }
+            anyhow::bail!(
+                "HashX GPU implementation {requested} is unavailable on {}; available: {}",
+                self.adapter,
+                self.implementations().join(", ")
+            );
+        }
 
         if challenge.difficulty >= NATIVE_MIN_DIFFICULTY {
             let native_result = self.native_backend.as_mut().map(|backend| {

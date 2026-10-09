@@ -41,6 +41,9 @@ struct Args {
     gpu_calibration_hashes: u64,
     #[arg(long, default_value_t = cfg!(feature = "gpu"), action = clap::ArgAction::Set)]
     gpu: bool,
+    #[cfg(feature = "gpu")]
+    #[arg(long, default_value_t = false, hide = true)]
+    list_hashx_gpu_adapters: bool,
 }
 
 #[tokio::main]
@@ -52,6 +55,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let args = Args::parse();
+    #[cfg(feature = "gpu")]
+    if args.list_hashx_gpu_adapters {
+        println!(
+            "{}",
+            serde_json::to_string(&hashx_gpu::adapter_names().await)?
+        );
+        return Ok(());
+    }
     let config = Config {
         cpu_workers: args.cpu_workers,
         cpu_calibration_hashes: args.cpu_calibration_hashes,

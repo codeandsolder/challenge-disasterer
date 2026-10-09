@@ -90,10 +90,25 @@ local verifier still agrees with itself.
 Adding another solver family only needs another case once challenge-disasterer
 exposes it; HashX now uses the same harness contract as SHA via cases such as
 `hashx:anubis-hashx:16`. An optional fourth case field asserts the concrete
-implementation, for example `hashx:anubis-hashx:18:cuda-sm75-sass`. The same
-assertion can be applied to the generated HashX fuzz/benchmark matrix with
-`--expect-hashx-gpu-implementation`, so a benchmark cannot silently fall back to
-a different GPU path.
+implementation selected by normal routing, for example
+`hashx:anubis-hashx:18:cuda-sm75-sass`. The same assertion can be applied to the
+generated HashX fuzz/benchmark matrix with `--expect-hashx-gpu-implementation`,
+so a benchmark cannot silently fall back to a different GPU path.
+
+With GPU testing enabled, the harness asks the solver binary to enumerate every
+usable Vulkan `shaderInt64` adapter, starts a separately pinned solver instance
+for each one, then discovers that adapter's `hashx_gpu_implementations` from
+`/stats`. By default it explicitly forces and validates **every concrete HashX
+implementation that can run on every available GPU**. Forced tests do not fall
+back: a broken native/persistent/specialized path fails as itself. During
+benchmarking, CPU JIT, automatic routing, and every advertised GPU implementation
+solve the exact same fresh HashX challenges in a rotating execution order. The
+harness requires identical minimum nonce/hash and prints `ROUTING` comparisons
+between the automatic route and the fastest concrete GPU path. The default paired
+crossover sweep is d1, d8, d16, d18, and d20..d24. Set
+`--exercise-all-gpu-adapters=false` or
+`--exercise-all-hashx-implementations=false` only when intentionally narrowing a
+local run.
 
 For a from-source local Anubis build, its current asset pipeline additionally
 requires Node 22+, `brotli`, `zstd`, and the Rust `wasm32-unknown-unknown`
@@ -120,10 +135,18 @@ tools/anubis-e2e/target/release/challenge-disasterer-anubis-e2e \
   --anubis-bin target/anubis-live-bin \
   --solver-bin target/release/challenge-disasterer \
   --solver-gpu \
-  --expect-hashx-gpu-implementation cuda-sm75-sass \
   --fuzz --fuzz-repeats 4 \
   --benchmark --benchmark-samples 12
 ```
+
+`--benchmark` reports the normal end-to-end metrics below and, when a GPU is
+available, paired `PAIRED_HASHX` / `ROUTING` results for every advertised HashX
+implementation. A `ROUTING status=SUBOPTIMAL` line means automatic routing
+selected a different GPU implementation and was more than 25% slower than the paired winner. If auto
+selected the same implementation, timing noise cannot mislabel the routing
+choice. The output also reports `best_overall`, including CPU JIT, so low-work
+cases where GPU dispatch overhead dominates remain visible. Routing performance
+is diagnostic rather than a noisy CI failure.
 
 `--benchmark` reports two complementary metrics:
 

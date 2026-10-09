@@ -35,6 +35,7 @@ struct CaseSpec {
     solver: String,
     difficulty: u32,
     implementation: Option<String>,
+    force_implementation: Option<String>,
 }
 
 impl FromStr for CaseSpec {
@@ -65,6 +66,7 @@ impl FromStr for CaseSpec {
             solver: solver.to_owned(),
             difficulty,
             implementation,
+            force_implementation: None,
         })
     }
 }
@@ -80,7 +82,7 @@ fn validate_token(label: &str, value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(about = "Exercise challenge-disasterer against a real Anubis server")]
 #[allow(clippy::struct_excessive_bools, reason = "independent CLI feature switches are clearer as booleans")]
 struct Args {
@@ -101,9 +103,21 @@ struct Args {
     #[arg(long, default_value_t = false)]
     solver_gpu: bool,
 
-    /// Require HashX GPU fuzz/benchmark cases to use this concrete implementation.
+    /// Require `HashX` GPU fuzz/benchmark cases to use this concrete implementation.
     #[arg(long)]
     expect_hashx_gpu_implementation: Option<String>,
+
+    /// Exercise every concrete `HashX` GPU implementation advertised by the solver.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    exercise_all_hashx_implementations: bool,
+
+    /// Run the GPU implementation matrix on every usable Vulkan GPU adapter.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    exercise_all_gpu_adapters: bool,
+
+    /// `HashX` difficulties used for paired routing/implementation benchmarks.
+    #[arg(long, value_delimiter = ',', default_value = "1,8,16,18,20,21,22,23,24")]
+    hashx_routing_difficulties: Vec<u32>,
 
     /// Extra argument forwarded verbatim to challenge-disasterer.
     #[arg(long = "solver-arg")]
@@ -178,6 +192,26 @@ struct SolverResponse {
     implementation: Option<String>,
     answer: SolverAnswer,
     solve_ms: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SolverCalibration {
+    gpu_adapter: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SolverStats {
+    calibration: SolverCalibration,
+    #[serde(default)]
+    hashx_gpu_implementations: Vec<String>,
+}
+
+#[derive(Debug)]
+struct PairedSolve {
+    label: String,
+    solve_ms: f64,
+    nonce: String,
+    hash: String,
 }
 
 #[derive(Debug)]
@@ -335,6 +369,75 @@ fn build_client(user_agent: &str) -> anyhow::Result<Client> {
         .context("build HTTP client")
 }
 
+fn fetch_solver_stats(solver_base: &str) -> anyhow::Result<SolverStats> {
+    Client::new()
+        .get(format!("{solver_base}/stats"))
+        .send()
+        .context("request solver stats")?
+        .error_for_status()
+        .context("solver stats returned error")?
+        .json()
+        .context("decode solver stats")
+}
+
+fn discover_gpu_adapters(solver_bin: &Path) -> anyhow::Result<Vec<String>> {
+    let output = Command::new(solver_bin)
+        .arg("--list-hashx-gpu-adapters")
+        .output()
+        .context("enumerate solver GPU adapters")?;
+    ensure!(
+        output.status.success(),
+        "GPU adapter discovery failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).context("decode GPU adapter list")
+}
+
+fn post_hashx_solver(
+    solver_base: &str,
+    solver: &str,
+    implementation: Option<&str>,
+    data: &str,
+    difficulty: u32,
+) -> anyhow::Result<SolverResponse> {
+    let mut request = json!({
+        "solver": solver,
+        "challenge": {"data": data, "difficulty": difficulty}
+    });
+    if let Some(implementation) = implementation {
+        request["implementation"] = json!(implementation);
+    }
+    let response = Client::new()
+        .post(format!("{solver_base}/solve"))
+        .json(&request)
+        .send()
+        .with_context(|| format!("submit HashX solve via {solver}/{implementation:?}"))?;
+    let status = response.status();
+    let body = response.text().context("read paired solver response")?;
+    ensure!(status.is_success(), "paired solver returned {status}: {body}");
+    serde_json::from_str(&body).context("decode paired solver response")
+}
+
+fn implementation_fuzz_matrix(implementations: &[String]) -> anyhow::Result<Vec<CaseSpec>> {
+    let mut specs = Vec::new();
+    for implementation in implementations {
+        for difficulty in [1_u32, 8, 16, 20] {
+            let mut spec: CaseSpec =
+                format!("hashx:anubis-hashx:{difficulty}:{implementation}").parse()?;
+            spec.force_implementation = Some(implementation.clone());
+            specs.push(spec);
+        }
+    }
+    Ok(specs)
+}
+
+fn routing_matrix(difficulties: &[u32]) -> anyhow::Result<Vec<CaseSpec>> {
+    difficulties
+        .iter()
+        .map(|difficulty| format!("hashx:anubis-hashx:{difficulty}").parse())
+        .collect()
+}
+
 fn wait_ready(url: &str, process: &mut ManagedChild) -> anyhow::Result<()> {
     let client = ClientBuilder::new()
         .redirect(Policy::none())
@@ -415,15 +518,19 @@ fn solve_case(
         case.difficulty
     );
 
+    let mut solver_request = json!({
+        "solver": case.solver,
+        "challenge": {
+            "data": envelope.challenge.random_data,
+            "difficulty": envelope.rules.difficulty,
+        }
+    });
+    if let Some(implementation) = case.force_implementation.as_deref() {
+        solver_request["implementation"] = json!(implementation);
+    }
     let solver_response = Client::new()
         .post(format!("{solver_base}/solve"))
-        .json(&json!({
-            "solver": case.solver,
-            "challenge": {
-                "data": envelope.challenge.random_data,
-                "difficulty": envelope.rules.difficulty,
-            }
-        }))
+        .json(&solver_request)
         .send()
         .context("submit challenge to solver")?;
     let solver_status = solver_response.status();
@@ -515,6 +622,187 @@ fn solve_case(
         backend: solved.backend,
         implementation: solved.implementation,
     })
+}
+
+
+fn paired_hashx_sample(
+    index: usize,
+    sample: usize,
+    case: &CaseSpec,
+    anubis_base: &str,
+    solver_base: &str,
+    implementations: &[String],
+) -> anyhow::Result<(Vec<PairedSolve>, String)> {
+    let user_agent = format!("challenge-disasterer-e2e/{index}/{}", case.algorithm);
+    let client = build_client(&user_agent)?;
+    let response = client
+        .get(format!("{anubis_base}/"))
+        .send()
+        .context("request paired HashX challenge")?;
+    ensure!(response.status().is_success(), "paired challenge request failed");
+    let html = response.text().context("read paired challenge page")?;
+    let envelope: ChallengeEnvelope = extract_json_script(&html, "anubis_challenge")?;
+    ensure!(
+        envelope.rules.algorithm == "hashx",
+        "paired benchmark got non-HashX challenge"
+    );
+    ensure!(
+        envelope.rules.difficulty == case.difficulty,
+        "paired benchmark difficulty mismatch"
+    );
+
+    let mut variants = vec![("cpu-jit".to_owned(), "anubis-hashx-jit", None)];
+    variants.push(("auto".to_owned(), "anubis-hashx", None));
+    for implementation in implementations {
+        variants.push((
+            implementation.clone(),
+            "anubis-hashx",
+            Some(implementation.as_str()),
+        ));
+    }
+    let variant_count = variants.len();
+    variants.rotate_left(sample % variant_count);
+
+    let mut solves = Vec::with_capacity(variants.len());
+    let mut auto_implementation = None;
+    for (label, solver, requested) in variants {
+        let response = post_hashx_solver(
+            solver_base,
+            solver,
+            requested,
+            &envelope.challenge.random_data,
+            case.difficulty,
+        )?;
+        if label == "auto" {
+            auto_implementation = Some(
+                response
+                    .implementation
+                    .clone()
+                    .context("auto HashX GPU response omitted implementation")?,
+            );
+        } else if let Some(expected) = requested {
+            ensure!(
+                response.implementation.as_deref() == Some(expected),
+                "forced implementation {expected} returned {:?}",
+                response.implementation
+            );
+        }
+        solves.push(PairedSolve {
+            label,
+            solve_ms: response.solve_ms,
+            nonce: response.answer.nonce,
+            hash: response.answer.hash,
+        });
+    }
+
+    let reference = solves
+        .iter()
+        .find(|solve| solve.label == "cpu-jit")
+        .context("paired benchmark missing CPU JIT reference")?;
+    for solved in &solves {
+        ensure!(
+            solved.nonce == reference.nonce && solved.hash == reference.hash,
+            "HashX implementation disagreement at d{} sample {}: {} returned nonce={} hash={}, cpu-jit nonce={} hash={}",
+            case.difficulty,
+            sample,
+            solved.label,
+            solved.nonce,
+            solved.hash,
+            reference.nonce,
+            reference.hash
+        );
+    }
+    Ok((
+        solves,
+        auto_implementation.context("paired benchmark missing auto implementation")?,
+    ))
+}
+
+fn paired_mean(values: &[f64]) -> f64 {
+    let count = u32::try_from(values.len()).expect("paired sample count fits u32");
+    values.iter().sum::<f64>() / f64::from(count)
+}
+
+fn print_paired_hashx_report(
+    difficulty: u32,
+    samples: usize,
+    timings: &std::collections::BTreeMap<String, Vec<f64>>,
+    auto_implementations: &std::collections::BTreeMap<String, usize>,
+    implementations: &[String],
+) -> anyhow::Result<()> {
+    let auto_ms = paired_mean(timings.get("auto").context("missing auto timings")?);
+    let mut best_gpu = None::<(&str, f64)>;
+    for implementation in implementations {
+        let value = paired_mean(
+            timings
+                .get(implementation)
+                .with_context(|| format!("missing timings for {implementation}"))?,
+        );
+        if best_gpu.is_none_or(|(_, best)| value < best) {
+            best_gpu = Some((implementation.as_str(), value));
+        }
+    }
+    let (best_gpu_name, best_gpu_ms) = best_gpu.context("no GPU implementations to benchmark")?;
+    let jit_ms = paired_mean(timings.get("cpu-jit").context("missing cpu-jit timings")?);
+    let slowdown = auto_ms / best_gpu_ms.max(f64::MIN_POSITIVE);
+    let selection_matches_best = auto_implementations.len() == 1
+        && auto_implementations.contains_key(best_gpu_name);
+    let routing = if selection_matches_best || slowdown <= 1.25 {
+        "OK"
+    } else {
+        "SUBOPTIMAL"
+    };
+    let (best_overall, best_overall_ms) = if jit_ms < best_gpu_ms {
+        ("cpu-jit", jit_ms)
+    } else {
+        (best_gpu_name, best_gpu_ms)
+    };
+    println!(
+        "ROUTING status={routing} difficulty={difficulty} n={samples} auto_ms={auto_ms:.3} auto_impls={auto_implementations:?} best_gpu={best_gpu_name} best_gpu_ms={best_gpu_ms:.3} selection_matches_best={selection_matches_best} slowdown={slowdown:.3} cpu_jit_ms={jit_ms:.3} best_overall={best_overall} best_overall_ms={best_overall_ms:.3}"
+    );
+    for (label, values) in timings {
+        println!(
+            "PAIRED_HASHX difficulty={} implementation={} n={} mean_solver_ms={:.3}",
+            difficulty,
+            label,
+            values.len(),
+            paired_mean(values)
+        );
+    }
+    Ok(())
+}
+
+fn paired_hashx_benchmark(
+    index: usize,
+    case: &CaseSpec,
+    anubis_base: &str,
+    solver_base: &str,
+    implementations: &[String],
+    samples: usize,
+) -> anyhow::Result<()> {
+    let mut timings = std::collections::BTreeMap::<String, Vec<f64>>::new();
+    let mut auto_implementations = std::collections::BTreeMap::<String, usize>::new();
+    for sample in 0..samples {
+        let (solves, auto_implementation) = paired_hashx_sample(
+            index,
+            sample,
+            case,
+            anubis_base,
+            solver_base,
+            implementations,
+        )?;
+        *auto_implementations.entry(auto_implementation).or_default() += 1;
+        for solved in solves {
+            timings.entry(solved.label).or_default().push(solved.solve_ms);
+        }
+    }
+    print_paired_hashx_report(
+        case.difficulty,
+        samples,
+        &timings,
+        &auto_implementations,
+        implementations,
+    )
 }
 
 fn expected_hashes(case: &CaseSpec) -> f64 {
@@ -610,7 +898,7 @@ fn print_benchmark(case: &CaseSpec, trials: &[TrialResult]) -> anyhow::Result<()
 }
 
 #[allow(clippy::too_many_lines, reason = "top-level test orchestration is intentionally linear")]
-fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
+fn run(args: Args, adapter_override: Option<&str>) -> anyhow::Result<Option<TempDir>> {
     ensure!(
         args.anubis_bin.is_file(),
         "Anubis binary not found: {}",
@@ -621,6 +909,10 @@ fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
         "solver binary not found: {}",
         args.solver_bin.display()
     );
+    ensure!(
+        args.hashx_routing_difficulties.iter().all(|difficulty| *difficulty > 0),
+        "HashX routing difficulties must be greater than zero"
+    );
 
     if let Some(ref implementation) = args.expect_hashx_gpu_implementation {
         validate_token("implementation", implementation)?;
@@ -629,43 +921,10 @@ fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
             "--expect-hashx-gpu-implementation requires --solver-gpu"
         );
     }
-    let mut cases = args.cases;
-    if args.fuzz {
-        cases.extend(fuzz_matrix(
-            args.solver_gpu,
-            args.expect_hashx_gpu_implementation.as_deref(),
-        )?);
-    }
-    let benchmark_cases = if args.benchmark {
-        benchmark_matrix(
-            args.solver_gpu,
-            args.expect_hashx_gpu_implementation.as_deref(),
-        )?
-    } else {
-        Vec::new()
-    };
-    let browser_cases = if args.benchmark && args.browser_reference {
-        browser_benchmark_matrix()?
-    } else {
-        Vec::new()
-    };
-    cases.extend(benchmark_cases.iter().cloned());
-    cases.extend(browser_cases.iter().cloned());
-    if cases.is_empty() {
-        cases.push("fast:anubis:2".parse()?);
-    }
 
     let temp = tempfile::tempdir().context("create e2e temp directory")?;
-    let policy_path = temp.path().join("anubis.yaml");
-    write_policy(&policy_path, &cases)?;
-
-    let backend = BackendServer::start()?;
     let solver_port = reserve_port()?;
-    let anubis_port = reserve_port()?;
-    let metrics_port = reserve_port()?;
     let solver_base = format!("http://127.0.0.1:{solver_port}");
-    let anubis_base = format!("http://127.0.0.1:{anubis_port}");
-
     let mut solver_command = Command::new(&args.solver_bin);
     solver_command
         .arg("--listen")
@@ -675,13 +934,91 @@ fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
         .arg("--cpu-workers")
         .arg(if args.benchmark { "1" } else { "2" })
         .args(&args.solver_forwarded);
+    if let Some(adapter) = adapter_override {
+        solver_command.env("WGPU_ADAPTER_NAME", adapter);
+    }
     let mut solver = ManagedChild::spawn(
         "challenge-disasterer",
         &mut solver_command,
         temp.path().join("solver.log"),
     )?;
     wait_ready(&format!("{solver_base}/stats"), &mut solver)?;
+    let solver_stats = fetch_solver_stats(&solver_base)?;
+    if let Some(adapter) = adapter_override {
+        let selected = solver_stats
+            .calibration
+            .gpu_adapter
+            .as_deref()
+            .context("solver did not report a selected GPU adapter")?;
+        ensure!(
+            selected.contains(adapter),
+            "requested GPU adapter {adapter:?}, solver selected {selected:?}"
+        );
+        println!("GPU_ADAPTER selected={selected:?}");
+    }
+    let implementations = if args.solver_gpu && args.exercise_all_hashx_implementations {
+        solver_stats.hashx_gpu_implementations
+    } else {
+        Vec::new()
+    };
+    if args.solver_gpu && args.exercise_all_hashx_implementations {
+        ensure!(
+            !implementations.is_empty(),
+            "solver advertised no concrete HashX GPU implementations"
+        );
+        println!("HASHX_IMPLEMENTATIONS available={implementations:?}");
+    }
+    if let Some(expected) = args.expect_hashx_gpu_implementation.as_deref() {
+        ensure!(
+            implementations.is_empty() || implementations.iter().any(|value| value == expected),
+            "required HashX implementation {expected} is not advertised; available: {implementations:?}"
+        );
+    }
 
+    let mut cases = args.cases;
+    if args.fuzz {
+        cases.extend(fuzz_matrix(
+            args.solver_gpu,
+            args.expect_hashx_gpu_implementation.as_deref(),
+        )?);
+    }
+    if !implementations.is_empty() {
+        cases.extend(implementation_fuzz_matrix(&implementations)?);
+        if !args.fuzz {
+            cases.push("hashx:anubis-hashx:16".parse()?);
+        }
+    }
+    let benchmark_cases = if args.benchmark {
+        benchmark_matrix(
+            args.solver_gpu,
+            args.expect_hashx_gpu_implementation.as_deref(),
+        )?
+    } else {
+        Vec::new()
+    };
+    let routing_cases = if args.benchmark && !implementations.is_empty() {
+        routing_matrix(&args.hashx_routing_difficulties)?
+    } else {
+        Vec::new()
+    };
+    let browser_cases = if args.benchmark && args.browser_reference {
+        browser_benchmark_matrix()?
+    } else {
+        Vec::new()
+    };
+    cases.extend(benchmark_cases.iter().cloned());
+    cases.extend(routing_cases.iter().cloned());
+    cases.extend(browser_cases.iter().cloned());
+    if cases.is_empty() {
+        cases.push("fast:anubis:2".parse()?);
+    }
+
+    let policy_path = temp.path().join("anubis.yaml");
+    write_policy(&policy_path, &cases)?;
+    let backend = BackendServer::start()?;
+    let anubis_port = reserve_port()?;
+    let metrics_port = reserve_port()?;
+    let anubis_base = format!("http://127.0.0.1:{anubis_port}");
     let mut anubis_command = Command::new(&args.anubis_bin);
     anubis_command
         .arg(format!("--bind=127.0.0.1:{anubis_port}"))
@@ -704,11 +1041,15 @@ fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
     )?;
     wait_ready(&format!("{anubis_base}/"), &mut anubis)?;
 
-    let benchmark_start = cases
-        .len()
-        .saturating_sub(benchmark_cases.len() + browser_cases.len());
+    let correctness_count = cases.len().saturating_sub(
+        benchmark_cases.len() + routing_cases.len() + browser_cases.len(),
+    );
+    let benchmark_start = correctness_count;
+    let routing_start = benchmark_start + benchmark_cases.len();
+    let browser_start = routing_start + routing_cases.len();
+
     let mut fuzz_trials = 0_usize;
-    for (index, case) in cases[..benchmark_start].iter().enumerate() {
+    for (index, case) in cases[..correctness_count].iter().enumerate() {
         let repeats = if args.fuzz { args.fuzz_repeats } else { 1 };
         for _ in 0..repeats {
             if let Err(error) = solve_case(
@@ -747,8 +1088,18 @@ fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
         print_benchmark(case, &trials)?;
     }
 
+    for (offset, case) in routing_cases.iter().enumerate() {
+        paired_hashx_benchmark(
+            routing_start + offset,
+            case,
+            &anubis_base,
+            &solver_base,
+            &implementations,
+            args.benchmark_samples,
+        )?;
+    }
+
     if !browser_cases.is_empty() {
-        let browser_base = benchmark_start + benchmark_cases.len();
         let specs = browser_cases
             .iter()
             .enumerate()
@@ -759,7 +1110,7 @@ fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
                     args.benchmark_samples
                 };
                 json!({
-                    "index": browser_base + offset,
+                    "index": browser_start + offset,
                     "algorithm": case.algorithm,
                     "difficulty": case.difficulty,
                     "samples": samples,
@@ -797,7 +1148,23 @@ fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let _temp = run(args).map_err(|error| anyhow!("{error:#}"))?;
+    if args.solver_gpu && args.exercise_all_gpu_adapters {
+        let adapters = discover_gpu_adapters(&args.solver_bin)?;
+        ensure!(!adapters.is_empty(), "no usable Vulkan GPU adapters discovered");
+        println!("GPU_ADAPTERS discovered={adapters:?}");
+        let mut temps = Vec::with_capacity(adapters.len());
+        for (index, adapter) in adapters.iter().enumerate() {
+            println!("GPU_ADAPTER_RUN index={index} adapter={adapter:?}");
+            let mut per_adapter = args.clone();
+            if index != 0 {
+                per_adapter.browser_reference = false;
+            }
+            temps.push(run(per_adapter, Some(adapter))?);
+        }
+        drop(temps);
+    } else {
+        let _temp = run(args, None).map_err(|error| anyhow!("{error:#}"))?;
+    }
     Ok(())
 }
 
@@ -812,6 +1179,7 @@ mod tests {
         assert_eq!(case.solver, "anubis-hashx");
         assert_eq!(case.difficulty, 16);
         assert_eq!(case.implementation, None);
+        assert_eq!(case.force_implementation, None);
 
         let concrete: CaseSpec = "hashx:anubis-hashx:18:cuda-sm75-sass"
             .parse()
@@ -827,6 +1195,18 @@ mod tests {
         let bench = benchmark_matrix(true, Some(expected))?;
         assert!(fuzz.iter().filter(|case| case.solver == "anubis-hashx").all(|case| case.implementation.as_deref() == Some(expected)));
         assert!(bench.iter().filter(|case| case.solver == "anubis-hashx").all(|case| case.implementation.as_deref() == Some(expected)));
+        Ok(())
+    }
+
+    #[test]
+    fn implementation_matrix_forces_and_asserts_each_backend() -> anyhow::Result<()> {
+        let implementations = vec![
+            "vulkan-extmul-persistent".to_owned(),
+            "wgsl-specialized".to_owned(),
+        ];
+        let matrix = implementation_fuzz_matrix(&implementations)?;
+        assert_eq!(matrix.len(), 8);
+        assert!(matrix.iter().all(|case| case.force_implementation == case.implementation));
         Ok(())
     }
 

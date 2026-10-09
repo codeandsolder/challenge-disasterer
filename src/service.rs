@@ -47,6 +47,7 @@ struct GpuJob {
 #[cfg(feature = "gpu")]
 struct HashxGpuJob {
     challenge: hashx::Challenge,
+    implementation: Option<String>,
     result: oneshot::Sender<anyhow::Result<HashxGpuResult>>,
 }
 
@@ -59,6 +60,7 @@ pub struct AppState {
     hashx_gpu_tx: Option<mpsc::Sender<HashxGpuJob>>,
     gpu_operational: bool,
     hashx_gpu_operational: bool,
+    hashx_gpu_implementations: Vec<&'static str>,
     gpu_queue_work: Arc<AtomicU64>,
     gpu_queue_depth: Arc<AtomicU64>,
     gpu_active_work: Arc<AtomicU64>,
@@ -69,6 +71,8 @@ pub struct AppState {
 #[derive(Debug, Deserialize)]
 pub struct SolveRequest {
     pub solver: String,
+    #[serde(default)]
+    pub implementation: Option<String>,
     pub challenge: Value,
 }
 
@@ -165,30 +169,35 @@ impl AppState {
         };
 
         #[cfg(feature = "gpu")]
-        let (hashx_gpu_tx, hashx_gpu_operational) = if config.gpu_enabled {
+        let (hashx_gpu_tx, hashx_gpu_operational, hashx_gpu_implementations) = if config.gpu_enabled
+        {
             match HashxGpuSolver::create().await {
                 Ok(mut gpu) => {
-                    info!(adapter = %gpu.adapter(), "HashX GPU backend ready");
+                    let implementations = gpu.implementations();
+                    info!(adapter = %gpu.adapter(), ?implementations, "HashX GPU backend ready");
                     let (tx, mut rx) = mpsc::channel::<HashxGpuJob>(128);
                     tokio::spawn(async move {
                         while let Some(job) = rx.recv().await {
-                            let result = gpu.solve(&job.challenge);
+                            let result = gpu.solve_with_implementation(
+                                &job.challenge,
+                                job.implementation.as_deref(),
+                            );
                             let _ = job.result.send(result);
                         }
                     });
-                    (Some(tx), true)
+                    (Some(tx), true, implementations)
                 }
                 Err(err) => {
                     warn!(%err, "HashX GPU unavailable");
-                    (None, false)
+                    (None, false, Vec::new())
                 }
             }
         } else {
-            (None, false)
+            (None, false, Vec::new())
         };
 
         #[cfg(not(feature = "gpu"))]
-        let hashx_gpu_operational = false;
+        let (hashx_gpu_operational, hashx_gpu_implementations) = (false, Vec::new());
 
         Ok(Self {
             config: config.clone(),
@@ -203,6 +212,7 @@ impl AppState {
             hashx_gpu_tx,
             gpu_operational,
             hashx_gpu_operational,
+            hashx_gpu_implementations,
             gpu_queue_work: queue_work,
             gpu_queue_depth: queue_depth,
             gpu_active_work: active_work,
@@ -321,6 +331,7 @@ impl AppState {
     async fn run_hashx_gpu(
         &self,
         challenge: hashx::Challenge,
+        implementation: Option<String>,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
         challenge.validate()?;
@@ -331,6 +342,7 @@ impl AppState {
         let (result_tx, result_rx) = oneshot::channel();
         tx.send(HashxGpuJob {
             challenge,
+            implementation,
             result: result_tx,
         })
         .await
@@ -415,6 +427,15 @@ pub async fn solve(
     let queued_at = Instant::now();
     let (difficulty, result) = match request.solver.as_str() {
         "anubis" | "anubis-cpu" | "anubis-gpu" => {
+            if request.implementation.is_some() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "implementation override is only supported for anubis-hashx"
+                            .to_owned(),
+                    }),
+                ));
+            }
             let challenge: Challenge =
                 serde_json::from_value(request.challenge).map_err(|err| {
                     (
@@ -463,11 +484,19 @@ pub async fn solve(
                 })?;
             let difficulty = u8::try_from(challenge.difficulty).unwrap_or(u8::MAX);
             let result = if request.solver == "anubis-hashx-jit" {
-                state.run_hashx_jit(challenge, queued_at).await
+                if request.implementation.is_some() {
+                    Err(anyhow::anyhow!(
+                        "implementation override is not supported for anubis-hashx-jit"
+                    ))
+                } else {
+                    state.run_hashx_jit(challenge, queued_at).await
+                }
             } else {
                 #[cfg(feature = "gpu")]
                 {
-                    state.run_hashx_gpu(challenge, queued_at).await
+                    state
+                        .run_hashx_gpu(challenge, request.implementation.clone(), queued_at)
+                        .await
                 }
                 #[cfg(not(feature = "gpu"))]
                 {
@@ -524,6 +553,7 @@ pub struct StatsResponse {
     gpu_active_expected_work: u64,
     cpu_workers_available: usize,
     expected_new_solve_ms_by_difficulty: BTreeMap<u8, f64>,
+    hashx_gpu_implementations: Vec<&'static str>,
     general: crate::stats::GeneralStats,
 }
 
@@ -573,6 +603,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         gpu_active_expected_work: active_work,
         cpu_workers_available: state.cpu_slots.available_permits(),
         expected_new_solve_ms_by_difficulty: expected,
+        hashx_gpu_implementations: state.hashx_gpu_implementations.clone(),
         general,
     })
 }
