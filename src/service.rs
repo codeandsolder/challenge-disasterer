@@ -18,7 +18,7 @@ use tracing::{info, warn};
 
 use crate::{
     anubis::{self, Challenge},
-    hashx, hashx_cpu_jit,
+    classic_pow, hashx, hashx_cpu_jit,
     stats::{Calibration, StatsStore},
 };
 #[cfg(feature = "gpu")]
@@ -74,11 +74,11 @@ pub struct SolveRequest {
 
 #[derive(Debug, Serialize)]
 pub struct SolveResponse {
-    solver: &'static str,
+    solver: String,
     backend: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     implementation: Option<&'static str>,
-    answer: anubis::Answer,
+    answer: Value,
     queue_ms: f64,
     solve_ms: f64,
     total_ms: f64,
@@ -225,10 +225,10 @@ impl AppState {
         })
         .await??;
         Ok(SolveResponse {
-            solver: "anubis",
+            solver: "anubis".to_owned(),
             backend: "cpu",
             implementation: None,
-            answer: result.answer,
+            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -280,10 +280,10 @@ impl AppState {
             .await
             .map_err(|_| anyhow::anyhow!("SHA GPU worker dropped result"))??;
         Ok(SolveResponse {
-            solver: "anubis-gpu",
+            solver: "anubis-gpu".to_owned(),
             backend: "gpu",
             implementation: None,
-            answer: result.answer,
+            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -307,10 +307,10 @@ impl AppState {
         })
         .await??;
         Ok(SolveResponse {
-            solver: "anubis-hashx-jit",
+            solver: "anubis-hashx-jit".to_owned(),
             backend: "cpu-jit",
             implementation: None,
-            answer: result.answer,
+            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -339,11 +339,37 @@ impl AppState {
             .await
             .map_err(|_| anyhow::anyhow!("HashX GPU worker dropped result"))??;
         Ok(SolveResponse {
-            solver: "anubis-hashx",
+            solver: "anubis-hashx".to_owned(),
             backend: "gpu",
             implementation: Some(result.implementation),
-            answer: result.answer,
+            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
             queue_ms: 0.0,
+            solve_ms: result.solve_ms,
+            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    async fn run_classic(
+        &self,
+        solver: String,
+        challenge: Value,
+        queued_at: Instant,
+    ) -> anyhow::Result<SolveResponse> {
+        let permit = self.cpu_slots.clone().acquire_owned().await?;
+        let started = Instant::now();
+        let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
+        let response_solver = solver.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            classic_pow::solve(&solver, challenge)
+        })
+        .await??;
+        Ok(SolveResponse {
+            solver: response_solver,
+            backend: "cpu",
+            implementation: None,
+            answer: result.answer,
+            queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
         })
@@ -389,10 +415,11 @@ impl AppState {
                 .map_err(|_| anyhow::anyhow!("GPU worker dropped result"))?
             {
                 Ok(result) => Ok(SolveResponse {
-                    solver: "anubis",
+                    solver: "anubis".to_owned(),
                     backend: "gpu",
                     implementation: None,
-                    answer: result.answer,
+                    answer: serde_json::to_value(result.answer)
+                        .context("serialize solver answer")?,
                     queue_ms,
                     solve_ms: result.solve_ms,
                     total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -476,6 +503,12 @@ pub async fn solve(
             };
             (difficulty, result)
         }
+        "cerberus" | "goaway" | "capjs" | "mcaptcha" | "altcha" => {
+            let result = state
+                .run_classic(request.solver.clone(), request.challenge, queued_at)
+                .await;
+            (0, result)
+        }
         other => {
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -488,18 +521,13 @@ pub async fn solve(
 
     match result {
         Ok(mut response) => {
-            response.solver = match request.solver.as_str() {
-                "anubis-cpu" => "anubis-cpu",
-                "anubis-gpu" => "anubis-gpu",
-                "anubis-hashx" => "anubis-hashx",
-                "anubis-hashx-jit" => "anubis-hashx-jit",
-                _ => "anubis",
-            };
-            state
-                .stats
-                .write()
-                .await
-                .record(difficulty, response.backend, response.total_ms);
+            response.solver = request.solver.clone();
+            let mut stats = state.stats.write().await;
+            if request.solver.starts_with("anubis") {
+                stats.record(difficulty, response.backend, response.total_ms);
+            } else {
+                stats.record_generic(response.backend);
+            }
             Ok(Json(response))
         }
         Err(err) => {
@@ -516,7 +544,7 @@ pub async fn solve(
 
 #[derive(Serialize)]
 pub struct StatsResponse {
-    available_solvers: [&'static str; 5],
+    available_solvers: [&'static str; 10],
     calibration: Calibration,
     config: StatsConfig,
     gpu_queue_depth: u64,
@@ -559,6 +587,11 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             "anubis-gpu",
             "anubis-hashx",
             "anubis-hashx-jit",
+            "cerberus",
+            "goaway",
+            "capjs",
+            "mcaptcha",
+            "altcha",
         ],
         calibration: state.calibration.clone(),
         config: StatsConfig {
