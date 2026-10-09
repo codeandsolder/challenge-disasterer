@@ -2,7 +2,7 @@
 
 A small local service for routing proof-of-work / anti-bot challenge solvers to an available backend.
 
-Current solvers: **Anubis SHA-256 PoW** (CPU/SHA-NI and GPU) and **Anubis HashX PoW** (upstream native JIT on CPU plus GPU when the `gpu` feature is enabled). The API remains solver-generic so more challenge families can be added without changing callers.
+Current solvers: **Anubis SHA-256**, **Anubis HashX**, **Cerberus**, **go-away js-pow-sha256**, **Cap.js**, **mCaptcha**, and **ALTCHA v2** (SHA-256 and PBKDF2/SHA-256). Anubis SHA/HashX keep their existing CPU/GPU backends; the additional protocol adapters currently use the shared bounded CPU pool. `/solve` returns protocol-native answer JSON so callers do not need a second conversion layer.
 
 ## API
 
@@ -61,6 +61,19 @@ cargo run --release --no-default-features -- --listen 127.0.0.1:17417
 ```
 
 The repository currently pins `nightly-2026-10-08`; Anubis assets are built with Rust 1.99 in the live-compatibility workflow.
+
+## Authoritative protocol compatibility tests
+
+Protocol compatibility is tested against the implementation that actually issues or verifies each proof rather than against a duplicate verifier in this repository:
+
+- **Anubis:** `ci/live-anubis-e2e.sh` starts the current upstream Anubis server, obtains a live challenge, submits the disasterer proof to Anubis, and requires the resulting authorization cookie to reach a protected upstream.
+- **Cerberus:** `ci/live-cerberus-e2e.sh` builds the current official Cerberus Caddy plugin, obtains a real challenge page, submits the proof to its real `/answer` endpoint, and requires its approval cookie to pass the protected route.
+- **go-away:** `ci/live-goaway-e2e.sh` runs the current upstream `js-pow-sha256` WASM runtime and uses its own `MakeChallenge` and `VerifyChallenge` ABI.
+- **Cap.js:** `ci/live-capjs-e2e.sh` uses current `capjs-core` `generateChallenge` and `validateChallenge`.
+- **ALTCHA v2:** `ci/live-altcha-e2e.sh` uses current `altcha-lib` `createChallenge` and `verifySolution` for both supported algorithms.
+- **mCaptcha:** `ci/live-mcaptcha-e2e.sh` validates the native work response with the `mcaptcha_pow_sha256` crate used by mCaptcha itself.
+
+Every non-Anubis harness also submits a deliberately corrupted proof and requires the authoritative verifier to reject it. `.github/workflows/live-protocols.yml` runs these gates independently so one expensive upstream build does not serialize the rest of the matrix.
 
 ## Live Anubis compatibility test
 

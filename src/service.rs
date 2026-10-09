@@ -19,7 +19,7 @@ use tracing::{info, warn};
 
 use crate::{
     anubis::{self, Challenge},
-    hashx, hashx_cpu_jit,
+    classic_pow, hashx, hashx_cpu_jit,
     routing::{RouteEntry, RoutingCalibration},
     stats::{Calibration, StatsStore},
 };
@@ -95,7 +95,7 @@ pub struct SolveResponse {
     backend: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     implementation: Option<String>,
-    answer: anubis::Answer,
+    answer: Value,
     queue_ms: f64,
     solve_ms: f64,
     total_ms: f64,
@@ -111,7 +111,7 @@ struct ExternalSolveResponse {
     backend: String,
     #[serde(default)]
     implementation: Option<String>,
-    answer: anubis::Answer,
+    answer: Value,
     solve_ms: f64,
 }
 
@@ -271,7 +271,7 @@ impl AppState {
             solver: "anubis".to_owned(),
             backend: "cpu".to_owned(),
             implementation: None,
-            answer: result.answer,
+            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -326,7 +326,7 @@ impl AppState {
             solver: "anubis-gpu".to_owned(),
             backend: "gpu".to_owned(),
             implementation: None,
-            answer: result.answer,
+            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -353,7 +353,7 @@ impl AppState {
             solver: "anubis-hashx-jit".to_owned(),
             backend: "cpu-jit".to_owned(),
             implementation: None,
-            answer: result.answer,
+            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -387,8 +387,34 @@ impl AppState {
             solver: "anubis-hashx".to_owned(),
             backend: "gpu".to_owned(),
             implementation: Some(result.implementation.to_owned()),
-            answer: result.answer,
+            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
             queue_ms: 0.0,
+            solve_ms: result.solve_ms,
+            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    async fn run_classic(
+        &self,
+        solver: String,
+        challenge: Value,
+        queued_at: Instant,
+    ) -> anyhow::Result<SolveResponse> {
+        let permit = self.cpu_slots.clone().acquire_owned().await?;
+        let started = Instant::now();
+        let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
+        let response_solver = solver.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            classic_pow::solve(&solver, challenge)
+        })
+        .await??;
+        Ok(SolveResponse {
+            solver: response_solver,
+            backend: "cpu".to_owned(),
+            implementation: None,
+            answer: result.answer,
+            queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
         })
@@ -527,15 +553,21 @@ impl AppState {
                     )
                     .await
                 {
-                    Ok(response) => match hashx::verify(&challenge, &response.answer) {
-                        Ok(true) => return Ok(response),
-                        Ok(false) => {
-                            warn!(provider = %route.provider, "external HashX solver returned invalid answer; trying next calibrated candidate")
+                    Ok(response) => {
+                        let verified =
+                            serde_json::from_value::<anubis::Answer>(response.answer.clone())
+                                .context("decode external HashX answer")
+                                .and_then(|answer| hashx::verify(&challenge, &answer));
+                        match verified {
+                            Ok(true) => return Ok(response),
+                            Ok(false) => {
+                                warn!(provider = %route.provider, "external HashX solver returned invalid answer; trying next calibrated candidate")
+                            }
+                            Err(err) => {
+                                warn!(provider = %route.provider, %err, "external HashX answer validation failed; trying next calibrated candidate")
+                            }
                         }
-                        Err(err) => {
-                            warn!(provider = %route.provider, %err, "external HashX answer validation failed; trying next calibrated candidate")
-                        }
-                    },
+                    }
                     Err(err) => {
                         warn!(provider = %route.provider, %err, "external HashX solver failed; trying next calibrated candidate")
                     }
@@ -599,11 +631,15 @@ impl AppState {
                     )
                     .await
                 {
-                    Ok(response) if anubis::verify(&challenge, &response.answer) => {
-                        return Ok(response);
-                    }
-                    Ok(_) => {
-                        warn!(provider = %route.provider, "external Anubis solver returned invalid answer; trying next calibrated candidate")
+                    Ok(response) => {
+                        let verified =
+                            serde_json::from_value::<anubis::Answer>(response.answer.clone())
+                                .map(|answer| anubis::verify(&challenge, &answer))
+                                .unwrap_or(false);
+                        if verified {
+                            return Ok(response);
+                        }
+                        warn!(provider = %route.provider, "external Anubis solver returned invalid answer; trying next calibrated candidate");
                     }
                     Err(err) => {
                         warn!(provider = %route.provider, %err, "external Anubis solver failed; trying next calibrated candidate")
@@ -651,7 +687,8 @@ impl AppState {
                     solver: "anubis".to_owned(),
                     backend: "gpu".to_owned(),
                     implementation: None,
-                    answer: result.answer,
+                    answer: serde_json::to_value(result.answer)
+                        .context("serialize solver answer")?,
                     queue_ms,
                     solve_ms: result.solve_ms,
                     total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -799,6 +836,20 @@ pub async fn solve(
             };
             (difficulty, result)
         }
+        "cerberus" | "goaway" | "capjs" | "mcaptcha" | "altcha" => {
+            if request.algorithm.is_some() || request.implementation.is_some() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "algorithm/implementation overrides are not used by this protocol solver".to_owned(),
+                    }),
+                ));
+            }
+            let result = state
+                .run_classic(request.solver.clone(), request.challenge, queued_at)
+                .await;
+            (0, result)
+        }
         other => {
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -811,20 +862,13 @@ pub async fn solve(
 
     match result {
         Ok(mut response) => {
-            response.solver = match request.solver.as_str() {
-                "anubis-cpu" => "anubis-cpu",
-                "anubis-gpu" => "anubis-gpu",
-                "anubis-hashx" => "anubis-hashx",
-                "anubis-hashx-jit" => "anubis-hashx-jit",
-                "anubis-hashx-auto" => "anubis-hashx-auto",
-                _ => "anubis",
+            response.solver = request.solver.clone();
+            let mut stats = state.stats.write().await;
+            if request.solver.starts_with("anubis") {
+                stats.record(difficulty, &response.backend, response.total_ms);
+            } else {
+                stats.record_generic(&response.backend);
             }
-            .to_owned();
-            state
-                .stats
-                .write()
-                .await
-                .record(difficulty, &response.backend, response.total_ms);
             Ok(Json(response))
         }
         Err(err) => {
@@ -930,6 +974,23 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             implementations: Vec::new(),
         },
     ];
+    for (solver, algorithms, difficulty_max) in [
+        ("cerberus", &["blake3"] as &'static [&'static str], 64),
+        ("goaway", &["sha256"], 32),
+        ("capjs", &["sha256"], 64),
+        ("mcaptcha", &["sha256"], 64),
+        ("altcha", &["sha256", "pbkdf2-sha256"], 64),
+    ] {
+        available_solvers.push(solver);
+        solver_capabilities.push(SolverCapability {
+            solver,
+            algorithms,
+            difficulty_min: 1,
+            difficulty_max,
+            router: false,
+            implementations: Vec::new(),
+        });
+    }
     if state.gpu_operational {
         available_solvers.push("anubis-gpu");
         solver_capabilities.push(SolverCapability {

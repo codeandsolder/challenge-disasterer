@@ -39,12 +39,7 @@ impl Default for StatsStore {
 
 impl StatsStore {
     pub fn record(&mut self, difficulty: u8, backend: &str, ms: f64) {
-        self.solves_total += 1;
-        match backend {
-            "gpu" => self.solves_gpu += 1,
-            "cpu" => self.solves_cpu += 1,
-            _ => {}
-        }
+        self.record_generic(backend);
         let samples = self.samples.entry(difficulty).or_default();
         if samples.len() == HISTORY {
             samples.pop_front();
@@ -52,6 +47,14 @@ impl StatsStore {
         samples.push_back(ms);
     }
 
+    pub fn record_generic(&mut self, backend: &str) {
+        self.solves_total += 1;
+        match backend {
+            "gpu" => self.solves_gpu += 1,
+            "cpu" => self.solves_cpu += 1,
+            _ => {}
+        }
+    }
     pub fn record_failure(&mut self) {
         self.failures += 1;
     }

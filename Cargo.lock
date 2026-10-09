@@ -1395,13 +1395,16 @@ dependencies = [
 [[package]]
 name = "pow-buster"
 version = "0.2.0"
-source = "git+https://github.com/codeandsolder/pow-buster-imp?rev=20bd176437b22b5a92ec2c5d5a137910c81000b2#20bd176437b22b5a92ec2c5d5a137910c81000b2"
+source = "git+https://github.com/codeandsolder/pow-buster-imp?rev=fa7ff0b29f6737a75fba49766a81951caae92d62#fa7ff0b29f6737a75fba49766a81951caae92d62"
 dependencies = [
  "blake3",
  "cfg-if",
  "cpufeatures 0.3.1",
  "generic-array",
  "pbkdf2",
+ "semver",
+ "serde",
+ "serde_json",
  "sha2",
  "wasm-bindgen",
 ]
@@ -1718,6 +1721,16 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "serde"
@@ -2704,18 +2717,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.60"
+version = "0.8.62"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6400fc4bb7426f6faac3fb07566122bb18622e3022bd2c36426a92ed489b1dbe"
+checksum = "86502bf56ac7c77571a32e2647bb2a15894565e981fb2a48d7bde2d91c965a9d"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.60"
+version = "0.8.62"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99c27cc7525bad4df59a45e073c45b2c2aa820efb588234cc23a547ec69a34db"
+checksum = "5457206954b06561e2608c7e19cf58b1926586d999c246eebe4502f7e2039d1a"
 dependencies = [
  "proc-macro2",
  "quote",

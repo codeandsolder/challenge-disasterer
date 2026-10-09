@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 mod anubis;
+mod classic_pow;
 #[cfg(feature = "gpu")]
 mod gpu;
 mod hashx;

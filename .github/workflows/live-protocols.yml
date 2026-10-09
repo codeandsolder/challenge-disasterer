@@ -1,0 +1,77 @@
+name: Live protocol compatibility
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  altcha:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Set up Rust
+        run: rustup toolchain install nightly-2026-10-08 --profile minimal
+      - name: Verify against current ALTCHA
+        run: ./ci/live-altcha-e2e.sh
+
+  capjs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Set up Rust
+        run: rustup toolchain install nightly-2026-10-08 --profile minimal
+      - name: Verify against current Cap.js
+        run: ./ci/live-capjs-e2e.sh
+
+  cerberus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+      - name: Set up Rust
+        run: rustup toolchain install nightly-2026-10-08 --profile minimal
+      - name: Verify against current Cerberus
+        run: ./ci/live-cerberus-e2e.sh
+
+  goaway:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+      - name: Set up Rust
+        run: rustup toolchain install nightly-2026-10-08 --profile minimal
+      - name: Verify against current go-away
+        run: ./ci/live-goaway-e2e.sh
+
+  mcaptcha:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Rust
+        run: rustup toolchain install nightly-2026-10-08 --profile minimal
+      - name: Verify against mCaptcha verifier
+        run: ./ci/live-mcaptcha-e2e.sh
