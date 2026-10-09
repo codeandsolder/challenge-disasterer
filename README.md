@@ -135,7 +135,9 @@ Anubis HEAD client code** rather than a reimplementation: `fast` uses the shippe
 WebCrypto/JS worker, while `hashx`, `sha256`, and `argon2id` use the shipped WASM
 workers. Those browser proofs must also be accepted by the same live server.
 
-The HashX GPU integration uses the persistent fixed-block passthrough SPIR-V kernel with extended 64-bit multiplies through difficulty 20, avoiding per-challenge shader compilation on the latency-sensitive range. Higher difficulties currently retain the challenge-specialized fallback. The benchmark includes all backend setup in `mean_solver_ms`, so future native GFX9 specialization can be compared without changing the correctness or reporting contract.
+The HashX GPU backend specializes by adapter. On NVIDIA SM75/Turing it emits the bounded 512-op HashX program directly as SASS into an embedded fixed-layout cubin shell and loads it with the CUDA Driver API. Code generation is tens of microseconds and the driver module path is warmed during backend initialization, so measured fresh-challenge latency beats the persistent Vulkan interpreter even at difficulty 1; the Vulkan u32 interpreter remains the zero-compiler fallback if CUDA/SASS initialization fails. The CUDA dependency is dynamically loaded and does **not** require a CUDA toolkit at build time. Other NVIDIA architectures retain the portable Vulkan paths. AMD/RADV continues to use the persistent passthrough SPIR-V kernel with extended 64-bit multiplies through difficulty 20, with challenge-specialized WGSL above that range.
+
+The SM75 emitter is deliberately narrow rather than a general assembler: typed Rust encoders cover only the instruction forms HashX needs, then patch a 128 KiB `.text.kern` section in a prebuilt cubin shell. The shell contains dead padding after the real `EXIT`; an 8,192-program generation fuzz reached 4,068 used instruction words versus 8,192 available. Turing instruction-encoding details are derived from the MIT-licensed TuringAs project; see `THIRD_PARTY_NOTICES.md`.
 
 ### HashX CPU backend
 

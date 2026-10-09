@@ -7,6 +7,10 @@ mod hashx;
 mod hashx_cpu_jit;
 #[cfg(feature = "gpu")]
 mod hashx_gpu;
+#[cfg(feature = "gpu")]
+mod hashx_sm75;
+#[cfg(feature = "gpu")]
+mod hashx_sm75_cuda;
 mod service;
 mod stats;
 

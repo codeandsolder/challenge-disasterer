@@ -6,6 +6,7 @@ use hashx08::HashX;
 use crate::{
     anubis::{Answer, BackendResult},
     hashx::{Challenge, Instr, describe, valid_prefix},
+    hashx_sm75_cuda::Sm75Cuda,
 };
 
 const AMD_WG_SIZE: u32 = 64;
@@ -15,6 +16,7 @@ const SPECIALIZED_BATCH: u32 = 262_144;
 const PERSISTENT_MAX_BATCH: u32 = 262_144;
 const PERSISTENT_CROSSOVER_DIFFICULTY: u32 = 20;
 const PROGRAM_BYTES: u64 = 512 * 16;
+const SM75_SASS_MIN_DIFFICULTY: u32 = 1;
 
 pub struct GpuSolver {
     device: wgpu::Device,
@@ -27,6 +29,7 @@ pub struct GpuSolver {
     persistent_pipeline: Option<wgpu::ComputePipeline>,
     persistent_bind_group: Option<wgpu::BindGroup>,
     persistent_wg_size: u32,
+    sm75_cuda: Option<Sm75Cuda>,
 }
 
 impl GpuSolver {
@@ -49,6 +52,22 @@ impl GpuSolver {
         };
         let info = adapter.get_info();
         let is_nvidia = info.vendor == 0x10de;
+        let sm75_cuda = if is_nvidia {
+            match Sm75Cuda::create_for_wgpu_adapter(&info.name) {
+                Ok(cuda) => {
+                    if let Some(ref backend) = cuda {
+                        tracing::info!(adapter = %backend.adapter(), "direct sm_75 SASS HashX backend ready");
+                    }
+                    cuda
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "direct sm_75 SASS HashX backend unavailable; using Vulkan fallback");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let persistent_wg_size = if is_nvidia {
             NVIDIA_WG_SIZE
         } else {
@@ -151,6 +170,7 @@ impl GpuSolver {
             persistent_pipeline,
             persistent_bind_group,
             persistent_wg_size,
+            sm75_cuda,
         })
     }
 
@@ -163,6 +183,23 @@ impl GpuSolver {
         let started = Instant::now();
         let seed = hex::decode(&challenge.data).context("decode HashX challenge")?;
         let (hashx, key, program) = describe(&seed)?;
+
+        if challenge.difficulty >= SM75_SASS_MIN_DIFFICULTY {
+            let direct_result = self
+                .sm75_cuda
+                .as_mut()
+                .map(|backend| backend.solve(&key, &program, challenge.difficulty));
+            match direct_result {
+                None => {}
+                Some(Ok(nonce)) => {
+                    return validated_result(&hashx, nonce, challenge.difficulty, started);
+                }
+                Some(Err(error)) => {
+                    tracing::warn!(%error, "direct sm_75 SASS HashX solve failed; disabling backend and falling back to Vulkan");
+                    self.sm75_cuda = None;
+                }
+            }
+        }
 
         if challenge.difficulty <= PERSISTENT_CROSSOVER_DIFFICULTY
             && self.persistent_pipeline.is_some()
