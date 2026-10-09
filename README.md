@@ -10,6 +10,8 @@ Current solvers: **Anubis SHA-256 PoW** (CPU/SHA-NI and GPU) and **Anubis HashX 
 POST /solve
 {
   "solver": "anubis",
+  "algorithm": "fast",
+  "batch_size_hint": 1,
   "challenge": {
     "data": "<Anubis randomData>",
     "difficulty": 6
@@ -30,14 +32,17 @@ Response:
 }
 ```
 
-`GET /stats` returns available solvers, startup calibration, queued/active GPU work, CPU capacity, calibrated expected time-to-solution for a new request at every Anubis difficulty, rolling median solve time by difficulty, and aggregate counters. It is intended to be cached periodically by a task router rather than queried for every task.
+`GET /stats` returns available solvers plus machine-readable `solver_capabilities` (algorithms, difficulty domain, whether an endpoint is itself a router, and concrete implementations), startup calibration, queued/active GPU work, CPU capacity, rolling timing data, and aggregate counters. This capability description is also the discovery contract used by the routing calibrator and by optional external solver services.
+
+`batch_size_hint` defaults to 1 and tells calibrated routes how much concurrent work the caller is about to submit. Explicit solver names continue to force their family. `anubis` is the automatic fast/slow SHA route; `anubis-hashx` remains the explicit HashX GPU family; `anubis-hashx-jit` forces the upstream CPU JIT; and `anubis-hashx-auto` is the calibrated CPU/GPU/external HashX route.
 
 ## Backend policy
 
 - The `gpu` Cargo feature is enabled by default. Build with `--no-default-features` for a CPU-only binary.
 - A normal build attempts one persistent native `wgpu` device/pipeline at startup. `--gpu=false` disables it at runtime.
-- When the GPU is enabled, operational, and the challenge shape is GPU-compatible, requests stay on the GPU even if they queue. There is deliberately no CPU spillover scheduler.
-- CPU is used only when GPU support is disabled/not compiled, GPU initialization fails, the challenge shape is not GPU-compatible, or an actual GPU solve fails.
+- Without a routing-calibration file, the historical SHA policy remains: a compatible operational GPU is preferred and CPU is the fallback. HashX auto similarly prefers its GPU family when available and otherwise uses the upstream CPU JIT.
+- With `--routing-calibration <report.json>`, the automatic `anubis` and `anubis-hashx-auto` endpoints choose the fastest compatible **concrete** calibrated route for the requested algorithm, difficulty, and nearest calibrated batch size. Local GPU rows are usable only on the adapter they were measured on; CPU and configured external providers remain eligible.
+- Explicit endpoints (`anubis-cpu`, `anubis-gpu`, `anubis-hashx`, `anubis-hashx-jit`) retain force semantics and bypass the cross-family calibrated router.
 - CPU concurrency is bounded by `--cpu-workers`.
 - Both available backends are calibrated at startup. `/stats` bases the new-request ETA on the active backend; GPU ETA includes expected work already queued or executing.
 
@@ -116,6 +121,68 @@ target. The GitHub workflow installs these explicitly; the local shell wrapper
 fails early with a clear message when the external compressors or Node version
 are missing.
 
+
+### Routing calibration
+
+The same live-Anubis harness can produce the routing table consumed by the
+service. Calibration discovers every solver/capability advertised by `/stats`,
+expands every supported difficulty whose geometric expected work is below the
+configured ceiling, and separately force-tests every concrete implementation.
+For each parameter point it measures concurrent batches of **1, 10, and 100**
+fresh independently issued challenges by default. Each workload is repeated
+three times by default to keep a lucky one-solution PoW from deciding routing.
+
+Every measured solution still completes the full live path: Anubis issues it,
+the candidate solver solves it, and Anubis accepts the returned proof before the
+sample counts. Batch makespan times only the concurrent solver requests; proof
+validation runs serially immediately afterward. This is both the routing-relevant
+measurement and necessary for current Anubis, whose WASM verifier is non-reentrant
+under overlapping validations. Router endpoints are benchmarked for diagnostics
+but are excluded from winner selection, so a pre-existing router cannot certify
+itself.
+
+```sh
+tools/anubis-e2e/target/release/challenge-disasterer-anubis-e2e \
+  --anubis-bin target/anubis-live-bin \
+  --solver-bin target/release/challenge-disasterer \
+  --solver-gpu \
+  --calibrate-routing \
+  --calibration-batch-sizes 1,10,100 \
+  --calibration-rounds 3 \
+  --calibration-max-expected-work 16777216 \
+  --calibration-output routing.json
+```
+
+`--calibration-max-expected-work` is the practical-domain guard. With the
+default value it exhaustively covers current fast/slow difficulties through d6
+and binary-work algorithms such as HashX through d24; raise it when calibrating
+larger real workloads rather than making a default calibration accidentally run
+100-way d64 work.
+
+Additional solver services can participate without being compiled into
+challenge-disasterer. They only need the same small HTTP discovery/solve
+contract (`GET /stats`, `POST /solve`) and should advertise concrete
+`solver_capabilities`. Add one or more with:
+
+```sh
+  --external-solver remote=http://10.0.0.2:17417
+```
+
+The report records the provider URL and includes external concrete backends in
+winner selection. challenge-disasterer can then consume it directly:
+
+```sh
+target/release/challenge-disasterer \
+  --routing-calibration routing.json \
+  --listen 127.0.0.1:17417
+```
+
+External answers are not trusted merely because calibration selected them:
+automatic routes validate them locally before returning them. HashX is checked
+against the upstream HashX implementation and SHA answers against the local
+Anubis verifier. Concrete routes are kept in calibrated fastest-first order; if
+an external provider or local backend fails, the router tries the next calibrated
+candidate before falling back to the legacy policy.
 
 ### Fuzz matrix and benchmark
 

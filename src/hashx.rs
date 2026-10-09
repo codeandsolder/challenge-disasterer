@@ -4,6 +4,8 @@ use anyhow::anyhow;
 use hashx08::{HashX, HashXBuilder, RuntimeOption};
 use serde::Deserialize;
 
+use crate::anubis::Answer;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Challenge {
     pub data: String,
@@ -320,6 +322,18 @@ fn binary(text: &str, op: u32) -> anyhow::Result<Instr> {
         src: reg(text, "src: R")?,
         imm: 0,
     })
+}
+
+pub(crate) fn verify(challenge: &Challenge, answer: &Answer) -> anyhow::Result<bool> {
+    challenge.validate()?;
+    let seed = hex::decode(&challenge.data).context("decode HashX challenge")?;
+    let (_usable_seed, verifier) = build_compiled_seed(&seed)?;
+    let nonce = answer
+        .nonce
+        .parse::<u64>()
+        .context("parse HashX answer nonce")?;
+    let hash = verifier.hash_to_bytes(nonce);
+    Ok(hex::encode(hash) == answer.hash && valid_prefix(&hash, challenge.difficulty))
 }
 
 pub(crate) fn valid_prefix(hash: &[u8; 32], difficulty: u32) -> bool {

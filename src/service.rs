@@ -1,10 +1,11 @@
 use std::{
     collections::BTreeMap,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::Context;
@@ -19,6 +20,7 @@ use tracing::{info, warn};
 use crate::{
     anubis::{self, Challenge},
     hashx, hashx_cpu_jit,
+    routing::{RouteEntry, RoutingCalibration},
     stats::{Calibration, StatsStore},
 };
 #[cfg(feature = "gpu")]
@@ -34,6 +36,7 @@ pub struct Config {
     #[cfg(feature = "gpu")]
     pub gpu_calibration_hashes: u64,
     pub gpu_enabled: bool,
+    pub routing_calibration: Option<PathBuf>,
 }
 
 #[cfg(feature = "gpu")]
@@ -66,22 +69,32 @@ pub struct AppState {
     gpu_active_work: Arc<AtomicU64>,
     cpu_slots: Arc<Semaphore>,
     stats: RwLock<StatsStore>,
+    routing: Option<RoutingCalibration>,
+    http: reqwest::Client,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct SolveRequest {
     pub solver: String,
     #[serde(default)]
+    pub algorithm: Option<String>,
+    #[serde(default)]
     pub implementation: Option<String>,
+    #[serde(default = "default_batch_size_hint")]
+    pub batch_size_hint: usize,
     pub challenge: Value,
+}
+
+const fn default_batch_size_hint() -> usize {
+    1
 }
 
 #[derive(Debug, Serialize)]
 pub struct SolveResponse {
-    solver: &'static str,
-    backend: &'static str,
+    solver: String,
+    backend: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    implementation: Option<&'static str>,
+    implementation: Option<String>,
     answer: anubis::Answer,
     queue_ms: f64,
     solve_ms: f64,
@@ -91,6 +104,15 @@ pub struct SolveResponse {
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     error: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExternalSolveResponse {
+    backend: String,
+    #[serde(default)]
+    implementation: Option<String>,
+    answer: anubis::Answer,
+    solve_ms: f64,
 }
 
 type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
@@ -199,6 +221,15 @@ impl AppState {
         #[cfg(not(feature = "gpu"))]
         let (hashx_gpu_operational, hashx_gpu_implementations) = (false, Vec::new());
 
+        let routing = config
+            .routing_calibration
+            .as_deref()
+            .map(RoutingCalibration::load)
+            .transpose()?;
+        if let Some(path) = config.routing_calibration.as_deref() {
+            info!(path = %path.display(), "routing calibration loaded");
+        }
+
         Ok(Self {
             config: config.clone(),
             calibration: Calibration {
@@ -218,6 +249,8 @@ impl AppState {
             gpu_active_work: active_work,
             cpu_slots: Arc::new(Semaphore::new(config.cpu_workers)),
             stats: RwLock::new(StatsStore::default()),
+            routing,
+            http: reqwest::Client::new(),
         })
     }
 
@@ -235,8 +268,8 @@ impl AppState {
         })
         .await??;
         Ok(SolveResponse {
-            solver: "anubis",
-            backend: "cpu",
+            solver: "anubis".to_owned(),
+            backend: "cpu".to_owned(),
             implementation: None,
             answer: result.answer,
             queue_ms,
@@ -290,8 +323,8 @@ impl AppState {
             .await
             .map_err(|_| anyhow::anyhow!("SHA GPU worker dropped result"))??;
         Ok(SolveResponse {
-            solver: "anubis-gpu",
-            backend: "gpu",
+            solver: "anubis-gpu".to_owned(),
+            backend: "gpu".to_owned(),
             implementation: None,
             answer: result.answer,
             queue_ms,
@@ -317,8 +350,8 @@ impl AppState {
         })
         .await??;
         Ok(SolveResponse {
-            solver: "anubis-hashx-jit",
-            backend: "cpu-jit",
+            solver: "anubis-hashx-jit".to_owned(),
+            backend: "cpu-jit".to_owned(),
             implementation: None,
             answer: result.answer,
             queue_ms,
@@ -351,9 +384,9 @@ impl AppState {
             .await
             .map_err(|_| anyhow::anyhow!("HashX GPU worker dropped result"))??;
         Ok(SolveResponse {
-            solver: "anubis-hashx",
-            backend: "gpu",
-            implementation: Some(result.implementation),
+            solver: "anubis-hashx".to_owned(),
+            backend: "gpu".to_owned(),
+            implementation: Some(result.implementation.to_owned()),
             answer: result.answer,
             queue_ms: 0.0,
             solve_ms: result.solve_ms,
@@ -361,9 +394,223 @@ impl AppState {
         })
     }
 
-    async fn route_anubis(&self, challenge: Challenge) -> anyhow::Result<SolveResponse> {
+    fn calibrated_routes(
+        &self,
+        algorithm: &str,
+        difficulty: u32,
+        batch_size_hint: usize,
+    ) -> Vec<RouteEntry> {
+        self.routing.as_ref().map_or_else(Vec::new, |routing| {
+            routing.select_candidates(
+                algorithm,
+                difficulty,
+                batch_size_hint,
+                self.calibration.gpu_adapter.as_deref(),
+            )
+        })
+    }
+
+    async fn run_external(
+        &self,
+        route: &RouteEntry,
+        public_solver: &str,
+        algorithm: &str,
+        challenge: Value,
+        batch_size_hint: usize,
+        queued_at: Instant,
+    ) -> anyhow::Result<SolveResponse> {
+        let base_url = route
+            .provider_url
+            .as_deref()
+            .context("external calibration route has no provider URL")?;
+        let mut request = serde_json::json!({
+            "solver": route.solver,
+            "algorithm": algorithm,
+            "batch_size_hint": batch_size_hint,
+            "challenge": challenge,
+        });
+        if let Some(implementation) = route.implementation.as_deref() {
+            request["implementation"] = serde_json::json!(implementation);
+        }
+        let started = Instant::now();
+        let timeout = Duration::from_secs_f64((route.makespan_ms / 1000.0 * 4.0).clamp(5.0, 300.0));
+        let response = self
+            .http
+            .post(format!("{base_url}/solve"))
+            .timeout(timeout)
+            .json(&request)
+            .send()
+            .await
+            .with_context(|| format!("call external solver {}", route.provider))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .context("read external solver response")?;
+        anyhow::ensure!(
+            status.is_success(),
+            "external solver {} returned {status}: {body}",
+            route.provider
+        );
+        let external: ExternalSolveResponse =
+            serde_json::from_str(&body).context("decode external solver response")?;
+        let backend = if external.backend.is_empty() {
+            format!("external:{}", route.provider)
+        } else {
+            format!("external:{}:{}", route.provider, external.backend)
+        };
+        Ok(SolveResponse {
+            solver: public_solver.to_owned(),
+            backend,
+            implementation: external
+                .implementation
+                .or_else(|| route.implementation.clone()),
+            answer: external.answer,
+            queue_ms: started.duration_since(queued_at).as_secs_f64() * 1000.0,
+            solve_ms: external.solve_ms,
+            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    async fn route_hashx(
+        &self,
+        challenge: hashx::Challenge,
+        batch_size_hint: usize,
+        queued_at: Instant,
+    ) -> anyhow::Result<SolveResponse> {
         challenge.validate()?;
-        let queued_at = Instant::now();
+        for route in self.calibrated_routes("hashx", challenge.difficulty, batch_size_hint) {
+            if route.provider == "local" {
+                match route.solver.as_str() {
+                    "anubis-hashx-jit" => {
+                        match self.run_hashx_jit(challenge.clone(), queued_at).await {
+                            Ok(response) => return Ok(response),
+                            Err(err) => {
+                                warn!(solver = %route.solver, %err, "calibrated local HashX route failed; trying next candidate")
+                            }
+                        }
+                    }
+                    "anubis-hashx" =>
+                    {
+                        #[cfg(feature = "gpu")]
+                        if self.hashx_gpu_operational {
+                            match self
+                                .run_hashx_gpu(
+                                    challenge.clone(),
+                                    route.implementation.clone(),
+                                    queued_at,
+                                )
+                                .await
+                            {
+                                Ok(response) => return Ok(response),
+                                Err(err) => {
+                                    warn!(solver = %route.solver, implementation = ?route.implementation, %err, "calibrated local HashX route failed; trying next candidate")
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                let challenge_value = serde_json::json!({
+                    "data": &challenge.data,
+                    "difficulty": challenge.difficulty,
+                });
+                match self
+                    .run_external(
+                        &route,
+                        "anubis-hashx-auto",
+                        "hashx",
+                        challenge_value,
+                        batch_size_hint,
+                        queued_at,
+                    )
+                    .await
+                {
+                    Ok(response) => match hashx::verify(&challenge, &response.answer) {
+                        Ok(true) => return Ok(response),
+                        Ok(false) => {
+                            warn!(provider = %route.provider, "external HashX solver returned invalid answer; trying next calibrated candidate")
+                        }
+                        Err(err) => {
+                            warn!(provider = %route.provider, %err, "external HashX answer validation failed; trying next calibrated candidate")
+                        }
+                    },
+                    Err(err) => {
+                        warn!(provider = %route.provider, %err, "external HashX solver failed; trying next calibrated candidate")
+                    }
+                }
+            }
+        }
+
+        #[cfg(feature = "gpu")]
+        if self.hashx_gpu_operational {
+            return self.run_hashx_gpu(challenge, None, queued_at).await;
+        }
+        self.run_hashx_jit(challenge, queued_at).await
+    }
+
+    async fn route_anubis(
+        &self,
+        algorithm: &str,
+        challenge: Challenge,
+        batch_size_hint: usize,
+        queued_at: Instant,
+    ) -> anyhow::Result<SolveResponse> {
+        challenge.validate()?;
+        for route in
+            self.calibrated_routes(algorithm, u32::from(challenge.difficulty), batch_size_hint)
+        {
+            if route.provider == "local" {
+                match route.solver.as_str() {
+                    "anubis-cpu" => match self.run_cpu(challenge.clone(), queued_at).await {
+                        Ok(response) => return Ok(response),
+                        Err(err) => {
+                            warn!(solver = %route.solver, %err, "calibrated local Anubis route failed; trying next candidate")
+                        }
+                    },
+                    "anubis-gpu" =>
+                    {
+                        #[cfg(feature = "gpu")]
+                        if self.gpu_operational && challenge.gpu_compatible() {
+                            match self.run_gpu_only(challenge.clone(), queued_at).await {
+                                Ok(response) => return Ok(response),
+                                Err(err) => {
+                                    warn!(solver = %route.solver, %err, "calibrated local Anubis route failed; trying next candidate")
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                let challenge_value = serde_json::json!({
+                    "data": &challenge.data,
+                    "difficulty": challenge.difficulty,
+                });
+                match self
+                    .run_external(
+                        &route,
+                        "anubis",
+                        algorithm,
+                        challenge_value,
+                        batch_size_hint,
+                        queued_at,
+                    )
+                    .await
+                {
+                    Ok(response) if anubis::verify(&challenge, &response.answer) => {
+                        return Ok(response);
+                    }
+                    Ok(_) => {
+                        warn!(provider = %route.provider, "external Anubis solver returned invalid answer; trying next calibrated candidate")
+                    }
+                    Err(err) => {
+                        warn!(provider = %route.provider, %err, "external Anubis solver failed; trying next calibrated candidate")
+                    }
+                }
+            }
+        }
 
         #[cfg(feature = "gpu")]
         if let Some(tx) = self.gpu_tx.as_ref().filter(|_| challenge.gpu_compatible()) {
@@ -401,8 +648,8 @@ impl AppState {
                 .map_err(|_| anyhow::anyhow!("GPU worker dropped result"))?
             {
                 Ok(result) => Ok(SolveResponse {
-                    solver: "anubis",
-                    backend: "gpu",
+                    solver: "anubis".to_owned(),
+                    backend: "gpu".to_owned(),
                     implementation: None,
                     answer: result.answer,
                     queue_ms,
@@ -425,8 +672,25 @@ pub async fn solve(
     Json(request): Json<SolveRequest>,
 ) -> ApiResult<SolveResponse> {
     let queued_at = Instant::now();
+    if request.batch_size_hint == 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "batch_size_hint must be greater than zero".to_owned(),
+            }),
+        ));
+    }
     let (difficulty, result) = match request.solver.as_str() {
         "anubis" | "anubis-cpu" | "anubis-gpu" => {
+            let algorithm = request.algorithm.as_deref().unwrap_or("fast");
+            if !matches!(algorithm, "fast" | "slow") {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("unsupported Anubis SHA algorithm: {algorithm}"),
+                    }),
+                ));
+            }
             if request.implementation.is_some() {
                 return Err((
                     StatusCode::BAD_REQUEST,
@@ -468,11 +732,27 @@ pub async fn solve(
                         Err(anyhow::anyhow!("SHA GPU backend not compiled"))
                     }
                 }
-                _ => state.route_anubis(challenge).await,
+                _ => {
+                    state
+                        .route_anubis(algorithm, challenge, request.batch_size_hint, queued_at)
+                        .await
+                }
             };
             (difficulty, result)
         }
-        "anubis-hashx" | "anubis-hashx-jit" => {
+        "anubis-hashx" | "anubis-hashx-jit" | "anubis-hashx-auto" => {
+            if request
+                .algorithm
+                .as_deref()
+                .is_some_and(|algorithm| algorithm != "hashx")
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "HashX solver requires algorithm=hashx".to_owned(),
+                    }),
+                ));
+            }
             let challenge: hashx::Challenge =
                 serde_json::from_value(request.challenge).map_err(|err| {
                     (
@@ -483,24 +763,38 @@ pub async fn solve(
                     )
                 })?;
             let difficulty = u8::try_from(challenge.difficulty).unwrap_or(u8::MAX);
-            let result = if request.solver == "anubis-hashx-jit" {
-                if request.implementation.is_some() {
-                    Err(anyhow::anyhow!(
-                        "implementation override is not supported for anubis-hashx-jit"
-                    ))
-                } else {
-                    state.run_hashx_jit(challenge, queued_at).await
+            let result = match request.solver.as_str() {
+                "anubis-hashx-jit" => {
+                    if request.implementation.is_some() {
+                        Err(anyhow::anyhow!(
+                            "implementation override is not supported for anubis-hashx-jit"
+                        ))
+                    } else {
+                        state.run_hashx_jit(challenge, queued_at).await
+                    }
                 }
-            } else {
-                #[cfg(feature = "gpu")]
-                {
-                    state
-                        .run_hashx_gpu(challenge, request.implementation.clone(), queued_at)
-                        .await
+                "anubis-hashx-auto" => {
+                    if request.implementation.is_some() {
+                        Err(anyhow::anyhow!(
+                            "implementation override is not supported for anubis-hashx-auto"
+                        ))
+                    } else {
+                        state
+                            .route_hashx(challenge, request.batch_size_hint, queued_at)
+                            .await
+                    }
                 }
-                #[cfg(not(feature = "gpu"))]
-                {
-                    Err(anyhow::anyhow!("HashX GPU backend not compiled"))
+                _ => {
+                    #[cfg(feature = "gpu")]
+                    {
+                        state
+                            .run_hashx_gpu(challenge, request.implementation.clone(), queued_at)
+                            .await
+                    }
+                    #[cfg(not(feature = "gpu"))]
+                    {
+                        Err(anyhow::anyhow!("HashX GPU backend not compiled"))
+                    }
                 }
             };
             (difficulty, result)
@@ -522,13 +816,15 @@ pub async fn solve(
                 "anubis-gpu" => "anubis-gpu",
                 "anubis-hashx" => "anubis-hashx",
                 "anubis-hashx-jit" => "anubis-hashx-jit",
+                "anubis-hashx-auto" => "anubis-hashx-auto",
                 _ => "anubis",
-            };
+            }
+            .to_owned();
             state
                 .stats
                 .write()
                 .await
-                .record(difficulty, response.backend, response.total_ms);
+                .record(difficulty, &response.backend, response.total_ms);
             Ok(Json(response))
         }
         Err(err) => {
@@ -543,9 +839,20 @@ pub async fn solve(
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct SolverCapability {
+    solver: &'static str,
+    algorithms: &'static [&'static str],
+    difficulty_min: u32,
+    difficulty_max: u32,
+    router: bool,
+    implementations: Vec<&'static str>,
+}
+
 #[derive(Serialize)]
 pub struct StatsResponse {
-    available_solvers: [&'static str; 5],
+    available_solvers: Vec<&'static str>,
+    solver_capabilities: Vec<SolverCapability>,
     calibration: Calibration,
     config: StatsConfig,
     gpu_queue_depth: u64,
@@ -564,6 +871,7 @@ pub struct StatsConfig {
     gpu_enabled: bool,
     gpu_operational: bool,
     hashx_gpu_operational: bool,
+    routing_calibration_loaded: bool,
 }
 
 pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
@@ -582,14 +890,71 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         expected.insert(difficulty, eta_ms);
     }
     let general = state.stats.read().await.snapshot();
+    let mut available_solvers = vec![
+        "anubis",
+        "anubis-cpu",
+        "anubis-hashx-jit",
+        "anubis-hashx-auto",
+    ];
+    let mut solver_capabilities = vec![
+        SolverCapability {
+            solver: "anubis",
+            algorithms: &["fast", "slow"],
+            difficulty_min: 1,
+            difficulty_max: 16,
+            router: true,
+            implementations: Vec::new(),
+        },
+        SolverCapability {
+            solver: "anubis-cpu",
+            algorithms: &["fast", "slow"],
+            difficulty_min: 1,
+            difficulty_max: 16,
+            router: false,
+            implementations: Vec::new(),
+        },
+        SolverCapability {
+            solver: "anubis-hashx-jit",
+            algorithms: &["hashx"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: false,
+            implementations: Vec::new(),
+        },
+        SolverCapability {
+            solver: "anubis-hashx-auto",
+            algorithms: &["hashx"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: true,
+            implementations: Vec::new(),
+        },
+    ];
+    if state.gpu_operational {
+        available_solvers.push("anubis-gpu");
+        solver_capabilities.push(SolverCapability {
+            solver: "anubis-gpu",
+            algorithms: &["fast", "slow"],
+            difficulty_min: 1,
+            difficulty_max: 16,
+            router: false,
+            implementations: Vec::new(),
+        });
+    }
+    if state.hashx_gpu_operational {
+        available_solvers.push("anubis-hashx");
+        solver_capabilities.push(SolverCapability {
+            solver: "anubis-hashx",
+            algorithms: &["hashx"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: true,
+            implementations: state.hashx_gpu_implementations.clone(),
+        });
+    }
     Json(StatsResponse {
-        available_solvers: [
-            "anubis",
-            "anubis-cpu",
-            "anubis-gpu",
-            "anubis-hashx",
-            "anubis-hashx-jit",
-        ],
+        available_solvers,
+        solver_capabilities,
         calibration: state.calibration.clone(),
         config: StatsConfig {
             cpu_workers: state.config.cpu_workers,
@@ -597,6 +962,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             gpu_enabled: state.config.gpu_enabled,
             gpu_operational: state.gpu_operational,
             hashx_gpu_operational: state.hashx_gpu_operational,
+            routing_calibration_loaded: state.routing.is_some(),
         },
         gpu_queue_depth,
         gpu_queue_expected_work: queued_work,

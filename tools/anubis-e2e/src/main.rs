@@ -11,7 +11,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, anyhow, bail, ensure};
@@ -22,7 +22,7 @@ use reqwest::{
     cookie::Jar,
     redirect::Policy,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -36,6 +36,7 @@ struct CaseSpec {
     difficulty: u32,
     implementation: Option<String>,
     force_implementation: Option<String>,
+    batch_size_hint: usize,
 }
 
 impl FromStr for CaseSpec {
@@ -67,6 +68,33 @@ impl FromStr for CaseSpec {
             difficulty,
             implementation,
             force_implementation: None,
+            batch_size_hint: 1,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ExternalSolverSpec {
+    name: String,
+    url: String,
+}
+
+impl FromStr for ExternalSolverSpec {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (name, url) = value
+            .split_once('=')
+            .context("external solver must be NAME=URL")?;
+        validate_token("external solver name", name)?;
+        let parsed = Url::parse(url).context("external solver URL is invalid")?;
+        ensure!(
+            matches!(parsed.scheme(), "http" | "https"),
+            "external solver URL must use http or https"
+        );
+        Ok(Self {
+            name: name.to_owned(),
+            url: url.trim_end_matches('/').to_owned(),
         })
     }
 }
@@ -155,6 +183,35 @@ struct Args {
     #[arg(long, default_value = "tools/anubis-e2e/browser-bench.mjs")]
     browser_script: PathBuf,
 
+    /// Run the exhaustive routing calibration matrix and emit JSON.
+    #[arg(long, default_value_t = false)]
+    calibrate_routing: bool,
+
+    /// JSON file for routing calibration results. Stdout is used when omitted.
+    #[arg(long)]
+    calibration_output: Option<PathBuf>,
+
+    /// Concurrent solution counts measured for every calibration point.
+    #[arg(long, value_delimiter = ',', default_value = "1,10,100")]
+    calibration_batch_sizes: Vec<usize>,
+
+    /// Fresh repetitions of each calibration workload size.
+    #[arg(long, default_value_t = 3)]
+    calibration_rounds: usize,
+
+    /// Do not live-benchmark parameter sets whose expected work exceeds this many hashes.
+    #[arg(long, default_value_t = 16_777_216)]
+    calibration_max_expected_work: u64,
+
+    /// CPU workers used by the local solver during routing calibration.
+    #[arg(long, default_value_t = 4)]
+    calibration_cpu_workers: usize,
+
+    /// Additional solver service speaking challenge-disasterer's /stats + /solve protocol.
+    /// Repeat as NAME=URL.
+    #[arg(long = "external-solver", value_name = "NAME=URL")]
+    external_solvers: Vec<ExternalSolverSpec>,
+
     /// Preserve logs and generated policy after success as well as failure.
     #[arg(long, default_value_t = false)]
     keep_temp: bool,
@@ -194,16 +251,97 @@ struct SolverResponse {
     solve_ms: f64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct SolverCalibration {
     gpu_adapter: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct SolverCapability {
+    solver: String,
+    algorithms: Vec<String>,
+    difficulty_min: u32,
+    difficulty_max: u32,
+    #[serde(default)]
+    router: bool,
+    #[serde(default)]
+    implementations: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct SolverStats {
+    #[serde(default)]
     calibration: SolverCalibration,
     #[serde(default)]
+    available_solvers: Vec<String>,
+    #[serde(default)]
+    solver_capabilities: Vec<SolverCapability>,
+    #[serde(default)]
     hashx_gpu_implementations: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CalibrationCandidate {
+    provider: String,
+    base_url: String,
+    adapter: Option<String>,
+    solver: String,
+    implementation: Option<String>,
+    algorithms: Vec<String>,
+    difficulty_min: u32,
+    difficulty_max: u32,
+    router: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CalibrationEntry {
+    provider: String,
+    provider_url: Option<String>,
+    adapter: Option<String>,
+    solver: String,
+    implementation: Option<String>,
+    algorithm: String,
+    difficulty: u32,
+    expected_work: u64,
+    batch_size: usize,
+    rounds: usize,
+    makespan_ms: f64,
+    mean_request_ms: f64,
+    p50_request_ms: f64,
+    p90_request_ms: f64,
+    mean_solver_ms: f64,
+    validation_ms: f64,
+    solutions_per_second: f64,
+    router: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct CalibrationReport {
+    version: u32,
+    generated_unix_ms: u128,
+    max_expected_work: u64,
+    batch_sizes: Vec<usize>,
+    rounds: usize,
+    entries: Vec<CalibrationEntry>,
+    winners: Vec<CalibrationWinner>,
+}
+
+#[derive(Debug, Serialize)]
+struct CalibrationWinner {
+    algorithm: String,
+    difficulty: u32,
+    batch_size: usize,
+    provider: String,
+    provider_url: Option<String>,
+    adapter: Option<String>,
+    solver: String,
+    implementation: Option<String>,
+    makespan_ms: f64,
+}
+
+struct RunResult {
+    temp: Option<TempDir>,
+    calibration_entries: Vec<CalibrationEntry>,
 }
 
 #[derive(Debug)]
@@ -393,6 +531,438 @@ fn discover_gpu_adapters(solver_bin: &Path) -> anyhow::Result<Vec<String>> {
     serde_json::from_slice(&output.stdout).context("decode GPU adapter list")
 }
 
+fn fallback_capabilities(stats: &SolverStats) -> Vec<SolverCapability> {
+    let mut out = Vec::new();
+    for solver in &stats.available_solvers {
+        let capability = match solver.as_str() {
+            "anubis" | "anubis-cpu" | "anubis-gpu" => SolverCapability {
+                solver: solver.clone(),
+                algorithms: vec!["fast".to_owned(), "slow".to_owned()],
+                difficulty_min: 1,
+                difficulty_max: 16,
+                router: solver == "anubis",
+                implementations: Vec::new(),
+            },
+            "anubis-hashx-jit" => SolverCapability {
+                solver: solver.clone(),
+                algorithms: vec!["hashx".to_owned()],
+                difficulty_min: 1,
+                difficulty_max: 64,
+                router: false,
+                implementations: Vec::new(),
+            },
+            "anubis-hashx" => SolverCapability {
+                solver: solver.clone(),
+                algorithms: vec!["hashx".to_owned()],
+                difficulty_min: 1,
+                difficulty_max: 64,
+                router: true,
+                implementations: stats.hashx_gpu_implementations.clone(),
+            },
+            "anubis-hashx-auto" => SolverCapability {
+                solver: solver.clone(),
+                algorithms: vec!["hashx".to_owned()],
+                difficulty_min: 1,
+                difficulty_max: 64,
+                router: true,
+                implementations: Vec::new(),
+            },
+            _ => continue,
+        };
+        out.push(capability);
+    }
+    out
+}
+
+fn calibration_candidates(
+    provider: &str,
+    base_url: &str,
+    stats: &SolverStats,
+    include_cpu_only: bool,
+) -> Vec<CalibrationCandidate> {
+    let capabilities = if stats.solver_capabilities.is_empty() {
+        fallback_capabilities(stats)
+    } else {
+        stats.solver_capabilities.clone()
+    };
+    let selected_adapter = stats.calibration.gpu_adapter.clone();
+    let mut out = Vec::new();
+    for capability in capabilities {
+        let cpu_only = matches!(capability.solver.as_str(), "anubis-cpu" | "anubis-hashx-jit");
+        if cpu_only && !include_cpu_only {
+            continue;
+        }
+        let uses_adapter = matches!(
+            capability.solver.as_str(),
+            "anubis" | "anubis-gpu" | "anubis-hashx" | "anubis-hashx-auto"
+        );
+        let router = capability.router || !capability.implementations.is_empty();
+        out.push(CalibrationCandidate {
+            provider: provider.to_owned(),
+            base_url: base_url.to_owned(),
+            adapter: uses_adapter.then(|| selected_adapter.clone()).flatten(),
+            solver: capability.solver.clone(),
+            implementation: None,
+            algorithms: capability.algorithms.clone(),
+            difficulty_min: capability.difficulty_min,
+            difficulty_max: capability.difficulty_max,
+            router,
+        });
+        for implementation in capability.implementations {
+            out.push(CalibrationCandidate {
+                provider: provider.to_owned(),
+                base_url: base_url.to_owned(),
+                adapter: selected_adapter.clone(),
+                solver: capability.solver.clone(),
+                implementation: Some(implementation),
+                algorithms: capability.algorithms.clone(),
+                difficulty_min: capability.difficulty_min,
+                difficulty_max: capability.difficulty_max,
+                router: false,
+            });
+        }
+    }
+    out
+}
+
+fn expected_work_u64(algorithm: &str, difficulty: u32) -> Option<u64> {
+    let base = match algorithm {
+        "fast" | "slow" => 16_u128,
+        "hashx" | "sha256" | "argon2id" => 2_u128,
+        _ => return None,
+    };
+    let work = base.checked_pow(difficulty)?;
+    u64::try_from(work).ok()
+}
+
+fn calibration_parameter_cases(
+    candidates: &[CalibrationCandidate],
+    max_expected_work: u64,
+) -> anyhow::Result<Vec<CaseSpec>> {
+    let mut keys = std::collections::BTreeSet::new();
+    for candidate in candidates {
+        for algorithm in &candidate.algorithms {
+            for difficulty in candidate.difficulty_min..=candidate.difficulty_max {
+                let Some(work) = expected_work_u64(algorithm, difficulty) else {
+                    break;
+                };
+                if work > max_expected_work {
+                    break;
+                }
+                keys.insert((algorithm.clone(), difficulty));
+            }
+        }
+    }
+    keys.into_iter()
+        .map(|(algorithm, difficulty)| format!("{algorithm}:calibration:{difficulty}").parse())
+        .collect()
+}
+
+fn candidate_supports(candidate: &CalibrationCandidate, case: &CaseSpec) -> bool {
+    candidate.algorithms.iter().any(|algorithm| algorithm == &case.algorithm)
+        && (candidate.difficulty_min..=candidate.difficulty_max).contains(&case.difficulty)
+}
+
+fn percentile(values: &mut [f64], numerator: usize, denominator: usize) -> f64 {
+    values.sort_by(f64::total_cmp);
+    let index = values
+        .len()
+        .saturating_mul(numerator)
+        .div_ceil(denominator)
+        .saturating_sub(1)
+        .min(values.len().saturating_sub(1));
+    values[index]
+}
+
+struct CalibrationWorkItem {
+    client: Client,
+    envelope: ChallengeEnvelope,
+}
+
+struct CalibrationSolvedItem {
+    work: CalibrationWorkItem,
+    solved: SolverResponse,
+    request_ms: f64,
+}
+
+fn issue_calibration_challenge(
+    index: usize,
+    parameter: &CaseSpec,
+    anubis_base: &str,
+) -> anyhow::Result<CalibrationWorkItem> {
+    let user_agent = format!("challenge-disasterer-e2e/{index}/{}", parameter.algorithm);
+    let client = build_client(&user_agent)?;
+    let response = client
+        .get(format!("{anubis_base}/"))
+        .send()
+        .context("request calibration challenge page")?;
+    ensure!(
+        response.status().is_success(),
+        "Anubis calibration challenge request failed with {}",
+        response.status()
+    );
+    let html = response
+        .text()
+        .context("read calibration challenge page")?;
+    let envelope: ChallengeEnvelope = extract_json_script(&html, "anubis_challenge")?;
+    ensure!(
+        envelope.rules.algorithm == parameter.algorithm,
+        "Anubis issued algorithm {}, expected {}",
+        envelope.rules.algorithm,
+        parameter.algorithm
+    );
+    ensure!(
+        envelope.rules.difficulty == parameter.difficulty,
+        "Anubis issued difficulty {}, expected {}",
+        envelope.rules.difficulty,
+        parameter.difficulty
+    );
+    Ok(CalibrationWorkItem { client, envelope })
+}
+
+fn solve_calibration_item(
+    case: &CaseSpec,
+    solver_base: &str,
+    solver_client: &Client,
+    work: CalibrationWorkItem,
+) -> anyhow::Result<CalibrationSolvedItem> {
+    let mut request = json!({
+        "solver": case.solver,
+        "algorithm": work.envelope.rules.algorithm,
+        "batch_size_hint": case.batch_size_hint,
+        "challenge": {
+            "data": work.envelope.challenge.random_data,
+            "difficulty": work.envelope.rules.difficulty,
+        }
+    });
+    if let Some(implementation) = case.force_implementation.as_deref() {
+        request["implementation"] = json!(implementation);
+    }
+    let started = Instant::now();
+    let response = solver_client
+        .post(format!("{solver_base}/solve"))
+        .json(&request)
+        .send()
+        .context("submit calibration challenge to solver")?;
+    let request_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let status = response.status();
+    let body = response
+        .text()
+        .context("read calibration solver response")?;
+    ensure!(status.is_success(), "solver returned {status}: {body}");
+    let solved: SolverResponse =
+        serde_json::from_str(&body).context("decode calibration solver response")?;
+    ensure!(
+        solved.solver == case.solver,
+        "solver response identified itself as {}, expected {}",
+        solved.solver,
+        case.solver
+    );
+    if let Some(expected) = case.implementation.as_deref() {
+        ensure!(
+            solved.implementation.as_deref() == Some(expected),
+            "solver implementation mismatch: expected {expected}, got {:?}",
+            solved.implementation
+        );
+    }
+    Ok(CalibrationSolvedItem {
+        work,
+        solved,
+        request_ms,
+    })
+}
+
+fn validate_calibration_proof(
+    anubis_base: &str,
+    item: &CalibrationSolvedItem,
+) -> anyhow::Result<()> {
+    let pass_url = Url::parse(&format!(
+        "{anubis_base}/.within.website/x/cmd/anubis/api/pass-challenge"
+    ))
+    .context("construct calibration pass-challenge URL")?;
+    let accepted = item
+        .work
+        .client
+        .get(pass_url)
+        .query(&[
+            ("id", item.work.envelope.challenge.id.as_str()),
+            ("response", item.solved.answer.hash.as_str()),
+            ("nonce", item.solved.answer.nonce.as_str()),
+            ("redir", "/"),
+            ("elapsedTime", "1"),
+        ])
+        .send()
+        .context("submit calibration proof to Anubis")?;
+    let status = accepted.status();
+    let final_url = accepted.url().clone();
+    let body = accepted
+        .text()
+        .context("read calibration acceptance response")?;
+    ensure!(
+        status.is_success() && body.contains(BACKEND_MARKER),
+        "Anubis did not accept calibration proof (status={status}, url={final_url}); body starts with {:?}",
+        body.chars().take(2_000).collect::<String>()
+    );
+    Ok(())
+}
+
+fn calibrate_batch(
+    index: usize,
+    parameter: &CaseSpec,
+    candidate: &CalibrationCandidate,
+    anubis_base: &str,
+    batch_size: usize,
+    rounds: usize,
+) -> anyhow::Result<CalibrationEntry> {
+    ensure!(batch_size > 0, "calibration batch size must be nonzero");
+    ensure!(rounds > 0, "calibration rounds must be nonzero");
+    let mut case = parameter.clone();
+    case.solver.clone_from(&candidate.solver);
+    case.implementation.clone_from(&candidate.implementation);
+    case.force_implementation.clone_from(&candidate.implementation);
+    case.batch_size_hint = batch_size;
+    let solver_client = ClientBuilder::new()
+        .timeout(Duration::from_secs(600))
+        .build()
+        .context("build calibration solver client")?;
+
+    let total_samples = batch_size.saturating_mul(rounds);
+    let mut request_ms = Vec::with_capacity(total_samples);
+    let mut solver_ms = Vec::with_capacity(total_samples);
+    let mut makespans = Vec::with_capacity(rounds);
+    let mut validation_times = Vec::with_capacity(rounds);
+
+    for _ in 0..rounds {
+        // Challenge issuance is intentionally outside the timed region. The quantity the
+        // router needs is how quickly this solver can complete an already-issued workload.
+        let mut work = Vec::with_capacity(batch_size);
+        for _ in 0..batch_size {
+            work.push(issue_calibration_challenge(index, parameter, anubis_base)?);
+        }
+
+        let started = Instant::now();
+        let solved = thread::scope(|scope| -> anyhow::Result<Vec<CalibrationSolvedItem>> {
+            let mut handles = Vec::with_capacity(batch_size);
+            for item in work {
+                let case = &case;
+                let solver_base = candidate.base_url.as_str();
+                let solver_client = &solver_client;
+                handles.push(scope.spawn(move || {
+                    solve_calibration_item(case, solver_base, solver_client, item)
+                }));
+            }
+            let mut solved = Vec::with_capacity(batch_size);
+            for handle in handles {
+                solved.push(
+                    handle
+                        .join()
+                        .map_err(|_| anyhow!("calibration solver thread panicked"))??,
+                );
+            }
+            Ok(solved)
+        })?;
+        makespans.push(started.elapsed().as_secs_f64() * 1000.0);
+
+        // Current Anubis uses a non-reentrant WASM validation runner. Validate serially
+        // after the solver timer so correctness still comes from real Anubis without
+        // contaminating solver throughput with verifier serialization.
+        let validation_started = Instant::now();
+        for item in &solved {
+            validate_calibration_proof(anubis_base, item)?;
+        }
+        validation_times.push(validation_started.elapsed().as_secs_f64() * 1000.0);
+
+        request_ms.extend(solved.iter().map(|item| item.request_ms));
+        solver_ms.extend(solved.iter().map(|item| item.solved.solve_ms));
+    }
+
+    let round_count = f64::from(u32::try_from(rounds).context("too many calibration rounds")?);
+    let sample_count =
+        f64::from(u32::try_from(request_ms.len()).context("calibration batch too large")?);
+    let makespan_ms = makespans.iter().sum::<f64>() / round_count;
+    let mean_request_ms = request_ms.iter().sum::<f64>() / sample_count;
+    let mean_solver_ms = solver_ms.iter().sum::<f64>() / sample_count;
+    let validation_ms = validation_times.iter().sum::<f64>() / round_count;
+    let mut request_values = request_ms;
+    let mut request_values_p90 = request_values.clone();
+    let p50_request_ms = percentile(&mut request_values, 1, 2);
+    let p90_request_ms = percentile(&mut request_values_p90, 9, 10);
+    let expected_work = expected_work_u64(&parameter.algorithm, parameter.difficulty)
+        .context("unsupported calibration algorithm")?;
+    let batch_count = f64::from(u32::try_from(batch_size).context("calibration batch too large")?);
+    Ok(CalibrationEntry {
+        provider: candidate.provider.clone(),
+        provider_url: (candidate.provider != "local").then(|| candidate.base_url.clone()),
+        adapter: candidate.adapter.clone(),
+        solver: candidate.solver.clone(),
+        implementation: candidate.implementation.clone(),
+        algorithm: parameter.algorithm.clone(),
+        difficulty: parameter.difficulty,
+        expected_work,
+        batch_size,
+        rounds,
+        makespan_ms,
+        mean_request_ms,
+        p50_request_ms,
+        p90_request_ms,
+        mean_solver_ms,
+        validation_ms,
+        solutions_per_second: batch_count * 1000.0 / makespan_ms.max(f64::MIN_POSITIVE),
+        router: candidate.router,
+    })
+}
+
+fn calibration_winners(entries: &[CalibrationEntry]) -> Vec<CalibrationWinner> {
+    let mut best = std::collections::BTreeMap::<(String, u32, usize), &CalibrationEntry>::new();
+    for entry in entries.iter().filter(|entry| !entry.router) {
+        let key = (entry.algorithm.clone(), entry.difficulty, entry.batch_size);
+        if best
+            .get(&key)
+            .is_none_or(|current| entry.makespan_ms < current.makespan_ms)
+        {
+            best.insert(key, entry);
+        }
+    }
+    best.into_iter()
+        .map(|((algorithm, difficulty, batch_size), entry)| CalibrationWinner {
+            algorithm,
+            difficulty,
+            batch_size,
+            provider: entry.provider.clone(),
+            provider_url: entry.provider_url.clone(),
+            adapter: entry.adapter.clone(),
+            solver: entry.solver.clone(),
+            implementation: entry.implementation.clone(),
+            makespan_ms: entry.makespan_ms,
+        })
+        .collect()
+}
+
+fn write_calibration_report(args: &Args, entries: Vec<CalibrationEntry>) -> anyhow::Result<()> {
+    let generated_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock predates Unix epoch")?
+        .as_millis();
+    let report = CalibrationReport {
+        version: 1,
+        generated_unix_ms,
+        max_expected_work: args.calibration_max_expected_work,
+        batch_sizes: args.calibration_batch_sizes.clone(),
+        rounds: args.calibration_rounds,
+        winners: calibration_winners(&entries),
+        entries,
+    };
+    let encoded = serde_json::to_string_pretty(&report).context("encode calibration report")?;
+    if let Some(path) = args.calibration_output.as_ref() {
+        fs::write(path, &encoded)
+            .with_context(|| format!("write calibration report {}", path.display()))?;
+        println!("CALIBRATION_REPORT path={}", path.display());
+    } else {
+        println!("CALIBRATION_REPORT_JSON\n{encoded}");
+    }
+    Ok(())
+}
+
 fn post_hashx_solver(
     solver_base: &str,
     solver: &str,
@@ -402,6 +972,7 @@ fn post_hashx_solver(
 ) -> anyhow::Result<SolverResponse> {
     let mut request = json!({
         "solver": solver,
+        "algorithm": "hashx",
         "challenge": {"data": data, "difficulty": difficulty}
     });
     if let Some(implementation) = implementation {
@@ -482,13 +1053,24 @@ fn extract_json_script<T: for<'de> Deserialize<'de>>(html: &str, id: &str) -> an
         .with_context(|| format!("decode JSON script {id}"))
 }
 
-#[allow(clippy::too_many_lines, reason = "keeps one complete protocol round trip together")]
 fn solve_case(
     index: usize,
     case: &CaseSpec,
     anubis_base: &str,
     solver_base: &str,
     negative_check: bool,
+) -> anyhow::Result<TrialResult> {
+    solve_case_inner(index, case, anubis_base, solver_base, negative_check, true)
+}
+
+#[allow(clippy::too_many_lines, reason = "keeps one complete protocol round trip together")]
+fn solve_case_inner(
+    index: usize,
+    case: &CaseSpec,
+    anubis_base: &str,
+    solver_base: &str,
+    negative_check: bool,
+    emit_pass: bool,
 ) -> anyhow::Result<TrialResult> {
     let wall_started = Instant::now();
     let user_agent = format!("challenge-disasterer-e2e/{index}/{}", case.algorithm);
@@ -520,6 +1102,8 @@ fn solve_case(
 
     let mut solver_request = json!({
         "solver": case.solver,
+        "algorithm": envelope.rules.algorithm,
+        "batch_size_hint": case.batch_size_hint,
         "challenge": {
             "data": envelope.challenge.random_data,
             "difficulty": envelope.rules.difficulty,
@@ -528,7 +1112,15 @@ fn solve_case(
     if let Some(implementation) = case.force_implementation.as_deref() {
         solver_request["implementation"] = json!(implementation);
     }
-    let solver_response = Client::new()
+    let solver_timeout = if emit_pass {
+        Duration::from_secs(30)
+    } else {
+        Duration::from_secs(600)
+    };
+    let solver_response = ClientBuilder::new()
+        .timeout(solver_timeout)
+        .build()
+        .context("build solver client")?
         .post(format!("{solver_base}/solve"))
         .json(&solver_request)
         .send()
@@ -600,22 +1192,24 @@ fn solve_case(
     ensure!(
         status.is_success() && body.contains(BACKEND_MARKER),
         "Anubis did not accept proof (status={status}, url={final_url}); body starts with {:?}",
-        body.chars().take(300).collect::<String>()
+        body.chars().take(2_000).collect::<String>()
     );
 
     let wall_ms = wall_started.elapsed().as_secs_f64() * 1000.0;
-    println!(
-        "PASS algorithm={} solver={} backend={} implementation={} difficulty={} nonce={} solver_ms={:.3} wall_ms={:.3} final_url={}",
-        case.algorithm,
-        case.solver,
-        solved.backend,
-        solved.implementation.as_deref().unwrap_or("-"),
-        case.difficulty,
-        solved.answer.nonce,
-        solved.solve_ms,
-        wall_ms,
-        final_url
-    );
+    if emit_pass {
+        println!(
+            "PASS algorithm={} solver={} backend={} implementation={} difficulty={} nonce={} solver_ms={:.3} wall_ms={:.3} final_url={}",
+            case.algorithm,
+            case.solver,
+            solved.backend,
+            solved.implementation.as_deref().unwrap_or("-"),
+            case.difficulty,
+            solved.answer.nonce,
+            solved.solve_ms,
+            wall_ms,
+            final_url
+        );
+    }
     Ok(TrialResult {
         wall_ms,
         solve_ms: solved.solve_ms,
@@ -898,7 +1492,11 @@ fn print_benchmark(case: &CaseSpec, trials: &[TrialResult]) -> anyhow::Result<()
 }
 
 #[allow(clippy::too_many_lines, reason = "top-level test orchestration is intentionally linear")]
-fn run(args: Args, adapter_override: Option<&str>) -> anyhow::Result<Option<TempDir>> {
+fn run(
+    args: Args,
+    adapter_override: Option<&str>,
+    include_shared_calibration_candidates: bool,
+) -> anyhow::Result<RunResult> {
     ensure!(
         args.anubis_bin.is_file(),
         "Anubis binary not found: {}",
@@ -912,6 +1510,23 @@ fn run(args: Args, adapter_override: Option<&str>) -> anyhow::Result<Option<Temp
     ensure!(
         args.hashx_routing_difficulties.iter().all(|difficulty| *difficulty > 0),
         "HashX routing difficulties must be greater than zero"
+    );
+
+    ensure!(
+        !args.calibrate_routing || !args.calibration_batch_sizes.is_empty(),
+        "routing calibration needs at least one batch size"
+    );
+    ensure!(
+        args.calibration_batch_sizes.iter().all(|size| *size > 0),
+        "calibration batch sizes must be greater than zero"
+    );
+    ensure!(
+        args.calibration_rounds > 0,
+        "calibration rounds must be greater than zero"
+    );
+    ensure!(
+        args.calibration_cpu_workers > 0,
+        "calibration CPU workers must be greater than zero"
     );
 
     if let Some(ref implementation) = args.expect_hashx_gpu_implementation {
@@ -932,7 +1547,13 @@ fn run(args: Args, adapter_override: Option<&str>) -> anyhow::Result<Option<Temp
         .arg("--gpu")
         .arg(args.solver_gpu.to_string())
         .arg("--cpu-workers")
-        .arg(if args.benchmark { "1" } else { "2" })
+        .arg(if args.calibrate_routing {
+            args.calibration_cpu_workers.to_string()
+        } else if args.benchmark {
+            "1".to_owned()
+        } else {
+            "2".to_owned()
+        })
         .args(&args.solver_forwarded);
     if let Some(adapter) = adapter_override {
         solver_command.env("WGPU_ADAPTER_NAME", adapter);
@@ -957,7 +1578,7 @@ fn run(args: Args, adapter_override: Option<&str>) -> anyhow::Result<Option<Temp
         println!("GPU_ADAPTER selected={selected:?}");
     }
     let implementations = if args.solver_gpu && args.exercise_all_hashx_implementations {
-        solver_stats.hashx_gpu_implementations
+        solver_stats.hashx_gpu_implementations.clone()
     } else {
         Vec::new()
     };
@@ -972,6 +1593,33 @@ fn run(args: Args, adapter_override: Option<&str>) -> anyhow::Result<Option<Temp
         ensure!(
             implementations.is_empty() || implementations.iter().any(|value| value == expected),
             "required HashX implementation {expected} is not advertised; available: {implementations:?}"
+        );
+    }
+
+    let mut calibration_candidates_for_run = Vec::new();
+    if args.calibrate_routing {
+        calibration_candidates_for_run.extend(calibration_candidates(
+            "local",
+            &solver_base,
+            &solver_stats,
+            include_shared_calibration_candidates,
+        ));
+        if include_shared_calibration_candidates {
+            for external in &args.external_solvers {
+                let stats = fetch_solver_stats(&external.url).with_context(|| {
+                    format!("fetch external solver capabilities from {}", external.name)
+                })?;
+                calibration_candidates_for_run.extend(calibration_candidates(
+                    &external.name,
+                    &external.url,
+                    &stats,
+                    true,
+                ));
+            }
+        }
+        ensure!(
+            !calibration_candidates_for_run.is_empty(),
+            "routing calibration discovered no solver candidates"
         );
     }
 
@@ -1006,9 +1654,18 @@ fn run(args: Args, adapter_override: Option<&str>) -> anyhow::Result<Option<Temp
     } else {
         Vec::new()
     };
+    let calibration_cases = if args.calibrate_routing {
+        calibration_parameter_cases(
+            &calibration_candidates_for_run,
+            args.calibration_max_expected_work,
+        )?
+    } else {
+        Vec::new()
+    };
     cases.extend(benchmark_cases.iter().cloned());
     cases.extend(routing_cases.iter().cloned());
     cases.extend(browser_cases.iter().cloned());
+    cases.extend(calibration_cases.iter().cloned());
     if cases.is_empty() {
         cases.push("fast:anubis:2".parse()?);
     }
@@ -1042,11 +1699,15 @@ fn run(args: Args, adapter_override: Option<&str>) -> anyhow::Result<Option<Temp
     wait_ready(&format!("{anubis_base}/"), &mut anubis)?;
 
     let correctness_count = cases.len().saturating_sub(
-        benchmark_cases.len() + routing_cases.len() + browser_cases.len(),
+        benchmark_cases.len()
+            + routing_cases.len()
+            + browser_cases.len()
+            + calibration_cases.len(),
     );
     let benchmark_start = correctness_count;
     let routing_start = benchmark_start + benchmark_cases.len();
     let browser_start = routing_start + routing_cases.len();
+    let calibration_start = browser_start + browser_cases.len();
 
     let mut fuzz_trials = 0_usize;
     for (index, case) in cases[..correctness_count].iter().enumerate() {
@@ -1136,18 +1797,85 @@ fn run(args: Args, adapter_override: Option<&str>) -> anyhow::Result<Option<Temp
         }
     }
 
+    let mut calibration_entries = Vec::new();
+    if args.calibrate_routing {
+        for (offset, parameter) in calibration_cases.iter().enumerate() {
+            let index = calibration_start + offset;
+            for candidate in &calibration_candidates_for_run {
+                if !candidate_supports(candidate, parameter) {
+                    continue;
+                }
+                for &batch_size in &args.calibration_batch_sizes {
+                    let entry = match calibrate_batch(
+                        index,
+                        parameter,
+                        candidate,
+                        &anubis_base,
+                        batch_size,
+                        args.calibration_rounds,
+                    ) {
+                        Ok(entry) => entry,
+                        Err(error) => {
+                            eprintln!("\n--- challenge-disasterer log ---\n{}", solver.log_tail());
+                            eprintln!("\n--- Anubis log ---\n{}", anubis.log_tail());
+                            return Err(error).with_context(|| {
+                                format!(
+                                    "routing calibration failed: provider={} solver={} implementation={:?} algorithm={} difficulty={} batch={}",
+                                    candidate.provider,
+                                    candidate.solver,
+                                    candidate.implementation,
+                                    parameter.algorithm,
+                                    parameter.difficulty,
+                                    batch_size,
+                                )
+                            });
+                        }
+                    };
+                    println!(
+                        "CALIBRATE provider={} adapter={} solver={} implementation={} algorithm={} difficulty={} batch={} rounds={} makespan_ms={:.3} mean_request_ms={:.3} validation_ms={:.3} solutions_s={:.3} router={}",
+                        entry.provider,
+                        entry.adapter.as_deref().unwrap_or("-"),
+                        entry.solver,
+                        entry.implementation.as_deref().unwrap_or("-"),
+                        entry.algorithm,
+                        entry.difficulty,
+                        entry.batch_size,
+                        entry.rounds,
+                        entry.makespan_ms,
+                        entry.mean_request_ms,
+                        entry.validation_ms,
+                        entry.solutions_per_second,
+                        entry.router,
+                    );
+                    calibration_entries.push(entry);
+                }
+            }
+        }
+    }
+
     println!("PASS {fuzz_trials} live-Anubis correctness trial(s)");
-    if args.keep_temp {
+    let temp = if args.keep_temp {
         let kept = temp.keep();
         println!("kept e2e artifacts at {}", kept.display());
-        Ok(None)
+        None
     } else {
-        Ok(Some(temp))
-    }
+        Some(temp)
+    };
+    Ok(RunResult {
+        temp,
+        calibration_entries,
+    })
 }
 
 fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    if args.calibration_output.is_some() {
+        args.calibrate_routing = true;
+    }
+    args.calibration_batch_sizes.sort_unstable();
+    args.calibration_batch_sizes.dedup();
+
+    let mut all_calibration_entries = Vec::new();
     if args.solver_gpu && args.exercise_all_gpu_adapters {
         let adapters = discover_gpu_adapters(&args.solver_bin)?;
         ensure!(!adapters.is_empty(), "no usable Vulkan GPU adapters discovered");
@@ -1159,11 +1887,18 @@ fn main() -> anyhow::Result<()> {
             if index != 0 {
                 per_adapter.browser_reference = false;
             }
-            temps.push(run(per_adapter, Some(adapter))?);
+            let result = run(per_adapter, Some(adapter), index == 0)?;
+            all_calibration_entries.extend(result.calibration_entries);
+            temps.push(result.temp);
         }
         drop(temps);
     } else {
-        let _temp = run(args, None).map_err(|error| anyhow!("{error:#}"))?;
+        let result = run(args.clone(), None, true).map_err(|error| anyhow!("{error:#}"))?;
+        all_calibration_entries.extend(result.calibration_entries);
+        let _temp = result.temp;
+    }
+    if args.calibrate_routing {
+        write_calibration_report(&args, all_calibration_entries)?;
     }
     Ok(())
 }
@@ -1208,6 +1943,104 @@ mod tests {
         assert_eq!(matrix.len(), 8);
         assert!(matrix.iter().all(|case| case.force_implementation == case.implementation));
         Ok(())
+    }
+
+    #[test]
+    fn external_solver_spec_parses_name_and_url() -> anyhow::Result<()> {
+        let spec: ExternalSolverSpec = "remote=http://127.0.0.1:17418".parse()?;
+        assert_eq!(spec.name, "remote");
+        assert_eq!(spec.url, "http://127.0.0.1:17418");
+        Ok(())
+    }
+
+    #[test]
+    fn minimal_external_stats_need_only_capabilities() -> anyhow::Result<()> {
+        let stats: SolverStats = serde_json::from_value(json!({
+            "solver_capabilities": [{
+                "solver": "remote-hashx",
+                "algorithms": ["hashx"],
+                "difficulty_min": 1,
+                "difficulty_max": 32,
+                "router": false,
+                "implementations": []
+            }]
+        }))?;
+        assert_eq!(stats.calibration.gpu_adapter, None);
+        assert_eq!(stats.available_solvers, Vec::<String>::new());
+        assert_eq!(stats.solver_capabilities.len(), 1);
+        assert_eq!(stats.solver_capabilities[0].solver, "remote-hashx");
+        Ok(())
+    }
+
+    #[test]
+    fn calibration_parameter_matrix_respects_expected_work_cap() -> anyhow::Result<()> {
+        let candidates = vec![
+            CalibrationCandidate {
+                provider: "local".to_owned(),
+                base_url: "http://127.0.0.1:1".to_owned(),
+                adapter: None,
+                solver: "anubis-cpu".to_owned(),
+                implementation: None,
+                algorithms: vec!["fast".to_owned()],
+                difficulty_min: 1,
+                difficulty_max: 16,
+                router: false,
+            },
+            CalibrationCandidate {
+                provider: "local".to_owned(),
+                base_url: "http://127.0.0.1:1".to_owned(),
+                adapter: None,
+                solver: "anubis-hashx-jit".to_owned(),
+                implementation: None,
+                algorithms: vec!["hashx".to_owned()],
+                difficulty_min: 1,
+                difficulty_max: 64,
+                router: false,
+            },
+        ];
+        let cases = calibration_parameter_cases(&candidates, 256)?;
+        let keys = cases
+            .iter()
+            .map(|case| (case.algorithm.as_str(), case.difficulty))
+            .collect::<Vec<_>>();
+        assert!(keys.contains(&("fast", 1)));
+        assert!(keys.contains(&("fast", 2)));
+        assert!(!keys.contains(&("fast", 3)));
+        assert!(keys.contains(&("hashx", 8)));
+        assert!(!keys.contains(&("hashx", 9)));
+        Ok(())
+    }
+
+    #[test]
+    fn calibration_winners_exclude_router_rows() {
+        let make = |solver: &str, router: bool, makespan_ms: f64| CalibrationEntry {
+            provider: "local".to_owned(),
+            provider_url: None,
+            adapter: None,
+            solver: solver.to_owned(),
+            implementation: None,
+            algorithm: "hashx".to_owned(),
+            difficulty: 8,
+            expected_work: 256,
+            batch_size: 10,
+            rounds: 1,
+            makespan_ms,
+            mean_request_ms: makespan_ms,
+            p50_request_ms: makespan_ms,
+            p90_request_ms: makespan_ms,
+            mean_solver_ms: makespan_ms,
+            validation_ms: makespan_ms,
+            solutions_per_second: 1.0,
+            router,
+        };
+        let winners = calibration_winners(&[
+            make("anubis-hashx-auto", true, 1.0),
+            make("anubis-hashx-jit", false, 10.0),
+            make("anubis-hashx", false, 5.0),
+        ]);
+        assert_eq!(winners.len(), 1);
+        assert_eq!(winners[0].solver, "anubis-hashx");
+        assert_eq!(winners[0].makespan_ms, 5.0);
     }
 
     #[test]

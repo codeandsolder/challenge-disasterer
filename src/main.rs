@@ -13,6 +13,7 @@ mod hashx_gpu_native;
 mod hashx_sm75;
 #[cfg(feature = "gpu")]
 mod hashx_sm75_cuda;
+mod routing;
 mod service;
 mod stats;
 
@@ -44,6 +45,9 @@ struct Args {
     #[cfg(feature = "gpu")]
     #[arg(long, default_value_t = false, hide = true)]
     list_hashx_gpu_adapters: bool,
+    /// Calibration JSON produced by tools/anubis-e2e --calibrate-routing.
+    #[arg(long)]
+    routing_calibration: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -69,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "gpu")]
         gpu_calibration_hashes: args.gpu_calibration_hashes,
         gpu_enabled: args.gpu,
+        routing_calibration: args.routing_calibration,
     };
     let state = Arc::new(AppState::initialize(config).await?);
     let app = Router::new()

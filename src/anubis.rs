@@ -37,7 +37,7 @@ impl Challenge {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Answer {
     pub nonce: String,
     pub hash: String,
