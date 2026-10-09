@@ -26,6 +26,45 @@ impl Challenge {
 }
 
 #[cfg(feature = "gpu")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub(crate) enum GpuOp {
+    Mul = 0,
+    UMulH = 1,
+    SMulH = 2,
+    AddShift = 3,
+    AddConst = 4,
+    Sub = 5,
+    Xor = 6,
+    XorConst = 7,
+    Rotate = 8,
+    Target = 9,
+    Branch = 10,
+}
+
+#[cfg(feature = "gpu")]
+impl TryFrom<u32> for GpuOp {
+    type Error = anyhow::Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Mul),
+            1 => Ok(Self::UMulH),
+            2 => Ok(Self::SMulH),
+            3 => Ok(Self::AddShift),
+            4 => Ok(Self::AddConst),
+            5 => Ok(Self::Sub),
+            6 => Ok(Self::Xor),
+            7 => Ok(Self::XorConst),
+            8 => Ok(Self::Rotate),
+            9 => Ok(Self::Target),
+            10 => Ok(Self::Branch),
+            other => Err(anyhow!("unknown HashX GPU opcode {other}")),
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "gpu", derive(bytemuck::Pod, bytemuck::Zeroable))]
@@ -34,6 +73,115 @@ pub(crate) struct Instr {
     pub(crate) dst: u32,
     pub(crate) src: u32,
     pub(crate) imm: u32,
+}
+
+#[cfg(feature = "gpu")]
+impl Instr {
+    pub(crate) fn kind(self) -> anyhow::Result<GpuOp> {
+        self.op.try_into()
+    }
+}
+
+#[cfg(feature = "gpu")]
+#[derive(Clone, Debug)]
+pub(crate) struct GpuProgram {
+    key: [u64; 4],
+    instructions: Vec<Instr>,
+}
+
+#[cfg(feature = "gpu")]
+impl GpuProgram {
+    fn new(key: [u64; 4], instructions: Vec<Instr>) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            instructions.len() == 512,
+            "expected 512 HashX instructions, got {}",
+            instructions.len()
+        );
+        let mut target = None;
+        for (index, instruction) in instructions.iter().copied().enumerate() {
+            let kind = instruction.kind()?;
+            match kind {
+                GpuOp::Mul | GpuOp::UMulH | GpuOp::SMulH | GpuOp::Sub | GpuOp::Xor => {
+                    anyhow::ensure!(
+                        instruction.dst < 8 && instruction.src < 8,
+                        "HashX GPU register out of range at instruction {index}"
+                    );
+                }
+                GpuOp::AddShift => {
+                    anyhow::ensure!(
+                        instruction.dst < 8 && instruction.src < 8,
+                        "HashX GPU register out of range at instruction {index}"
+                    );
+                    anyhow::ensure!(
+                        instruction.imm < 64,
+                        "HashX GPU AddShift amount out of range at instruction {index}"
+                    );
+                }
+                GpuOp::AddConst | GpuOp::XorConst | GpuOp::Rotate => {
+                    anyhow::ensure!(
+                        instruction.dst < 8,
+                        "HashX GPU destination register out of range at instruction {index}"
+                    );
+                    if kind == GpuOp::Rotate {
+                        anyhow::ensure!(
+                            instruction.imm < 64,
+                            "HashX GPU rotate amount out of range at instruction {index}"
+                        );
+                    }
+                }
+                GpuOp::Target => target = Some(index),
+                GpuOp::Branch => {
+                    let target_index =
+                        target.context("HashX GPU branch without preceding target")?;
+                    anyhow::ensure!(
+                        target_index < index,
+                        "HashX GPU branch target is not before branch at instruction {index}"
+                    );
+                    target = None;
+                }
+            }
+        }
+        anyhow::ensure!(target.is_none(), "HashX GPU target without matching branch");
+        Ok(Self { key, instructions })
+    }
+
+    pub(crate) fn key(&self) -> &[u64; 4] {
+        &self.key
+    }
+
+    pub(crate) fn instructions(&self) -> &[Instr] {
+        &self.instructions
+    }
+}
+
+#[cfg(feature = "gpu")]
+fn prefix_mask(difficulty: u32) -> u32 {
+    if difficulty >= 32 {
+        return u32::MAX;
+    }
+    let mut mask = 0_u32;
+    let full = difficulty / 8;
+    let rem = difficulty % 8;
+    let mut i = 0;
+    while i < full {
+        mask |= 0xff << (8 * i);
+        i += 1;
+    }
+    if rem != 0 {
+        mask |= ((0xff << (8 - rem)) & 0xff) << (8 * full);
+    }
+    mask
+}
+
+#[cfg(feature = "gpu")]
+pub(crate) fn difficulty_masks(difficulty: u32) -> (u32, u32) {
+    let low = prefix_mask(difficulty.min(32));
+    let high = if difficulty > 32 {
+        prefix_mask(difficulty - 32)
+    } else {
+        0
+    };
+    (low, high)
 }
 
 pub(crate) fn build_compiled_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX)> {
@@ -54,7 +202,7 @@ pub(crate) fn build_compiled_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX
 }
 
 #[cfg(feature = "gpu")]
-pub(crate) fn describe(seed: &[u8]) -> anyhow::Result<(HashX, [u64; 4], Vec<Instr>)> {
+pub(crate) fn describe(seed: &[u8]) -> anyhow::Result<(HashX, GpuProgram)> {
     let (usable_seed, compiled) = build_compiled_seed(seed)?;
     let mut builder = HashXBuilder::new();
     builder.runtime(RuntimeOption::InterpretOnly);
@@ -135,12 +283,7 @@ pub(crate) fn describe(seed: &[u8]) -> anyhow::Result<(HashX, [u64; 4], Vec<Inst
         };
         program.push(instr);
     }
-    anyhow::ensure!(
-        program.len() == 512,
-        "expected 512 HashX instructions, got {}",
-        program.len()
-    );
-    Ok((compiled, key, program))
+    Ok((compiled, GpuProgram::new(key, program)?))
 }
 
 #[cfg(feature = "gpu")]

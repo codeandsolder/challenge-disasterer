@@ -89,7 +89,11 @@ local verifier still agrees with itself.
 
 Adding another solver family only needs another case once challenge-disasterer
 exposes it; HashX now uses the same harness contract as SHA via cases such as
-`hashx:anubis-hashx:16`.
+`hashx:anubis-hashx:16`. An optional fourth case field asserts the concrete
+implementation, for example `hashx:anubis-hashx:18:cuda-sm75-sass`. The same
+assertion can be applied to the generated HashX fuzz/benchmark matrix with
+`--expect-hashx-gpu-implementation`, so a benchmark cannot silently fall back to
+a different GPU path.
 
 For a from-source local Anubis build, its current asset pipeline additionally
 requires Node 22+, `brotli`, `zstd`, and the Rust `wasm32-unknown-unknown`
@@ -116,6 +120,7 @@ tools/anubis-e2e/target/release/challenge-disasterer-anubis-e2e \
   --anubis-bin target/anubis-live-bin \
   --solver-bin target/release/challenge-disasterer \
   --solver-gpu \
+  --expect-hashx-gpu-implementation cuda-sm75-sass \
   --fuzz --fuzz-repeats 4 \
   --benchmark --benchmark-samples 12
 ```
@@ -135,7 +140,11 @@ Anubis HEAD client code** rather than a reimplementation: `fast` uses the shippe
 WebCrypto/JS worker, while `hashx`, `sha256`, and `argon2id` use the shipped WASM
 workers. Those browser proofs must also be accepted by the same live server.
 
-The HashX GPU backend specializes by adapter. On NVIDIA SM75/Turing it emits the bounded 512-op HashX program directly as SASS into an embedded fixed-layout cubin shell and loads it with the CUDA Driver API. Code generation is tens of microseconds and the driver module path is warmed during backend initialization, so measured fresh-challenge latency beats the persistent Vulkan interpreter even at difficulty 1; the Vulkan u32 interpreter remains the zero-compiler fallback if CUDA/SASS initialization fails. The CUDA dependency is dynamically loaded and does **not** require a CUDA toolkit at build time. Other NVIDIA architectures retain the portable Vulkan paths. AMD/RADV continues to use the persistent passthrough SPIR-V kernel with extended 64-bit multiplies through difficulty 20, with challenge-specialized WGSL above that range.
+The HashX GPU backend has one shared validated `GpuProgram` representation (SipHash key plus the fixed 512 typed HashX operations). Portable Vulkan, challenge-specialized WGSL, and architecture-native backends all consume that same program. Native NVIDIA selection resolves the wgpu-selected CUDA device once, inspects its compute capability, and dispatches to an architecture encoder; SM75/Turing is currently implemented and later SM generations can be added as sibling backends without duplicating HashX parsing, validation, device matching, or solve orchestration.
+
+On SM75/Turing the native backend emits the program directly as SASS into an embedded fixed-layout cubin shell and loads it with the CUDA Driver API. Code generation is tens of microseconds and the driver module path is warmed during backend initialization, so measured fresh-challenge latency beats the persistent Vulkan interpreter even at difficulty 1; the NVIDIA u32 Vulkan interpreter remains the runtime fallback if CUDA/native specialization is unavailable. The CUDA dependency is dynamically loaded and does **not** require a CUDA toolkit at build time. AMD/RADV continues to use the working `vulkan-extmul-persistent` passthrough-SPIR-V path through difficulty 20, with `wgsl-specialized` above that range.
+
+HashX GPU solve responses retain `"backend":"gpu"` for API compatibility and add an `implementation` field identifying the actual path (`cuda-sm75-sass`, `vulkan-extmul-persistent`, `vulkan-nvidia-u32-persistent`, or `wgsl-specialized`). The verifier and benchmark can require this value explicitly, which is used for cross-architecture validation rather than inferring the backend from adapter logs.
 
 The SM75 emitter is deliberately narrow rather than a general assembler: typed Rust encoders cover only the instruction forms HashX needs, then patch a 128 KiB `.text.kern` section in a prebuilt cubin shell. The shell contains dead padding after the real `EXIT`; an 8,192-program generation fuzz reached 4,068 used instruction words versus 8,192 available. Turing instruction-encoding details are derived from the MIT-licensed TuringAs project; see `THIRD_PARTY_NOTICES.md`.
 

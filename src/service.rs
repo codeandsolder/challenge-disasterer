@@ -22,7 +22,10 @@ use crate::{
     stats::{Calibration, StatsStore},
 };
 #[cfg(feature = "gpu")]
-use crate::{gpu::GpuSolver, hashx_gpu::GpuSolver as HashxGpuSolver};
+use crate::{
+    gpu::GpuSolver,
+    hashx_gpu::{GpuResult as HashxGpuResult, GpuSolver as HashxGpuSolver},
+};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -44,7 +47,7 @@ struct GpuJob {
 #[cfg(feature = "gpu")]
 struct HashxGpuJob {
     challenge: hashx::Challenge,
-    result: oneshot::Sender<anyhow::Result<anubis::BackendResult>>,
+    result: oneshot::Sender<anyhow::Result<HashxGpuResult>>,
 }
 
 pub struct AppState {
@@ -73,6 +76,8 @@ pub struct SolveRequest {
 pub struct SolveResponse {
     solver: &'static str,
     backend: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    implementation: Option<&'static str>,
     answer: anubis::Answer,
     queue_ms: f64,
     solve_ms: f64,
@@ -222,6 +227,7 @@ impl AppState {
         Ok(SolveResponse {
             solver: "anubis",
             backend: "cpu",
+            implementation: None,
             answer: result.answer,
             queue_ms,
             solve_ms: result.solve_ms,
@@ -276,6 +282,7 @@ impl AppState {
         Ok(SolveResponse {
             solver: "anubis-gpu",
             backend: "gpu",
+            implementation: None,
             answer: result.answer,
             queue_ms,
             solve_ms: result.solve_ms,
@@ -302,6 +309,7 @@ impl AppState {
         Ok(SolveResponse {
             solver: "anubis-hashx-jit",
             backend: "cpu-jit",
+            implementation: None,
             answer: result.answer,
             queue_ms,
             solve_ms: result.solve_ms,
@@ -333,6 +341,7 @@ impl AppState {
         Ok(SolveResponse {
             solver: "anubis-hashx",
             backend: "gpu",
+            implementation: Some(result.implementation),
             answer: result.answer,
             queue_ms: 0.0,
             solve_ms: result.solve_ms,
@@ -382,6 +391,7 @@ impl AppState {
                 Ok(result) => Ok(SolveResponse {
                     solver: "anubis",
                     backend: "gpu",
+                    implementation: None,
                     answer: result.answer,
                     queue_ms,
                     solve_ms: result.solve_ms,

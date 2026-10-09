@@ -4,9 +4,9 @@ use anyhow::{Context, anyhow};
 use hashx08::HashX;
 
 use crate::{
-    anubis::{Answer, BackendResult},
-    hashx::{Challenge, Instr, describe, valid_prefix},
-    hashx_sm75_cuda::Sm75Cuda,
+    anubis::Answer,
+    hashx::{Challenge, GpuOp, Instr, describe, valid_prefix},
+    hashx_gpu_native::NativeGpuBackend,
 };
 
 const AMD_WG_SIZE: u32 = 64;
@@ -16,7 +16,16 @@ const SPECIALIZED_BATCH: u32 = 262_144;
 const PERSISTENT_MAX_BATCH: u32 = 262_144;
 const PERSISTENT_CROSSOVER_DIFFICULTY: u32 = 20;
 const PROGRAM_BYTES: u64 = 512 * 16;
-const SM75_SASS_MIN_DIFFICULTY: u32 = 1;
+const NATIVE_MIN_DIFFICULTY: u32 = 1;
+const NVIDIA_VULKAN_IMPLEMENTATION: &str = "vulkan-nvidia-u32-persistent";
+const EXTMUL_VULKAN_IMPLEMENTATION: &str = "vulkan-extmul-persistent";
+const SPECIALIZED_IMPLEMENTATION: &str = "wgsl-specialized";
+
+pub(crate) struct GpuResult {
+    pub(crate) answer: Answer,
+    pub(crate) solve_ms: f64,
+    pub(crate) implementation: &'static str,
+}
 
 pub struct GpuSolver {
     device: wgpu::Device,
@@ -29,7 +38,8 @@ pub struct GpuSolver {
     persistent_pipeline: Option<wgpu::ComputePipeline>,
     persistent_bind_group: Option<wgpu::BindGroup>,
     persistent_wg_size: u32,
-    sm75_cuda: Option<Sm75Cuda>,
+    native_backend: Option<NativeGpuBackend>,
+    persistent_implementation: &'static str,
 }
 
 impl GpuSolver {
@@ -52,21 +62,26 @@ impl GpuSolver {
         };
         let info = adapter.get_info();
         let is_nvidia = info.vendor == 0x10de;
-        let sm75_cuda = if is_nvidia {
-            match Sm75Cuda::create_for_wgpu_adapter(&info.name) {
-                Ok(cuda) => {
-                    if let Some(ref backend) = cuda {
-                        tracing::info!(adapter = %backend.adapter(), "direct sm_75 SASS HashX backend ready");
-                    }
-                    cuda
+        let native_backend = match NativeGpuBackend::create_for_adapter(&info) {
+            Ok(backend) => {
+                if let Some(ref backend) = backend {
+                    tracing::info!(
+                        adapter = %backend.adapter(),
+                        implementation = backend.implementation(),
+                        "native HashX GPU backend ready"
+                    );
                 }
-                Err(error) => {
-                    tracing::warn!(%error, "direct sm_75 SASS HashX backend unavailable; using Vulkan fallback");
-                    None
-                }
+                backend
             }
+            Err(error) => {
+                tracing::warn!(%error, "native HashX GPU backend unavailable; using Vulkan fallback");
+                None
+            }
+        };
+        let persistent_implementation = if is_nvidia {
+            NVIDIA_VULKAN_IMPLEMENTATION
         } else {
-            None
+            EXTMUL_VULKAN_IMPLEMENTATION
         };
         let persistent_wg_size = if is_nvidia {
             NVIDIA_WG_SIZE
@@ -170,7 +185,8 @@ impl GpuSolver {
             persistent_pipeline,
             persistent_bind_group,
             persistent_wg_size,
-            sm75_cuda,
+            native_backend,
+            persistent_implementation,
         })
     }
 
@@ -178,25 +194,33 @@ impl GpuSolver {
         &self.adapter
     }
 
-    pub fn solve(&mut self, challenge: &Challenge) -> anyhow::Result<BackendResult> {
+    pub fn solve(&mut self, challenge: &Challenge) -> anyhow::Result<GpuResult> {
         challenge.validate()?;
         let started = Instant::now();
         let seed = hex::decode(&challenge.data).context("decode HashX challenge")?;
-        let (hashx, key, program) = describe(&seed)?;
+        let (hashx, program) = describe(&seed)?;
 
-        if challenge.difficulty >= SM75_SASS_MIN_DIFFICULTY {
-            let direct_result = self
-                .sm75_cuda
-                .as_mut()
-                .map(|backend| backend.solve(&key, &program, challenge.difficulty));
-            match direct_result {
+        if challenge.difficulty >= NATIVE_MIN_DIFFICULTY {
+            let native_result = self.native_backend.as_mut().map(|backend| {
+                let implementation = backend.implementation();
+                backend
+                    .solve(&program, challenge.difficulty)
+                    .map(|nonce| (nonce, implementation))
+            });
+            match native_result {
                 None => {}
-                Some(Ok(nonce)) => {
-                    return validated_result(&hashx, nonce, challenge.difficulty, started);
+                Some(Ok((nonce, implementation))) => {
+                    return validated_result(
+                        &hashx,
+                        nonce,
+                        challenge.difficulty,
+                        started,
+                        implementation,
+                    );
                 }
                 Some(Err(error)) => {
-                    tracing::warn!(%error, "direct sm_75 SASS HashX solve failed; disabling backend and falling back to Vulkan");
-                    self.sm75_cuda = None;
+                    tracing::warn!(%error, "native HashX GPU solve failed; disabling backend and falling back to Vulkan");
+                    self.native_backend = None;
                 }
             }
         }
@@ -204,9 +228,22 @@ impl GpuSolver {
         if challenge.difficulty <= PERSISTENT_CROSSOVER_DIFFICULTY
             && self.persistent_pipeline.is_some()
         {
-            self.solve_persistent(challenge, &hashx, &key, &program, started)
+            self.solve_persistent(
+                challenge,
+                &hashx,
+                program.key(),
+                program.instructions(),
+                started,
+                self.persistent_implementation,
+            )
         } else {
-            self.solve_specialized(challenge, &hashx, &key, &program, started)
+            self.solve_specialized(
+                challenge,
+                &hashx,
+                program.key(),
+                program.instructions(),
+                started,
+            )
         }
     }
 
@@ -217,7 +254,8 @@ impl GpuSolver {
         key: &[u64; 4],
         program: &[Instr],
         started: Instant,
-    ) -> anyhow::Result<BackendResult> {
+        implementation: &'static str,
+    ) -> anyhow::Result<GpuResult> {
         let pipeline = self
             .persistent_pipeline
             .as_ref()
@@ -252,7 +290,13 @@ impl GpuSolver {
             })?;
             let nonce = self.read_solution()?;
             if nonce != u32::MAX {
-                return validated_result(hashx, nonce, challenge.difficulty, started);
+                return validated_result(
+                    hashx,
+                    nonce,
+                    challenge.difficulty,
+                    started,
+                    implementation,
+                );
             }
             base += u64::from(batch);
         }
@@ -266,8 +310,8 @@ impl GpuSolver {
         key: &[u64; 4],
         program: &[Instr],
         started: Instant,
-    ) -> anyhow::Result<BackendResult> {
-        let shader = specialized_shader(program);
+    ) -> anyhow::Result<GpuResult> {
+        let shader = specialized_shader(program)?;
         let module = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -320,7 +364,13 @@ impl GpuSolver {
             })?;
             let nonce = self.read_solution()?;
             if nonce != u32::MAX {
-                return validated_result(hashx, nonce, challenge.difficulty, started);
+                return validated_result(
+                    hashx,
+                    nonce,
+                    challenge.difficulty,
+                    started,
+                    SPECIALIZED_IMPLEMENTATION,
+                );
             }
             base += u64::from(batch);
         }
@@ -420,79 +470,80 @@ fn validated_result(
     nonce: u32,
     difficulty: u32,
     started: Instant,
-) -> anyhow::Result<BackendResult> {
+    implementation: &'static str,
+) -> anyhow::Result<GpuResult> {
     let hash = hashx.hash_to_bytes(u64::from(nonce));
     anyhow::ensure!(
         valid_prefix(&hash, difficulty),
         "HashX GPU solver returned nonce with invalid difficulty"
     );
-    Ok(BackendResult {
+    Ok(GpuResult {
         answer: Answer {
             nonce: nonce.to_string(),
             hash: hex::encode(hash),
         },
         solve_ms: started.elapsed().as_secs_f64() * 1000.0,
+        implementation,
     })
 }
 
-fn op_source(i: Instr) -> String {
-    match i.op {
-        0 => format!("r[{d}u]=r[{d}u]*r[{s}u];\n", d = i.dst, s = i.src),
-        1 => format!(
+fn op_source(i: Instr) -> anyhow::Result<String> {
+    Ok(match i.kind()? {
+        GpuOp::Mul => format!("r[{d}u]=r[{d}u]*r[{s}u];\n", d = i.dst, s = i.src),
+        GpuOp::UMulH => format!(
             "{{let x=umulhi(r[{d}u],r[{s}u]);r[{d}u]=x;mh=u32(x);}}\n",
             d = i.dst,
             s = i.src
         ),
-        2 => format!(
+        GpuOp::SMulH => format!(
             "{{let x=smulhi(r[{d}u],r[{s}u]);r[{d}u]=x;mh=u32(x);}}\n",
             d = i.dst,
             s = i.src
         ),
-        3 => format!(
+        GpuOp::AddShift => format!(
             "r[{d}u]=r[{d}u]+(r[{s}u]<<{n}u);\n",
             d = i.dst,
             s = i.src,
             n = i.imm
         ),
-        4 => format!(
+        GpuOp::AddConst => format!(
             "r[{d}u]=r[{d}u]+0x{v:016x}lu;\n",
             d = i.dst,
             v = (i.imm as i32 as i64) as u64
         ),
-        5 => format!("r[{d}u]=r[{d}u]-r[{s}u];\n", d = i.dst, s = i.src),
-        6 => format!("r[{d}u]=r[{d}u]^r[{s}u];\n", d = i.dst, s = i.src),
-        7 => format!(
+        GpuOp::Sub => format!("r[{d}u]=r[{d}u]-r[{s}u];\n", d = i.dst, s = i.src),
+        GpuOp::Xor => format!("r[{d}u]=r[{d}u]^r[{s}u];\n", d = i.dst, s = i.src),
+        GpuOp::XorConst => format!(
             "r[{d}u]=r[{d}u]^0x{v:016x}lu;\n",
             d = i.dst,
             v = (i.imm as i32 as i64) as u64
         ),
-        8 => format!("r[{d}u]=ror(r[{d}u],{n}u);\n", d = i.dst, n = i.imm),
-        9 | 10 => String::new(),
-        _ => unreachable!(),
-    }
+        GpuOp::Rotate => format!("r[{d}u]=ror(r[{d}u],{n}u);\n", d = i.dst, n = i.imm),
+        GpuOp::Target | GpuOp::Branch => String::new(),
+    })
 }
 
-fn specialized_shader(program: &[Instr]) -> String {
+fn specialized_shader(program: &[Instr]) -> anyhow::Result<String> {
     let mut body = String::new();
     let mut target = None;
     for (index, &instruction) in program.iter().enumerate() {
-        match instruction.op {
-            9 => target = Some(index),
-            10 => {
-                let start = target.expect("HashX branch without target") + 1;
+        match instruction.kind()? {
+            GpuOp::Target => target = Some(index),
+            GpuOp::Branch => {
+                let start = target.context("HashX branch without target")? + 1;
                 body.push_str(&format!(
                     "if(allow&&((mh&0x{:08x}u)==0u)){{allow=false;\n",
                     instruction.imm
                 ));
                 for &replay in &program[start..index] {
-                    body.push_str(&op_source(replay));
+                    body.push_str(&op_source(replay)?);
                 }
                 body.push_str("}\n");
             }
-            _ => body.push_str(&op_source(instruction)),
+            _ => body.push_str(&op_source(instruction)?),
         }
     }
-    format!(
+    Ok(format!(
         r#"
 struct Params{{w:array<u32,16>}};struct Out{{solution:atomic<u32>}};
 @group(0) @binding(0) var<storage,read> params:Params;@group(0) @binding(1) var<storage,read_write> out:Out;
@@ -508,5 +559,5 @@ fn hx(n:u64)->array<u64,4>{{let k=key();let r=run(init(k,n));var x=S(r[0]+k.v0,r
 fn bswap(x:u32)->u32{{return((x&0xffu)<<24u)|((x&0xff00u)<<8u)|((x&0xff0000u)>>8u)|((x&0xff000000u)>>24u);}}
 @compute @workgroup_size(64) fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{if(atomicLoad(&out.solution)!=0xffffffffu){{return;}}let nonce=params.w[8]+gid.x;let h=hx(u64(nonce));let d=params.w[9];let p0=bswap(u32(h[0]));let p1=bswap(u32(h[0]>>32u));var ok=false;if(d<=32u){{ok=(d==0u)||((p0>>(32u-d))==0u);}}else{{ok=(p0==0u)&&((p1>>(64u-d))==0u);}}if(ok){{_=atomicMin(&out.solution,nonce);}}}}
 "#
-    )
+    ))
 }

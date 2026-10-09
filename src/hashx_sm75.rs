@@ -1,7 +1,7 @@
 // SM75 instruction encodings and layout details are derived from TuringAs.
 // See THIRD_PARTY_NOTICES.md for attribution and its MIT license.
 
-use crate::hashx::Instr;
+use crate::hashx::{GpuOp, GpuProgram, Instr};
 use anyhow::Context;
 
 const TEXT_OFFSET: usize = 0x380;
@@ -369,27 +369,6 @@ fn tail_bra() -> u128 {
     code |= 0x3ffffu128;
     put_pred(&mut code, Pred::PT, 23);
     code
-}
-
-#[derive(Clone, Debug)]
-struct HashInstr {
-    op: u8,
-    dst: u8,
-    src: u8,
-    imm: u32,
-}
-
-impl TryFrom<&Instr> for HashInstr {
-    type Error = anyhow::Error;
-
-    fn try_from(value: &Instr) -> Result<Self, Self::Error> {
-        Ok(Self {
-            op: u8::try_from(value.op).context("HashX opcode does not fit u8")?,
-            dst: u8::try_from(value.dst).context("HashX dst does not fit u8")?,
-            src: u8::try_from(value.src).context("HashX src does not fit u8")?,
-            imm: value.imm,
-        })
-    }
 }
 
 struct Emitter {
@@ -839,50 +818,58 @@ impl Emitter {
         self.xor64_reg(dlo, dhi, alo, ahi, guard);
         self.ror64(clo, chi, 32, guard);
     }
-    fn op_instr(&mut self, ins: &HashInstr, guard: Pred) -> anyhow::Result<()> {
-        let d = ins.dst;
-        let src = ins.src;
-        match ins.op {
-            0 => {
+    fn op_instr(&mut self, ins: &Instr, guard: Pred) -> anyhow::Result<()> {
+        let d = ins.dst as u8;
+        let src = ins.src as u8;
+        match ins.kind()? {
+            GpuOp::Mul => {
                 let (dlo, dhi) = pair(d);
                 let (slo, shi) = pair(src);
                 self.mullo(dlo, dhi, dlo, dhi, slo, shi, guard);
             }
-            1 | 2 => {
+            GpuOp::UMulH | GpuOp::SMulH => {
                 let (dlo, dhi) = pair(d);
                 let (slo, shi) = pair(src);
-                self.mulhi(dlo, dhi, dlo, dhi, slo, shi, ins.op == 2, guard);
+                self.mulhi(
+                    dlo,
+                    dhi,
+                    dlo,
+                    dhi,
+                    slo,
+                    shi,
+                    ins.kind()? == GpuOp::SMulH,
+                    guard,
+                );
             }
-            3 => {
+            GpuOp::AddShift => {
                 let (slo, shi) = pair(src);
                 self.shl64_tmp(slo, shi, ins.imm as u8, guard);
                 let (dlo, dhi) = pair(d);
                 self.add64_reg(dlo, dhi, 24, 25, guard);
             }
-            4 => {
+            GpuOp::AddConst => {
                 let (dlo, dhi) = pair(d);
                 self.add64_const(dlo, dhi, imm64(ins.imm), guard);
             }
-            5 => {
+            GpuOp::Sub => {
                 let (dlo, dhi) = pair(d);
                 let (slo, shi) = pair(src);
                 self.sub64(dlo, dhi, slo, shi, guard);
             }
-            6 => {
+            GpuOp::Xor => {
                 let (dlo, dhi) = pair(d);
                 let (slo, shi) = pair(src);
                 self.xor64_reg(dlo, dhi, slo, shi, guard);
             }
-            7 => {
+            GpuOp::XorConst => {
                 let (dlo, dhi) = pair(d);
                 self.xor64_const(dlo, dhi, imm64(ins.imm), guard);
             }
-            8 => {
+            GpuOp::Rotate => {
                 let (dlo, dhi) = pair(d);
                 self.ror64(dlo, dhi, ins.imm as u8, guard);
             }
-            9 | 10 => {}
-            other => anyhow::bail!("unknown HashX op {other}"),
+            GpuOp::Target | GpuOp::Branch => {}
         }
         Ok(())
     }
@@ -895,11 +882,9 @@ const fn imm64(v: u32) -> u64 {
     (v as i32 as i64) as u64
 }
 
-fn generate(key: &[u64; 4], source_program: &[Instr]) -> anyhow::Result<Vec<u128>> {
-    let program = source_program
-        .iter()
-        .map(HashInstr::try_from)
-        .collect::<anyhow::Result<Vec<_>>>()?;
+fn generate(source: &GpuProgram) -> anyhow::Result<Vec<u128>> {
+    let key = source.key();
+    let program = source.instructions();
     let mut e = Emitter::new();
     e.emit(mov(
         r(0),
@@ -1018,9 +1003,9 @@ fn generate(key: &[u64; 4], source_program: &[Instr]) -> anyhow::Result<Vec<u128
     e.mov(4, Src1::Reg(Reg::Z), Pred::PT);
     let mut target: Option<usize> = None;
     for (index, ins) in program.iter().enumerate() {
-        match ins.op {
-            9 => target = Some(index),
-            10 => {
+        match ins.kind()? {
+            GpuOp::Target => target = Some(index),
+            GpuOp::Branch => {
                 let target = target.context("HashX branch without target")?;
                 e.lop(5, 4, Src1::Imm(ins.imm), 0xc0, Pred::PT);
                 e.emit(isetp(
@@ -1046,7 +1031,7 @@ fn generate(key: &[u64; 4], source_program: &[Instr]) -> anyhow::Result<Vec<u128
                     8,
                 ));
                 for replay in &program[target + 1..index] {
-                    if replay.op != 9 && replay.op != 10 {
+                    if !matches!(replay.kind()?, GpuOp::Target | GpuOp::Branch) {
                         e.op_instr(replay, Pred::P6)?;
                     }
                 }
@@ -1108,42 +1093,16 @@ fn patch_words(cubin: &mut [u8], words: &[u128]) {
     }
 }
 
-fn prefix_mask(difficulty: u32) -> u32 {
-    if difficulty >= 32 {
-        return u32::MAX;
-    }
-    let mut mask = 0_u32;
-    let full = difficulty / 8;
-    let rem = difficulty % 8;
-    for i in 0..full {
-        mask |= 0xff << (8 * i);
-    }
-    if rem != 0 {
-        mask |= ((0xff << (8 - rem)) & 0xff) << (8 * full);
-    }
-    mask
-}
-
-pub(crate) fn difficulty_masks(difficulty: u32) -> (u32, u32) {
-    let low = prefix_mask(difficulty.min(32));
-    let high = if difficulty > 32 {
-        prefix_mask(difficulty - 32)
-    } else {
-        0
-    };
-    (low, high)
-}
-
 pub(crate) fn template_solve_cubin() -> Vec<u8> {
     TEMPLATE.to_vec()
 }
 
-pub(crate) fn build_solve_cubin(key: &[u64; 4], program: &[Instr]) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn build_solve_cubin(program: &GpuProgram) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!(
         TEMPLATE.len() >= TEXT_OFFSET + TEXT_SIZE,
         "embedded sm_75 cubin template is truncated"
     );
-    let words = generate(key, program)?;
+    let words = generate(program)?;
     let mut cubin = TEMPLATE.to_vec();
     patch_words(&mut cubin, &words);
     Ok(cubin)
@@ -1155,12 +1114,12 @@ mod tests {
 
     #[test]
     fn difficulty_masks_match_hash_byte_order() {
-        assert_eq!(difficulty_masks(1), (0x0000_0080, 0));
-        assert_eq!(difficulty_masks(8), (0x0000_00ff, 0));
-        assert_eq!(difficulty_masks(12), (0x0000_f0ff, 0));
-        assert_eq!(difficulty_masks(32), (u32::MAX, 0));
-        assert_eq!(difficulty_masks(40), (u32::MAX, 0x0000_00ff));
-        assert_eq!(difficulty_masks(64), (u32::MAX, u32::MAX));
+        assert_eq!(crate::hashx::difficulty_masks(1), (0x0000_0080, 0));
+        assert_eq!(crate::hashx::difficulty_masks(8), (0x0000_00ff, 0));
+        assert_eq!(crate::hashx::difficulty_masks(12), (0x0000_f0ff, 0));
+        assert_eq!(crate::hashx::difficulty_masks(32), (u32::MAX, 0));
+        assert_eq!(crate::hashx::difficulty_masks(40), (u32::MAX, 0x0000_00ff));
+        assert_eq!(crate::hashx::difficulty_masks(64), (u32::MAX, u32::MAX));
     }
 
     #[test]
@@ -1174,8 +1133,8 @@ mod tests {
             .unwrap_or(1024);
         for seed in 0_u32..cases {
             let seed_bytes = seed.to_le_bytes();
-            let (_, key, program) = crate::hashx::describe(&seed_bytes)?;
-            let words = generate(&key, &program)?;
+            let (_, program) = crate::hashx::describe(&seed_bytes)?;
+            let words = generate(&program)?;
             let used = words
                 .iter()
                 .position(|&word| word == exit_word)
@@ -1214,8 +1173,8 @@ mod tests {
             ),
         ];
         for (seed, expected) in cases {
-            let (_, key, program) = crate::hashx::describe(seed)?;
-            let cubin = build_solve_cubin(&key, &program)?;
+            let (_, program) = crate::hashx::describe(seed)?;
+            let cubin = build_solve_cubin(&program)?;
             assert_eq!(hex::encode(Sha256::digest(cubin)), *expected);
         }
         Ok(())

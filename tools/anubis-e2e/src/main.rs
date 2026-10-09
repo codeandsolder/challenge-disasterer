@@ -34,6 +34,7 @@ struct CaseSpec {
     algorithm: String,
     solver: String,
     difficulty: u32,
+    implementation: Option<String>,
 }
 
 impl FromStr for CaseSpec {
@@ -48,17 +49,22 @@ impl FromStr for CaseSpec {
             .context("missing difficulty")?
             .parse::<u32>()
             .context("difficulty must be an integer")?;
+        let implementation = fields.next().map(str::to_owned);
         ensure!(
             fields.next().is_none(),
-            "case must be algorithm:solver:difficulty"
+            "case must be algorithm:solver:difficulty[:implementation]"
         );
         validate_token("algorithm", algorithm)?;
         validate_token("solver", solver)?;
+        if let Some(ref implementation) = implementation {
+            validate_token("implementation", implementation)?;
+        }
         ensure!(difficulty > 0, "difficulty must be greater than zero");
         Ok(Self {
             algorithm: algorithm.to_owned(),
             solver: solver.to_owned(),
             difficulty,
+            implementation,
         })
     }
 }
@@ -86,14 +92,18 @@ struct Args {
     #[arg(long)]
     solver_bin: PathBuf,
 
-    /// Anubis algorithm, challenge-disasterer solver name, and difficulty.
+    /// Anubis algorithm, solver, difficulty, and optional required implementation.
     /// Repeat to test multiple solver/protocol pairs.
-    #[arg(long = "case", value_name = "ALGORITHM:SOLVER:DIFFICULTY")]
+    #[arg(long = "case", value_name = "ALGORITHM:SOLVER:DIFFICULTY[:IMPLEMENTATION]")]
     cases: Vec<CaseSpec>,
 
     /// Enable challenge-disasterer's GPU backend. CI defaults to CPU-only.
     #[arg(long, default_value_t = false)]
     solver_gpu: bool,
+
+    /// Require HashX GPU fuzz/benchmark cases to use this concrete implementation.
+    #[arg(long)]
+    expect_hashx_gpu_implementation: Option<String>,
 
     /// Extra argument forwarded verbatim to challenge-disasterer.
     #[arg(long = "solver-arg")]
@@ -165,6 +175,7 @@ struct SolverAnswer {
 struct SolverResponse {
     solver: String,
     backend: String,
+    implementation: Option<String>,
     answer: SolverAnswer,
     solve_ms: f64,
 }
@@ -174,6 +185,7 @@ struct TrialResult {
     wall_ms: f64,
     solve_ms: f64,
     backend: String,
+    implementation: Option<String>,
 }
 
 struct ManagedChild {
@@ -428,6 +440,13 @@ fn solve_case(
         solved.solver,
         case.solver
     );
+    if let Some(expected) = case.implementation.as_deref() {
+        ensure!(
+            solved.implementation.as_deref() == Some(expected),
+            "solver implementation mismatch: expected {expected}, got {:?}",
+            solved.implementation
+        );
+    }
 
     let pass_url = Url::parse(&format!(
         "{anubis_base}/.within.website/x/cmd/anubis/api/pass-challenge"
@@ -479,10 +498,11 @@ fn solve_case(
 
     let wall_ms = wall_started.elapsed().as_secs_f64() * 1000.0;
     println!(
-        "PASS algorithm={} solver={} backend={} difficulty={} nonce={} solver_ms={:.3} wall_ms={:.3} final_url={}",
+        "PASS algorithm={} solver={} backend={} implementation={} difficulty={} nonce={} solver_ms={:.3} wall_ms={:.3} final_url={}",
         case.algorithm,
         case.solver,
         solved.backend,
+        solved.implementation.as_deref().unwrap_or("-"),
         case.difficulty,
         solved.answer.nonce,
         solved.solve_ms,
@@ -493,6 +513,7 @@ fn solve_case(
         wall_ms,
         solve_ms: solved.solve_ms,
         backend: solved.backend,
+        implementation: solved.implementation,
     })
 }
 
@@ -504,7 +525,7 @@ fn expected_hashes(case: &CaseSpec) -> f64 {
     }
 }
 
-fn fuzz_matrix(gpu: bool) -> anyhow::Result<Vec<CaseSpec>> {
+fn fuzz_matrix(gpu: bool, implementation: Option<&str>) -> anyhow::Result<Vec<CaseSpec>> {
     let mut specs = Vec::new();
     for difficulty in [1_u32, 2, 3, 4, 5] {
         specs.push(format!("fast:anubis-cpu:{difficulty}").parse()?);
@@ -526,20 +547,22 @@ fn fuzz_matrix(gpu: bool) -> anyhow::Result<Vec<CaseSpec>> {
             specs.push(format!("slow:anubis-gpu:{difficulty}").parse()?);
         }
         for difficulty in [1_u32, 2, 4, 8, 12, 16, 20] {
-            specs.push(format!("hashx:anubis-hashx:{difficulty}").parse()?);
+            let suffix = implementation.map_or_else(String::new, |value| format!(":{value}"));
+            specs.push(format!("hashx:anubis-hashx:{difficulty}{suffix}").parse()?);
         }
     }
     Ok(specs)
 }
 
-fn benchmark_matrix(gpu: bool) -> anyhow::Result<Vec<CaseSpec>> {
+fn benchmark_matrix(gpu: bool, implementation: Option<&str>) -> anyhow::Result<Vec<CaseSpec>> {
     let mut specs = vec![
         "fast:anubis-cpu:5".parse()?,
         "hashx:anubis-hashx-jit:18".parse()?,
     ];
     if gpu {
         specs.push("fast:anubis-gpu:5".parse()?);
-        specs.push("hashx:anubis-hashx:18".parse()?);
+        let suffix = implementation.map_or_else(String::new, |value| format!(":{value}"));
+        specs.push(format!("hashx:anubis-hashx:18{suffix}").parse()?);
     }
     Ok(specs)
 }
@@ -553,7 +576,7 @@ fn browser_benchmark_matrix() -> anyhow::Result<Vec<CaseSpec>> {
     ])
 }
 
-fn print_benchmark(case: &CaseSpec, trials: &[TrialResult]) {
+fn print_benchmark(case: &CaseSpec, trials: &[TrialResult]) -> anyhow::Result<()> {
     let wall_ms: f64 = trials.iter().map(|trial| trial.wall_ms).sum();
     let solve_ms: f64 = trials.iter().map(|trial| trial.solve_ms).sum();
     let sample_count = u32::try_from(trials.len()).expect("benchmark sample count fits u32");
@@ -561,11 +584,21 @@ fn print_benchmark(case: &CaseSpec, trials: &[TrialResult]) {
     let hashes_per_s = expected_hashes(case) * sample_count * 1000.0
         / solve_ms.max(f64::MIN_POSITIVE);
     let backend = trials.first().map_or("unknown", |trial| trial.backend.as_str());
+    let implementation = trials
+        .first()
+        .and_then(|trial| trial.implementation.as_deref());
+    ensure!(
+        trials.iter().all(|trial| {
+            trial.backend == backend && trial.implementation.as_deref() == implementation
+        }),
+        "benchmark mixed backend/implementation results"
+    );
     println!(
-        "BENCH algorithm={} solver={} backend={} difficulty={} n={} avg_answer_ms={:.3} effective_h_s={:.3} effective_mh_s={:.3} mean_solver_ms={:.3}",
+        "BENCH algorithm={} solver={} backend={} implementation={} difficulty={} n={} avg_answer_ms={:.3} effective_h_s={:.3} effective_mh_s={:.3} mean_solver_ms={:.3}",
         case.algorithm,
         case.solver,
         backend,
+        implementation.unwrap_or("-"),
         case.difficulty,
         trials.len(),
         wall_ms / sample_count,
@@ -573,6 +606,7 @@ fn print_benchmark(case: &CaseSpec, trials: &[TrialResult]) {
         hashes_per_s / 1e6,
         solve_ms / sample_count,
     );
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines, reason = "top-level test orchestration is intentionally linear")]
@@ -588,12 +622,25 @@ fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
         args.solver_bin.display()
     );
 
+    if let Some(ref implementation) = args.expect_hashx_gpu_implementation {
+        validate_token("implementation", implementation)?;
+        ensure!(
+            args.solver_gpu,
+            "--expect-hashx-gpu-implementation requires --solver-gpu"
+        );
+    }
     let mut cases = args.cases;
     if args.fuzz {
-        cases.extend(fuzz_matrix(args.solver_gpu)?);
+        cases.extend(fuzz_matrix(
+            args.solver_gpu,
+            args.expect_hashx_gpu_implementation.as_deref(),
+        )?);
     }
     let benchmark_cases = if args.benchmark {
-        benchmark_matrix(args.solver_gpu)?
+        benchmark_matrix(
+            args.solver_gpu,
+            args.expect_hashx_gpu_implementation.as_deref(),
+        )?
     } else {
         Vec::new()
     };
@@ -675,8 +722,13 @@ fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
                 eprintln!("\n--- Anubis log ---\n{}", anubis.log_tail());
                 return Err(error).with_context(|| {
                     format!(
-                        "end-to-end case failed: {}:{}:{}",
-                        case.algorithm, case.solver, case.difficulty
+                        "end-to-end case failed: {}:{}:{}{}",
+                        case.algorithm,
+                        case.solver,
+                        case.difficulty,
+                        case.implementation
+                            .as_deref()
+                            .map_or_else(String::new, |value| format!(":{value}"))
                     )
                 });
             }
@@ -692,7 +744,7 @@ fn run(args: Args) -> anyhow::Result<Option<TempDir>> {
                 .with_context(|| format!("benchmark case failed: {}:{}:{}", case.algorithm, case.solver, case.difficulty))?;
             trials.push(trial);
         }
-        print_benchmark(case, &trials);
+        print_benchmark(case, &trials)?;
     }
 
     if !browser_cases.is_empty() {
@@ -759,6 +811,23 @@ mod tests {
         assert_eq!(case.algorithm, "hashx");
         assert_eq!(case.solver, "anubis-hashx");
         assert_eq!(case.difficulty, 16);
+        assert_eq!(case.implementation, None);
+
+        let concrete: CaseSpec = "hashx:anubis-hashx:18:cuda-sm75-sass"
+            .parse()
+            .expect("valid implementation-qualified case");
+        assert_eq!(concrete.difficulty, 18);
+        assert_eq!(concrete.implementation.as_deref(), Some("cuda-sm75-sass"));
+    }
+
+    #[test]
+    fn gpu_matrices_propagate_required_implementation() -> anyhow::Result<()> {
+        let expected = "vulkan-extmul-persistent";
+        let fuzz = fuzz_matrix(true, Some(expected))?;
+        let bench = benchmark_matrix(true, Some(expected))?;
+        assert!(fuzz.iter().filter(|case| case.solver == "anubis-hashx").all(|case| case.implementation.as_deref() == Some(expected)));
+        assert!(bench.iter().filter(|case| case.solver == "anubis-hashx").all(|case| case.implementation.as_deref() == Some(expected)));
+        Ok(())
     }
 
     #[test]
