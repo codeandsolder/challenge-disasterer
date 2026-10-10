@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use argon2::Argon2;
 use clap::{Parser, ValueEnum};
 use pow_core::{
-    build_mcaptcha_prefix, compute_mask_anubis, compute_mask_cerberus, compute_mask_goaway,
+    build_mcaptcha_prefix, compute_mask_cerberus, compute_mask_goaway, compute_mask_zero_nibbles,
     compute_target_mcaptcha,
     message::{
         AltchaMessage, BinaryMessage, CapJSEmitter, CerberusBinaryMessage, CerberusDecimalMessage,
@@ -456,7 +456,7 @@ fn run_cpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
         // Anubis: same decimal message semantics as the live service, d5 ~= 2^20 expected candidates.
         let mut anubis_prefix = vec![b'a'; 96];
         anubis_prefix[..4].copy_from_slice(&sample_bytes);
-        let anubis_mask = compute_mask_anubis(NonZeroU8::new(5).unwrap());
+        let anubis_mask = compute_mask_zero_nibbles(NonZeroU8::new(5).unwrap());
         for (implementation, solver) in
             decimal_backends(|| DecimalMessage::new(&anubis_prefix, 0).unwrap())
         {
@@ -477,6 +477,40 @@ fn run_cpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
                 args.limit,
                 args.mode,
             )?;
+        }
+
+        // haphash: same decimal SHA-256 work primitive, but distinct protocol prefixes.
+        // Use d5 (~2^20 expected candidates) for stable apples-to-apples throughput.
+        for (variant, prefix) in [
+            (
+                "haproxy",
+                format!("203.0.113.{};example.test;1759954402;", sample % 255),
+            ),
+            ("debian-varnish", format!("102026194332.0x{sample:064x};")),
+        ] {
+            let difficulty = NonZeroU8::new(5).unwrap();
+            let mask = compute_mask_zero_nibbles(difficulty);
+            for (implementation, solver) in
+                decimal_backends(|| DecimalMessage::new(prefix.as_bytes(), 0).unwrap())
+            {
+                emit_cpu(
+                    meta,
+                    Case {
+                        protocol: "haphash",
+                        variant,
+                        implementation,
+                        accelerator: "cpu",
+                        sample,
+                        parameters: json!({"difficulty":difficulty.get(),"prefix_len":prefix.len()}),
+                        target: 0,
+                        mask,
+                        ty: SOLVE_TYPE_MASK,
+                    },
+                    solver,
+                    args.limit,
+                    args.mode,
+                )?;
+            }
         }
 
         // Anubis 1.28 WASM SHA-256: raw challenge bytes plus a 32-bit nonce.
@@ -729,7 +763,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
         let sample_bytes = sample.to_le_bytes();
         let mut prefix = vec![b'a'; 96];
         prefix[..4].copy_from_slice(&sample_bytes);
-        let mask = compute_mask_anubis(NonZeroU8::new(5).unwrap());
+        let mask = compute_mask_zero_nibbles(NonZeroU8::new(5).unwrap());
         let mut solver =
             pow_core::gpu::DecimalSolver::from(DecimalMessage::new(&prefix, 0).unwrap());
         solver.set_limit(args.limit);
@@ -756,6 +790,44 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             args.mode,
             args.limit,
         )?;
+
+        for (variant, prefix) in [
+            (
+                "haproxy",
+                format!("203.0.113.{};example.test;1759954402;", sample % 255),
+            ),
+            ("debian-varnish", format!("102026194332.0x{sample:064x};")),
+        ] {
+            let difficulty = NonZeroU8::new(5).unwrap();
+            let mask = compute_mask_zero_nibbles(difficulty);
+            let mut solver = pow_core::gpu::DecimalSolver::from(
+                DecimalMessage::new(prefix.as_bytes(), 0).unwrap(),
+            );
+            solver.set_limit(args.limit);
+            let started = Instant::now();
+            let (bench_target, bench_mask, _) =
+                benchmark_condition(args.mode, 0, mask, SOLVE_TYPE_MASK);
+            let solved = solver
+                .solve::<SOLVE_TYPE_MASK>(&mut gpu, bench_target, bench_mask)
+                .await?;
+            let elapsed = started.elapsed().as_nanos();
+            emit_gpu(
+                meta,
+                "haphash",
+                variant,
+                sample,
+                json!({"difficulty":difficulty.get(),"prefix_len":prefix.len()}),
+                0,
+                mask,
+                SOLVE_TYPE_MASK,
+                solver.get_attempted_nonces(),
+                elapsed,
+                solved.map(|x| (x.nonce, x.hash)),
+                &adapter,
+                args.mode,
+                args.limit,
+            )?;
+        }
 
         let mut anubis_wasm_data = vec![0x42_u8; 48];
         anubis_wasm_data[..4].copy_from_slice(&sample_bytes);

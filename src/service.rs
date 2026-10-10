@@ -1051,7 +1051,7 @@ pub async fn solve(
             };
             (difficulty, result)
         }
-        "cerberus" | "goaway" | "capjs" | "mcaptcha" | "altcha" => {
+        "cerberus" | "goaway" | "capjs" | "mcaptcha" | "haphash" | "altcha" => {
             if request.algorithm.is_some() {
                 return Err((
                     StatusCode::BAD_REQUEST,
@@ -1247,6 +1247,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         ("goaway", &["sha256"], 32, true),
         ("capjs", &["sha256"], 64, true),
         ("mcaptcha", &["sha256"], 64, true),
+        ("haphash", &["sha256"], 16, true),
         ("altcha", &["sha256", "pbkdf2-sha256"], 64, false),
     ] {
         let mut implementations = vec!["auto", "safe"];

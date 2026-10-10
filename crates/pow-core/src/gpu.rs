@@ -461,7 +461,7 @@ impl GpuContext {
             .ok_or_else(|| GpuError::new("challenge is too large for the GPU kernel"))?;
 
         let mid = midstate(prefix);
-        let mask = crate::compute_mask_anubis(difficulty);
+        let mask = crate::compute_mask_zero_nibbles(difficulty);
         let mut params = Params { words: [0; 16] };
         params.words[..8].copy_from_slice(&mid);
         params.words[10] = bitlen;

@@ -2,11 +2,13 @@ use clap::Parser;
 use serde::Serialize;
 use std::{num::NonZeroU8, time::Instant};
 
+const LEGACY_CERBERUS_DECIMAL_WORK_QUANTUM: u64 = 160_000;
+
 #[derive(Parser)]
 struct Args {
     #[arg(long, default_value_t = 5)]
     samples: u32,
-    #[arg(long, default_value_t = 1_048_576)]
+    #[arg(long, default_value_t = 1_120_000)]
     limit: u64,
 }
 
@@ -130,6 +132,24 @@ fn current_cases(sample: u32, limit: u64) -> anyhow::Result<()> {
         current::DecimalSolver::from(current::message::DecimalMessage::new(&prefix, 0).unwrap()),
         current::solver::SOLVE_TYPE_MASK
     );
+    for (variant, haphash_prefix) in [
+        (
+            "haproxy",
+            format!("203.0.113.{};example.test;1759954402;", sample % 255),
+        ),
+        ("debian-varnish", format!("102026194332.0x{sample:064x};")),
+    ] {
+        timed_current!(
+            "haphash",
+            variant,
+            sample,
+            limit,
+            current::DecimalSolver::from(
+                current::message::DecimalMessage::new(haphash_prefix.as_bytes(), 0).unwrap()
+            ),
+            current::solver::SOLVE_TYPE_MASK
+        );
+    }
     let mut binary = vec![0x42; 48];
     binary[..4].copy_from_slice(&sample.to_le_bytes());
     *binary.last_mut().unwrap() = 0x80;
@@ -218,6 +238,24 @@ fn legacy_cases(sample: u32, limit: u64) -> anyhow::Result<()> {
         legacy::DecimalSolver::from(legacy::message::DecimalMessage::new(&prefix, 0).unwrap()),
         legacy::solver::SOLVE_TYPE_MASK
     );
+    for (variant, haphash_prefix) in [
+        (
+            "haproxy",
+            format!("203.0.113.{};example.test;1759954402;", sample % 255),
+        ),
+        ("debian-varnish", format!("102026194332.0x{sample:064x};")),
+    ] {
+        timed_legacy!(
+            "haphash",
+            variant,
+            sample,
+            limit,
+            legacy::DecimalSolver::from(
+                legacy::message::DecimalMessage::new(haphash_prefix.as_bytes(), 0).unwrap()
+            ),
+            legacy::solver::SOLVE_TYPE_MASK
+        );
+    }
     let mut binary = vec![0x42; 48];
     binary[..4].copy_from_slice(&sample.to_le_bytes());
     *binary.last_mut().unwrap() = 0x80;
@@ -294,6 +332,11 @@ fn legacy_cases(sample: u32, limit: u64) -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     anyhow::ensure!(args.limit > 0, "limit must be > 0");
+    anyhow::ensure!(
+        args.limit
+            .is_multiple_of(LEGACY_CERBERUS_DECIMAL_WORK_QUANTUM),
+        "limit must be a multiple of {LEGACY_CERBERUS_DECIMAL_WORK_QUANTUM} so historical Cerberus decimal executes exactly the requested work"
+    );
     for sample in 0..args.samples {
         // Alternate order by sample to reduce thermal/order bias.
         if sample % 2 == 0 {

@@ -66,6 +66,21 @@ jobs:
       - name: Verify against current go-away
         run: ./ci/live-goaway-e2e.sh
 
+  haphash:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Set up Rust
+        run: rustup toolchain install nightly-2026-10-08 --profile minimal
+      - name: Install HAProxy
+        run: sudo apt-get update -qq && sudo apt-get install -y haproxy
+      - name: Verify against current haphash HAProxy
+        run: ./ci/live-haphash-e2e.sh
+
   mcaptcha:
     runs-on: ubuntu-latest
     timeout-minutes: 20

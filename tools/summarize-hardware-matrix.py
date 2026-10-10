@@ -41,8 +41,7 @@ def load(run: Path):
             rows.append(row)
     paired = []
     benches = []
-    anubis_log = run / "live-anubis.log"
-    if anubis_log.is_file():
+    for anubis_log in sorted(run.glob("live-anubis*.log")):
         for line in anubis_log.read_text(errors="replace").splitlines():
             if match := PAIRED_RE.match(line):
                 item = match.groupdict()
@@ -121,6 +120,7 @@ def main() -> int:
             "implementation": implementation, "samples": len(rows),
             "median_work_per_second": statistics.median(row["work_per_second"] for row in rows),
             "median_solve_ms": statistics.median(row["solve_ns"] for row in rows) / 1e6,
+            "median_attempted_work": statistics.median(row["attempted_work"] for row in rows),
         })
 
     comparisons = []
@@ -131,13 +131,18 @@ def main() -> int:
         candidates = [r for r in summary if r["host"] == host and r["phase"] == "throughput" and r["protocol"] == protocol and r["variant"] == variant and r["accelerator"] == "cpu"]
         best = max(candidates, key=lambda r: r["median_work_per_second"], default=None)
         matched = current_auto.get(key)
+        if matched is not None and matched["median_attempted_work"] != legacy["median_attempted_work"]:
+            raise ValueError(
+                f"historical exact-work mismatch for {host}/{protocol}/{variant}: "
+                f"current={matched['median_attempted_work']} legacy={legacy['median_attempted_work']}"
+            )
         comparisons.append({
             "host": host, "protocol": protocol, "variant": variant,
             "legacy_baseline": legacy["baseline"],
             "legacy_median_work_per_second": legacy["median_work_per_second"],
-            "matched_current_auto_ratio": None if matched is None else matched["median_work_per_second"] / legacy["median_work_per_second"],
+            "matched_current_auto_exact_work_ratio": None if matched is None else matched["median_work_per_second"] / legacy["median_work_per_second"],
             "best_current_implementation": None if best is None else best["implementation"],
-            "best_current_ratio": None if best is None else best["median_work_per_second"] / legacy["median_work_per_second"],
+            "best_current_normalized_work_rate_ratio": None if best is None else best["median_work_per_second"] / legacy["median_work_per_second"],
         })
 
     print(json.dumps({
