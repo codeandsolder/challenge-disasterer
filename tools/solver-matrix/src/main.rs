@@ -10,8 +10,8 @@ use pow_core::{
     build_mcaptcha_prefix, compute_mask_anubis, compute_mask_cerberus, compute_mask_goaway,
     compute_target_mcaptcha,
     message::{
-        AltchaMessage, BinaryMessage, CapJSEmitter, CerberusBinaryMessage, CerberusMessage,
-        DecimalMessage, GoAwayMessage,
+        AltchaMessage, BinaryMessage, CapJSEmitter, CerberusBinaryMessage, CerberusDecimalMessage,
+        CerberusMessage, DecimalMessage, GoAwayMessage,
     },
     solver::{SOLVE_TYPE_GT, SOLVE_TYPE_MASK, Solver, SolverDyn},
 };

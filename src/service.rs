@@ -55,7 +55,7 @@ struct HashxGpuJob {
 }
 
 #[cfg(feature = "gpu")]
-struct ClassicGpuJob {
+struct GeneralGpuJob {
     solver: String,
     challenge: Value,
     result: oneshot::Sender<anyhow::Result<classic_pow::Result>>,
@@ -69,10 +69,10 @@ pub struct AppState {
     #[cfg(feature = "gpu")]
     hashx_gpu_tx: Option<mpsc::Sender<HashxGpuJob>>,
     #[cfg(feature = "gpu")]
-    classic_gpu_tx: Option<mpsc::Sender<ClassicGpuJob>>,
+    general_gpu_tx: Option<mpsc::Sender<GeneralGpuJob>>,
     gpu_operational: bool,
     hashx_gpu_operational: bool,
-    classic_gpu_operational: bool,
+    general_gpu_operational: bool,
     hashx_gpu_implementations: Vec<&'static str>,
     gpu_queue_work: Arc<AtomicU64>,
     gpu_queue_depth: Arc<AtomicU64>,
@@ -126,6 +126,26 @@ struct ExternalSolveResponse {
 }
 
 type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
+
+#[cfg(feature = "gpu")]
+async fn solve_general_gpu(
+    gpu: &mut pow_buster::gpu::GpuContext,
+    solver: &str,
+    challenge: Value,
+) -> anyhow::Result<classic_pow::Result> {
+    if solver == "anubis-sha256" {
+        let challenge: anubis_wasm::Challenge =
+            serde_json::from_value(challenge).context("invalid Anubis WASM SHA-256 challenge")?;
+        let result = anubis_wasm::solve_sha256_gpu(gpu, &challenge).await?;
+        return Ok(classic_pow::Result {
+            answer: serde_json::to_value(result.answer)
+                .context("serialize Anubis WASM SHA-256 GPU answer")?,
+            solve_ms: result.solve_ms,
+            implementation: result.implementation,
+        });
+    }
+    classic_pow::solve_gpu(gpu, solver, challenge).await
+}
 
 impl AppState {
     pub async fn initialize(config: Config) -> anyhow::Result<Self> {
@@ -232,35 +252,32 @@ impl AppState {
         let (hashx_gpu_operational, hashx_gpu_implementations) = (false, Vec::new());
 
         #[cfg(feature = "gpu")]
-        let (classic_gpu_tx, classic_gpu_operational) = if config.gpu_enabled {
+        let (general_gpu_tx, general_gpu_operational) = if config.gpu_enabled {
             match pow_buster::gpu::GpuContext::create().await {
                 Ok(mut gpu) => {
                     let adapter = gpu.adapter().to_owned();
                     match gpu.warm_up().await {
                         Ok(()) => {
-                            info!(adapter = %adapter, "classic protocol WGPU backend ready");
-                            let (tx, mut rx) = mpsc::channel::<ClassicGpuJob>(128);
+                            info!(adapter = %adapter, "general WGPU backend ready");
+                            let (tx, mut rx) = mpsc::channel::<GeneralGpuJob>(128);
                             tokio::spawn(async move {
                                 while let Some(job) = rx.recv().await {
-                                    let result = classic_pow::solve_gpu(
-                                        &mut gpu,
-                                        &job.solver,
-                                        job.challenge,
-                                    )
-                                    .await;
+                                    let result =
+                                        solve_general_gpu(&mut gpu, &job.solver, job.challenge)
+                                            .await;
                                     let _ = job.result.send(result);
                                 }
                             });
                             (Some(tx), true)
                         }
                         Err(err) => {
-                            warn!(%err, "classic protocol WGPU warm-up failed");
+                            warn!(%err, "general WGPU warm-up failed");
                             (None, false)
                         }
                     }
                 }
                 Err(err) => {
-                    warn!(%err, "classic protocol WGPU unavailable");
+                    warn!(%err, "general WGPU unavailable");
                     (None, false)
                 }
             }
@@ -269,7 +286,7 @@ impl AppState {
         };
 
         #[cfg(not(feature = "gpu"))]
-        let classic_gpu_operational = false;
+        let general_gpu_operational = false;
 
         let routing = config
             .routing_calibration
@@ -292,10 +309,10 @@ impl AppState {
             #[cfg(feature = "gpu")]
             hashx_gpu_tx,
             #[cfg(feature = "gpu")]
-            classic_gpu_tx,
+            general_gpu_tx,
             gpu_operational,
             hashx_gpu_operational,
-            classic_gpu_operational,
+            general_gpu_operational,
             hashx_gpu_implementations,
             gpu_queue_work: queue_work,
             gpu_queue_depth: queue_depth,
@@ -362,6 +379,20 @@ impl AppState {
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
         })
+    }
+
+    #[cfg(feature = "gpu")]
+    async fn run_anubis_wasm_gpu(
+        &self,
+        challenge: anubis_wasm::Challenge,
+        queued_at: Instant,
+    ) -> anyhow::Result<SolveResponse> {
+        self.run_general_gpu(
+            "anubis-sha256".to_owned(),
+            serde_json::to_value(challenge).context("serialize Anubis WASM SHA-256 challenge")?,
+            queued_at,
+        )
+        .await
     }
 
     #[cfg(feature = "gpu")]
@@ -508,28 +539,28 @@ impl AppState {
     }
 
     #[cfg(feature = "gpu")]
-    async fn run_classic_gpu(
+    async fn run_general_gpu(
         &self,
         solver: String,
         challenge: Value,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
         let tx = self
-            .classic_gpu_tx
+            .general_gpu_tx
             .as_ref()
-            .context("classic protocol WGPU backend unavailable")?;
+            .context("general WGPU backend unavailable")?;
         let (result_tx, result_rx) = oneshot::channel();
-        tx.send(ClassicGpuJob {
+        tx.send(GeneralGpuJob {
             solver: solver.clone(),
             challenge,
             result: result_tx,
         })
         .await
-        .map_err(|_| anyhow::anyhow!("classic protocol WGPU worker unavailable"))?;
+        .map_err(|_| anyhow::anyhow!("general WGPU worker unavailable"))?;
         let started = Instant::now();
         let result = result_rx
             .await
-            .map_err(|_| anyhow::anyhow!("classic protocol WGPU worker dropped result"))??;
+            .map_err(|_| anyhow::anyhow!("general WGPU worker dropped result"))??;
         Ok(SolveResponse {
             solver,
             backend: "gpu".to_owned(),
@@ -936,14 +967,29 @@ pub async fn solve(
                 )
             })?;
             let difficulty = u8::try_from(challenge.difficulty).unwrap_or(u8::MAX);
-            let result = state
-                .run_anubis_wasm(
-                    request.solver.clone(),
-                    challenge,
-                    request.implementation.clone(),
-                    queued_at,
-                )
-                .await;
+            let result = if request.solver == "anubis-sha256"
+                && request.implementation.as_deref() == Some("wgpu")
+            {
+                #[cfg(feature = "gpu")]
+                {
+                    state.run_anubis_wasm_gpu(challenge, queued_at).await
+                }
+                #[cfg(not(feature = "gpu"))]
+                {
+                    Err(anyhow::anyhow!(
+                        "Anubis WASM SHA-256 WGPU backend not compiled"
+                    ))
+                }
+            } else {
+                state
+                    .run_anubis_wasm(
+                        request.solver.clone(),
+                        challenge,
+                        request.implementation.clone(),
+                        queued_at,
+                    )
+                    .await
+            };
             (difficulty, result)
         }
         "anubis-hashx" | "anubis-hashx-jit" | "anubis-hashx-auto" => {
@@ -1018,14 +1064,12 @@ pub async fn solve(
                 #[cfg(feature = "gpu")]
                 {
                     state
-                        .run_classic_gpu(request.solver.clone(), request.challenge, queued_at)
+                        .run_general_gpu(request.solver.clone(), request.challenge, queued_at)
                         .await
                 }
                 #[cfg(not(feature = "gpu"))]
                 {
-                    Err(anyhow::anyhow!(
-                        "classic protocol WGPU backend not compiled"
-                    ))
+                    Err(anyhow::anyhow!("general WGPU backend not compiled"))
                 }
             } else {
                 state
@@ -1132,6 +1176,9 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
     if std::arch::is_x86_feature_detected!("avx512f") {
         anubis_sha_implementations.push("avx512");
     }
+    if state.general_gpu_operational {
+        anubis_sha_implementations.push("wgpu");
+    }
     let mut available_solvers = vec![
         "anubis",
         "anubis-cpu",
@@ -1216,7 +1263,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         if std::arch::is_x86_feature_detected!("avx512f") {
             implementations.push("avx512");
         }
-        if state.classic_gpu_operational {
+        if state.general_gpu_operational {
             implementations.push("wgpu");
         }
         available_solvers.push(solver);
