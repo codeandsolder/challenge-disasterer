@@ -29,5 +29,5 @@ jobs:
 
       - name: Compile AVX-512-only test paths
         env:
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-feature=+avx512f
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-feature=+avx512f -D warnings
         run: cargo test --locked --target x86_64-unknown-linux-gnu -p challenge-pow-core --no-default-features --features std,compare-64bit --no-run
