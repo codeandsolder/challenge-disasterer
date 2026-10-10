@@ -10,7 +10,7 @@ pub const API_POW_VERIFY: &str = "api/v1/pow/verify";
 #[derive(Clone, serde::Serialize, serde::Deserialize, Debug)]
 /// mCaptcha PoW configuration
 pub struct PoWConfig {
-    /// the string to hash  
+    /// the string to hash
     pub string: String,
     /// the difficulty factor
     pub difficulty_factor: u32,

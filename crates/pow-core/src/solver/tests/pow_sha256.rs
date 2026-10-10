@@ -19,7 +19,7 @@
 //!       let work = config.prove_work(&phrase, DIFFICULTY).unwrap();
 //!       assert!(config.is_valid_proof(&work, &phrase));
 //!       assert!(config.is_sufficient_difficulty(&work, DIFFICULTY));
-//!   }    
+//!   }
 //! ```
 
 use std::marker::PhantomData;

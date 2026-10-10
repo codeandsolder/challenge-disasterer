@@ -42,4 +42,3 @@ adapter = ["alloc", "dep:serde", "dep:semver"]
 json = ["adapter", "dep:serde_json"]
 rayon = ["std", "dep:rayon"]
 internals = []
-
