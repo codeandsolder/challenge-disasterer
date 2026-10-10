@@ -48,7 +48,7 @@ def metadata() -> dict:
         ),
         "git_sha": text(["git", "rev-parse", "HEAD"]),
         "git_status": text(["git", "status", "--short"]),
-        "rustc": text(["rustc", "+nightly-2026-10-08", "-Vv"]),
+        "rustc": text(["rustc", "-Vv"]),
         "kernel": text(["uname", "-a"]),
         "vulkan": text(["bash", "-lc", "vulkaninfo --summary 2>/dev/null | rg 'deviceName|driverName|driverInfo' || true"]),
         "nvidia": text(["bash", "-lc", "nvidia-smi --query-gpu=name,driver_version,pci.bus_id --format=csv,noheader 2>/dev/null || true"]),
@@ -94,6 +94,8 @@ def main() -> int:
     parser.add_argument("--cpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--live", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--preexisting-baseline", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--browser-reference", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--all-implementations",
         action=argparse.BooleanOptionalAction,
@@ -116,7 +118,7 @@ def main() -> int:
     statuses: dict[str, int] = {}
     matrix_bin = ROOT / "target/release/challenge-disasterer-solver-matrix"
     matrix_build = run([
-        "cargo", "+nightly-2026-10-08", "build", "--locked", "--release",
+        "cargo", "build", "--locked", "--release",
         "--manifest-path", "tools/solver-matrix/Cargo.toml",
     ])
     statuses["build-solver-matrix"] = matrix_build.returncode
@@ -170,7 +172,7 @@ def main() -> int:
     if args.gpu and gpu_adapters:
         specialized_stdout = out / "solver-specialized-anubis-gpu.jsonl"
         specialized_stderr = out / "solver-specialized-anubis-gpu.stderr.log"
-        build = run(["cargo", "+nightly-2026-10-08", "build", "--locked", "--release"])
+        build = run(["cargo", "build", "--locked", "--release"])
         statuses["build-specialized-anubis-gpu"] = build.returncode
         if build.returncode == 0:
             specialized_codes = []
@@ -194,6 +196,21 @@ def main() -> int:
                 (code for code in specialized_codes if code != 0), 0
             )
 
+    if args.cpu and args.preexisting_baseline:
+        baseline_manifest = ROOT / "tools" / "preexisting-baseline" / "Cargo.toml"
+        baseline_out = out / "preexisting-baseline.jsonl"
+        baseline_err = out / "preexisting-baseline.stderr.log"
+        build = run([
+            "cargo", "build", "--locked", "--release",
+            "--manifest-path", str(baseline_manifest),
+        ])
+        statuses["build-preexisting-baseline"] = build.returncode
+        if build.returncode == 0:
+            baseline_bin = ROOT / "tools" / "preexisting-baseline" / "target" / "release" / "challenge-disasterer-preexisting-baseline"
+            with baseline_out.open("wb") as stdout, baseline_err.open("wb") as stderr:
+                result = run([str(baseline_bin), "--samples", str(args.samples), "--limit", str(args.throughput_limit)], stdout=stdout, stderr=stderr)
+            statuses["preexisting-baseline"] = result.returncode
+
     if args.live:
         for name in LIVE:
             script = ROOT / "ci" / f"live-{name}-e2e.sh"
@@ -203,7 +220,7 @@ def main() -> int:
                     "--fuzz-repeats", str(max(1, min(args.samples, 4))),
                     "--benchmark",
                     "--benchmark-samples", str(args.samples),
-                    "--browser-reference", "false",
+                    "--browser-reference", str(args.browser_reference).lower(),
                 ]
                 if args.gpu:
                     anubis_args.append("--solver-gpu")

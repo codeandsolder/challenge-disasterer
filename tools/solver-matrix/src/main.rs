@@ -601,6 +601,34 @@ fn run_cpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             )?;
         }
 
+        // Legacy Cerberus (<0.4.6) decimal nonce format, retained because the service supports it.
+        let cerberus_legacy_salt = format!("matrix-{sample:08x}|3959614364|1759954402|signature|");
+        let cerberus_legacy_difficulty = NonZeroU8::new(10).unwrap();
+        let cerberus_legacy_mask = compute_mask_cerberus(cerberus_legacy_difficulty);
+        for (implementation, solver) in cerberus_backends(|| {
+            CerberusMessage::Decimal(
+                CerberusDecimalMessage::new(cerberus_legacy_salt.as_bytes(), 0).unwrap(),
+            )
+        }) {
+            emit_cpu(
+                meta,
+                Case {
+                    protocol: "cerberus",
+                    variant: "decimal-pre-0.4.6",
+                    implementation,
+                    accelerator: "cpu",
+                    sample,
+                    parameters: json!({"difficulty":cerberus_legacy_difficulty.get(),"format":"decimal"}),
+                    target: 0,
+                    mask: cerberus_legacy_mask,
+                    ty: SOLVE_TYPE_MASK,
+                },
+                solver,
+                args.limit,
+                args.mode,
+            )?;
+        }
+
         // Current Cerberus (0.4.6+) binary format, d10 ~= 2^20 expected candidates.
         let cerberus_salt = format!("matrix-{sample:08x}|3959614364|1759954402|signature|");
         let cerberus_difficulty = NonZeroU8::new(10).unwrap();
@@ -861,6 +889,38 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             json!({"difficulty":20}),
             0,
             mask,
+            SOLVE_TYPE_MASK,
+            solver.get_attempted_nonces(),
+            elapsed,
+            solved.map(|x| (x.nonce, x.hash)),
+            &adapter,
+            args.mode,
+            args.limit,
+        )?;
+
+        // Legacy Cerberus (<0.4.6) decimal nonce format.
+        let legacy_salt = format!("matrix-{sample:08x}|3959614364|1759954402|signature|");
+        let legacy_d = NonZeroU8::new(10).unwrap();
+        let legacy_mask = compute_mask_cerberus(legacy_d);
+        let mut solver = pow_core::gpu::CerberusSolver::from(CerberusMessage::Decimal(
+            CerberusDecimalMessage::new(legacy_salt.as_bytes(), 0).unwrap(),
+        ));
+        solver.set_limit(args.limit);
+        let started = Instant::now();
+        let (bench_target, bench_mask, _) =
+            benchmark_condition(args.mode, 0, legacy_mask, SOLVE_TYPE_MASK);
+        let solved = solver
+            .solve::<SOLVE_TYPE_MASK>(&mut gpu, bench_target, bench_mask)
+            .await?;
+        let elapsed = started.elapsed().as_nanos();
+        emit_gpu(
+            meta,
+            "cerberus",
+            "decimal-pre-0.4.6",
+            sample,
+            json!({"difficulty":10,"format":"decimal"}),
+            0,
+            legacy_mask,
             SOLVE_TYPE_MASK,
             solver.get_attempted_nonces(),
             elapsed,

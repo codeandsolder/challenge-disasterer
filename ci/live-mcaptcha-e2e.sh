@@ -12,6 +12,7 @@ cleanup() {
 trap cleanup EXIT
 
 git clone --quiet --depth 1 https://github.com/mCaptcha/mCaptcha "$TMP/mcaptcha"
+echo "UPSTREAM_COMMIT protocol=mcaptcha ref=${MCAPTCHA_REF:-HEAD} commit=$(git -C "$TMP/mcaptcha" rev-parse HEAD)"
 if ! rg -q 'mcaptcha_pow_sha256 = "0\.5"' "$TMP/mcaptcha/Cargo.toml"; then
   echo "current mCaptcha no longer declares mcaptcha_pow_sha256 0.5; update this authoritative harness" >&2
   exit 1

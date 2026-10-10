@@ -16,6 +16,7 @@ cleanup() {
 trap cleanup EXIT
 
 git clone --quiet --depth 1 --branch "$CERBERUS_REF" https://github.com/sjtug/cerberus "$TMP/cerberus"
+echo "UPSTREAM_COMMIT protocol=cerberus ref=${CERBERUS_REF:-HEAD} commit=$(git -C "$TMP/cerberus" rev-parse HEAD)"
 
 (
   cd "$TMP"
