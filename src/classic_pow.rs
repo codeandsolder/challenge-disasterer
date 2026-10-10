@@ -1,4 +1,7 @@
-use std::{num::NonZeroU32, time::Instant};
+use std::{
+    num::{NonZeroU8, NonZeroU32},
+    time::Instant,
+};
 
 use anyhow::{Context, anyhow, bail, ensure};
 use pow_buster::{
@@ -8,7 +11,8 @@ use pow_buster::{
         cerberus::ChallengeDescriptor as CerberusChallenge, goaway::GoAwayConfig,
         mcaptcha::PoWConfig,
     },
-    build_mcaptcha_prefix, compute_mask_goaway, compute_target_mcaptcha, extract128_be,
+    build_mcaptcha_prefix, compute_mask_goaway, compute_mask_zero_nibbles, compute_target_mcaptcha,
+    extract128_be,
     message::{AltchaMessage, CapJSEmitter, CerberusMessage, DecimalMessage, GoAwayMessage},
     solver::{SOLVE_TYPE_GT, SOLVE_TYPE_MASK, Solver, SolverDyn},
 };
@@ -28,6 +32,12 @@ pub struct Result {
 struct McaptchaRequest {
     config: PoWConfig,
     key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct HaphashChallenge {
+    prefix: String,
+    difficulty: NonZeroU8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,6 +64,7 @@ pub fn solve(kind: &str, challenge: Value, implementation: Option<&str>) -> anyh
         "goaway" => solve_goaway(challenge, implementation),
         "capjs" => solve_capjs(challenge, implementation),
         "mcaptcha" => solve_mcaptcha(challenge, implementation),
+        "haphash" => solve_haphash(challenge, implementation),
         "altcha" => solve_altcha(challenge, implementation),
         _ => bail!("unsupported classic solver: {kind}"),
     }
@@ -393,6 +404,43 @@ fn solve_capjs(challenge: Value, implementation: Implementation) -> anyhow::Resu
     })
 }
 
+fn solve_haphash(challenge: Value, implementation: Implementation) -> anyhow::Result<Result> {
+    let challenge: HaphashChallenge =
+        serde_json::from_value(challenge).context("invalid haphash challenge")?;
+    ensure!(
+        challenge.difficulty.get() <= 16,
+        "haphash difficulty above 16 nibbles is unsupported"
+    );
+    let prefix = challenge.prefix.as_bytes();
+    ensure!(!prefix.is_empty(), "haphash prefix must not be empty");
+    let mask = compute_mask_zero_nibbles(challenge.difficulty);
+    let started = Instant::now();
+    let mut attempted_nonces = 0_u64;
+    for bank in 0_u32.. {
+        let Some(message) = DecimalMessage::new(prefix, bank) else {
+            break;
+        };
+        let mut solver = decimal_solver(implementation, message)?;
+        solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
+        let result = solver.solve(0, SOLVE_TYPE_MASK, mask);
+        attempted_nonces = attempted_nonces.saturating_add(solver.attempted());
+        if let Some((nonce, _)) = result {
+            return Ok(Result {
+                answer: json!({
+                    "nonce": nonce.to_string(),
+                    "attempted_nonces": attempted_nonces,
+                }),
+                solve_ms: started.elapsed().as_secs_f64() * 1000.0,
+                implementation: implementation.name().to_owned(),
+            });
+        }
+        if attempted_nonces >= DEFAULT_LIMIT {
+            break;
+        }
+    }
+    Err(anyhow!("haphash search exhausted configured limit"))
+}
+
 fn solve_mcaptcha(challenge: Value, implementation: Implementation) -> anyhow::Result<Result> {
     let request: McaptchaRequest =
         serde_json::from_value(challenge).context("invalid mCaptcha request")?;
@@ -531,6 +579,7 @@ pub async fn solve_gpu(
         "goaway" => solve_goaway_gpu(gpu, challenge).await,
         "capjs" => solve_capjs_gpu(gpu, challenge).await,
         "mcaptcha" => solve_mcaptcha_gpu(gpu, challenge).await,
+        "haphash" => solve_haphash_gpu(gpu, challenge).await,
         "altcha" => solve_altcha_gpu(gpu, challenge).await,
         _ => bail!("unsupported classic GPU solver: {kind}"),
     }
@@ -676,6 +725,47 @@ async fn solve_capjs_gpu(
 }
 
 #[cfg(feature = "gpu")]
+async fn solve_haphash_gpu(
+    gpu: &mut pow_buster::gpu::GpuContext,
+    challenge: Value,
+) -> anyhow::Result<Result> {
+    let challenge: HaphashChallenge =
+        serde_json::from_value(challenge).context("invalid haphash challenge")?;
+    ensure!(
+        challenge.difficulty.get() <= 16,
+        "haphash difficulty above 16 nibbles is unsupported"
+    );
+    let prefix = challenge.prefix.as_bytes();
+    ensure!(!prefix.is_empty(), "haphash prefix must not be empty");
+    let mask = compute_mask_zero_nibbles(challenge.difficulty);
+    let started = Instant::now();
+    let mut attempted_nonces = 0_u64;
+    for bank in 0_u32.. {
+        let Some(message) = DecimalMessage::new(prefix, bank) else {
+            break;
+        };
+        let mut solver = pow_buster::gpu::DecimalSolver::from(message);
+        solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
+        let result = solver.solve::<SOLVE_TYPE_MASK>(gpu, 0, mask).await?;
+        attempted_nonces = attempted_nonces.saturating_add(solver.get_attempted_nonces());
+        if let Some(solution) = result {
+            return Ok(Result {
+                answer: json!({
+                    "nonce": solution.nonce.to_string(),
+                    "attempted_nonces": attempted_nonces,
+                }),
+                solve_ms: started.elapsed().as_secs_f64() * 1000.0,
+                implementation: "wgpu".to_owned(),
+            });
+        }
+        if attempted_nonces >= DEFAULT_LIMIT {
+            break;
+        }
+    }
+    Err(anyhow!("haphash GPU search exhausted configured limit"))
+}
+
+#[cfg(feature = "gpu")]
 async fn solve_mcaptcha_gpu(
     gpu: &mut pow_buster::gpu::GpuContext,
     challenge: Value,
@@ -773,6 +863,16 @@ mod tests {
             prefix_target("12ab").unwrap(),
             (0x12ab_0000_0000_0000, 0xffff_0000_0000_0000)
         );
+    }
+
+    #[test]
+    fn haphash_solver_returns_nonce_for_protocol_prefix() {
+        let result = solve_haphash(
+            json!({"prefix":"127.0.0.1;example.test;1759954402;","difficulty":1}),
+            Implementation::Safe,
+        )
+        .unwrap();
+        assert!(result.answer["nonce"].is_string());
     }
 
     #[test]

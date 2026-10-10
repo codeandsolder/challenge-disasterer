@@ -17,8 +17,9 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LIVE = ("altcha", "capjs", "cerberus", "goaway", "mcaptcha", "anubis")
+LIVE = ("altcha", "capjs", "cerberus", "goaway", "haphash", "mcaptcha", "anubis")
 ANUBIS_GPU_QUANTUM = 8192
+PREEXISTING_BASELINE_QUANTUM = 160_000
 
 
 def run(argv: list[str], *, env: dict[str, str] | None = None, stdout=None, stderr=None) -> subprocess.CompletedProcess:
@@ -70,7 +71,7 @@ def classic_implementations(protocol: str, all_implementations: bool, gpu: bool)
     implementations = ["auto", "safe"]
     if "avx2" in flags:
         implementations.append("avx2")
-    if protocol in {"goaway", "capjs", "mcaptcha"} and "sha_ni" in flags:
+    if protocol in {"goaway", "capjs", "mcaptcha", "haphash"} and "sha_ni" in flags:
         implementations.append("sha-ni")
     if "avx512f" in flags:
         implementations.append("avx512")
@@ -95,7 +96,15 @@ def main() -> int:
     parser.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--live", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--preexisting-baseline", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--preexisting-limit",
+        type=int,
+        default=1_120_000,
+        help="Common fixed-work budget aligned to the historical pow-buster solver quanta.",
+    )
     parser.add_argument("--browser-reference", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--haphash-debian-live", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--all-implementations",
         action=argparse.BooleanOptionalAction,
@@ -110,9 +119,31 @@ def main() -> int:
             f"--throughput-limit must be a multiple of {ANUBIS_GPU_QUANTUM} when --gpu is enabled"
         )
 
+    if args.preexisting_baseline and args.preexisting_limit % PREEXISTING_BASELINE_QUANTUM != 0:
+        parser.error(
+            f"--preexisting-limit must be a multiple of {PREEXISTING_BASELINE_QUANTUM}"
+        )
+
+    meta = metadata()
+    if args.require_clean and meta["git_status"]:
+        parser.error(f"refusing retained benchmark from dirty tree:\n{meta['git_status']}")
+    meta["parameters"] = {
+        "samples": args.samples,
+        "correctness_limit": args.correctness_limit,
+        "throughput_limit": args.throughput_limit,
+        "argon2_limit": args.argon2_limit,
+        "cpu": args.cpu,
+        "gpu": args.gpu,
+        "live": args.live,
+        "preexisting_baseline": args.preexisting_baseline,
+        "preexisting_limit": args.preexisting_limit,
+        "browser_reference": args.browser_reference,
+        "haphash_debian_live": args.haphash_debian_live,
+        "all_implementations": args.all_implementations,
+        "require_clean": args.require_clean,
+    }
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    meta = metadata()
     (out / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
 
     statuses: dict[str, int] = {}
@@ -208,7 +239,7 @@ def main() -> int:
         if build.returncode == 0:
             baseline_bin = ROOT / "tools" / "preexisting-baseline" / "target" / "release" / "challenge-disasterer-preexisting-baseline"
             with baseline_out.open("wb") as stdout, baseline_err.open("wb") as stderr:
-                result = run([str(baseline_bin), "--samples", str(args.samples), "--limit", str(args.throughput_limit)], stdout=stdout, stderr=stderr)
+                result = run([str(baseline_bin), "--samples", str(args.samples), "--limit", str(args.preexisting_limit)], stdout=stdout, stderr=stderr)
             statuses["preexisting-baseline"] = result.returncode
 
     if args.live:
@@ -222,14 +253,25 @@ def main() -> int:
                     "--benchmark-samples", str(args.samples),
                     "--browser-reference", str(args.browser_reference).lower(),
                 ]
-                if args.gpu:
-                    anubis_args.append("--solver-gpu")
-                with (out / "live-anubis.log").open("wb") as log:
-                    result = run([str(script), *anubis_args], stdout=log, stderr=subprocess.STDOUT)
-                statuses["live-anubis"] = result.returncode
+                if args.gpu and gpu_adapters:
+                    for index, adapter in enumerate(gpu_adapters):
+                        env = os.environ.copy()
+                        env["WGPU_ADAPTER_NAME"] = adapter
+                        with (out / f"live-anubis-gpu-{index}.log").open("wb") as log:
+                            result = run(
+                                [str(script), *anubis_args, "--solver-gpu"],
+                                env=env,
+                                stdout=log,
+                                stderr=subprocess.STDOUT,
+                            )
+                        statuses[f"live-anubis-gpu-{index}"] = result.returncode
+                else:
+                    with (out / "live-anubis.log").open("wb") as log:
+                        result = run([str(script), *anubis_args], stdout=log, stderr=subprocess.STDOUT)
+                    statuses["live-anubis"] = result.returncode
                 continue
 
-            cases = classic_implementations(name, args.all_implementations, args.gpu)
+            cases = classic_implementations(name, args.all_implementations, bool(gpu_adapters))
             upstream_variants = (
                 (("current", None), ("v0.4.6", "v0.4.6"), ("v0.4.5", "v0.4.5"))
                 if name == "cerberus"
@@ -237,15 +279,24 @@ def main() -> int:
             )
             for upstream_label, upstream_ref in upstream_variants:
                 for implementation in cases:
-                    variant_suffix = "" if upstream_label == "current" else f"-{upstream_label}"
-                    suffix = f"{name}{variant_suffix}-{implementation}"
-                    env = os.environ.copy()
-                    env["CHALLENGE_IMPLEMENTATION"] = implementation
-                    if upstream_ref is not None:
-                        env["CERBERUS_REF"] = upstream_ref
-                    with (out / f"live-{suffix}.log").open("wb") as log:
-                        result = run([str(script)], env=env, stdout=log, stderr=subprocess.STDOUT)
-                    statuses[f"live-{suffix}"] = result.returncode
+                    adapter_cases = [(None, None)]
+                    if implementation == "wgpu":
+                        adapter_cases = [(index, adapter) for index, adapter in enumerate(gpu_adapters)]
+                    for adapter_index, adapter in adapter_cases:
+                        variant_suffix = "" if upstream_label == "current" else f"-{upstream_label}"
+                        adapter_suffix = "" if adapter_index is None else f"-gpu-{adapter_index}"
+                        suffix = f"{name}{variant_suffix}-{implementation}{adapter_suffix}"
+                        env = os.environ.copy()
+                        env["CHALLENGE_IMPLEMENTATION"] = implementation
+                        if adapter is not None:
+                            env["WGPU_ADAPTER_NAME"] = adapter
+                        if upstream_ref is not None:
+                            env["CERBERUS_REF"] = upstream_ref
+                        if name == "haphash" and args.haphash_debian_live:
+                            env["HAPHASH_DEBIAN_LIVE"] = "1"
+                        with (out / f"live-{suffix}.log").open("wb") as log:
+                            result = run([str(script)], env=env, stdout=log, stderr=subprocess.STDOUT)
+                        statuses[f"live-{suffix}"] = result.returncode
 
     manifest = {"metadata": meta, "statuses": statuses}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

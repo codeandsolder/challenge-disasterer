@@ -463,8 +463,8 @@ pub const fn compute_target_mcaptcha(difficulty_factor: u64) -> u64 {
     u64::MAX - u64::MAX / difficulty_factor
 }
 
-/// Compute the mask for an Anubis PoW (mask & (V\[0] << 32 | V\[1]) == 0)
-pub const fn compute_mask_anubis(difficulty_factor: NonZeroU8) -> u64 {
+/// Compute a leading-zero-nibble SHA-256 mask (mask & (V\[0] << 32 | V\[1]) == 0)
+pub const fn compute_mask_zero_nibbles(difficulty_factor: NonZeroU8) -> u64 {
     let bits = difficulty_factor.get().saturating_mul(4);
     if bits >= 64 {
         u64::MAX
@@ -570,20 +570,23 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_mask_anubis() {
+    fn test_compute_mask_zero_nibbles() {
         assert_eq!(
-            compute_mask_anubis(NonZeroU8::new(1).unwrap()),
+            compute_mask_zero_nibbles(NonZeroU8::new(1).unwrap()),
             0xfu64.reverse_bits(),
         );
         assert_eq!(
-            compute_mask_anubis(NonZeroU8::new(2).unwrap()),
+            compute_mask_zero_nibbles(NonZeroU8::new(2).unwrap()),
             0xffu64.reverse_bits(),
         );
         assert_eq!(
-            compute_mask_anubis(NonZeroU8::new(3).unwrap()),
+            compute_mask_zero_nibbles(NonZeroU8::new(3).unwrap()),
             0xfffu64.reverse_bits(),
         );
-        assert_eq!(compute_mask_anubis(NonZeroU8::new(16).unwrap()), u64::MAX,);
+        assert_eq!(
+            compute_mask_zero_nibbles(NonZeroU8::new(16).unwrap()),
+            u64::MAX,
+        );
     }
 
     #[test]

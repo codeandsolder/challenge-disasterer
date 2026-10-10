@@ -943,7 +943,7 @@ mod tests {
 
         let mut solver = SingleBlockSolver::from(message);
         solver.set_limit(4_000_000);
-        let mask = crate::compute_mask_anubis(NonZeroU8::new(4).unwrap());
+        let mask = crate::compute_mask_zero_nibbles(NonZeroU8::new(4).unwrap());
         let (nonce, hash) = solver
             .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(0, mask)
             .expect("reduced-radix SHA-NI path should find an Anubis solution");

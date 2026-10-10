@@ -2,7 +2,7 @@ use std::{num::NonZeroU8, time::Instant};
 
 use anyhow::{Context, anyhow};
 use pow_buster::{
-    DecimalSolver, SingleBlockSolver, compute_mask_anubis,
+    DecimalSolver, SingleBlockSolver, compute_mask_zero_nibbles,
     message::{DecimalMessage, SingleBlockMessage},
     solver::{SOLVE_TYPE_MASK, Solver},
 };
@@ -51,7 +51,7 @@ pub struct BackendResult {
 
 fn mask(difficulty: u8) -> anyhow::Result<u64> {
     let difficulty = NonZeroU8::new(difficulty).context("difficulty cannot be zero")?;
-    Ok(compute_mask_anubis(difficulty))
+    Ok(compute_mask_zero_nibbles(difficulty))
 }
 
 fn hash_hex(words: [u32; 8]) -> String {

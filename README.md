@@ -2,7 +2,7 @@
 
 A small local service for routing proof-of-work / anti-bot challenge solvers to an available backend.
 
-Current solvers: **Anubis fast/slow SHA-256**, **Anubis WASM SHA-256**, **Anubis Argon2id**, **Anubis HashX**, **Cerberus**, **go-away js-pow-sha256**, **Cap.js**, **mCaptcha**, and **ALTCHA v2** (SHA-256 and PBKDF2/SHA-256). The former `pow-buster-imp` solver engine now lives in-tree as `crates/pow-core`; there is no runtime or Git dependency on the old repository. Classic protocols expose concrete CPU implementations (`safe`, AVX2, SHA-NI where applicable, AVX-512 when present, plus `auto`) and one persistent generalized WGPU context. Anubis keeps its specialized SHA GPU path, while HashX keeps upstream CPU JIT plus every advertised portable/native GPU implementation. `/solve` returns protocol-native answer JSON so callers do not need a second conversion layer.
+Current solvers: **Anubis fast/slow SHA-256**, **Anubis WASM SHA-256**, **Anubis Argon2id**, **Anubis HashX**, **Cerberus**, **go-away js-pow-sha256**, **Cap.js**, **mCaptcha**, **haphash** (upstream HAProxy and current Debian Varnish prefix forms), and **ALTCHA v2** (SHA-256 and PBKDF2/SHA-256). The former `pow-buster-imp` solver engine now lives in-tree as `crates/pow-core`; there is no runtime or Git dependency on the old repository. Classic protocols expose concrete CPU implementations (`safe`, AVX2, SHA-NI where applicable, AVX-512 when present, plus `auto`) and one persistent generalized WGPU context. Anubis keeps its specialized SHA GPU path, while HashX keeps upstream CPU JIT plus every advertised portable/native GPU implementation. `/solve` returns protocol-native answer JSON so callers do not need a second conversion layer.
 
 ## API
 
@@ -66,9 +66,9 @@ The repository currently pins `nightly-2026-10-08`; Anubis assets are built with
 
 `tools/run-hardware-matrix.py` is the canonical cross-hardware validation/benchmark entry point. It writes immutable run directories containing host/toolchain/GPU metadata, JSONL direct-solver measurements, authoritative verifier logs, and a manifest of every gate. `tools/summarize-hardware-matrix.py` compares multiple run directories by identical `(phase, protocol, variant, implementation, accelerator)` keys and also extracts the paired HashX/Anubis benchmarks.
 
-The same run also executes `tools/preexisting-baseline`, pinned to the original `eternal-flame-AD/pow-buster@d359adb` ancestor. It runs alternating old/new samples with identical message bytes and exact candidate budgets for every solver family the old implementation had in common with the current core (Anubis decimal and WASM SHA-256 shape, mCaptcha, Cap.js, go-away, and both Cerberus formats). The summarizer reports both matched `auto` old/new ratios and the fastest current CPU implementation versus that historical baseline. Protocols added later, such as ALTCHA and HashX, are compared against their authoritative upstream/browser references instead of inventing a nonexistent old baseline.
+The same run also executes `tools/preexisting-baseline`, pinned to the original `eternal-flame-AD/pow-buster@d359adb` ancestor. It runs alternating old/new samples with identical message bytes and an aligned 1,120,000-candidate budget for every solver family the old implementation had in common with the current core (Anubis decimal and WASM SHA-256 shape, haphash, mCaptcha, Cap.js, go-away, and both Cerberus formats). The separate aligned budget is intentional: historical Cerberus decimal executes work in coarse batches and overshoots arbitrary limits such as 1,048,576; the harness fails rather than calling unequal attempted work “exact”. The summarizer reports both matched `auto` old/new ratios and the fastest current CPU implementation versus that historical baseline. Protocols added later, such as ALTCHA and HashX, are compared against their authoritative upstream/browser references instead of inventing a nonexistent old baseline.
 
-On multi-GPU hosts the runner enumerates every non-CPU Vulkan adapter, runs CPU rows once, and explicitly forces each GPU adapter for both the generalized WGPU matrix and the specialized Anubis SHA kernel. Adapter identity is part of every GPU result key, so an iGPU and dGPU can never be silently pooled into one number.
+On multi-GPU hosts the runner enumerates every non-CPU Vulkan adapter, runs CPU rows once, and explicitly forces each GPU adapter for the generalized WGPU matrix, specialized Anubis SHA kernel, and live WGPU protocol gates. Adapter identity is part of every GPU result key, so an iGPU and dGPU can never be silently pooled into one number.
 
 The direct matrix deliberately separates two questions that must not be conflated:
 
@@ -78,7 +78,7 @@ The direct matrix deliberately separates two questions that must not be conflate
 
 HashX uses the live Anubis harness's paired benchmark rather than a duplicate synthetic verifier. CPU JIT, automatic routing, and every GPU implementation solve the **same freshly issued challenge** in rotating order; the harness requires identical nonce/hash across implementations before reporting timing. This covers `wgsl-specialized`, the adapter-specific persistent Vulkan backend, and `cuda-sm75-sass` when available.
 
-Current Anubis also ships WASM `sha256` and `argon2id` challenge algorithms. challenge-disasterer exposes both as native CPU solver routes: `anubis-sha256` reuses the in-tree binary SHA-256 backends (`safe`, `auto`, AVX2, and AVX-512 where available), while `anubis-argon2id` uses the same Argon2 0.5.3 defaults and nonce-byte rules as upstream. The real-Anubis harness submits both proof types back to the current upstream verifier, and the stock-browser benchmark remains as an independent reference.
+Current Anubis also ships WASM `sha256` and `argon2id` challenge algorithms. challenge-disasterer exposes both as native solver routes: `anubis-sha256` reuses the in-tree binary SHA-256 backends (`safe`, `auto`, AVX2, AVX-512 where available, and generalized WGPU), while `anubis-argon2id` uses the same Argon2 0.5.3 defaults and nonce-byte rules as upstream. The real-Anubis harness submits both proof types back to the current upstream verifier, and the stock-browser benchmark remains as an independent reference.
 
 Example:
 
@@ -88,7 +88,7 @@ uv run tools/run-hardware-matrix.py   --output target/hardware-matrix/$(hostname
 uv run tools/summarize-hardware-matrix.py   target/hardware-matrix/sf314-42-*   target/hardware-matrix/cachyasus-*
 ```
 
-Use `--no-cpu --no-live` for direct GPU-only collection on a host whose CPU is busy, or `--no-gpu --no-live` for direct CPU-only collection. The `--cpu`/`--gpu` selectors control direct solver rows; live verifier runs are a separate validation phase and may exercise CPU routing. At least one direct resource class must remain enabled.
+Use `--no-cpu --no-live` for direct GPU-only collection on a host whose CPU is busy, or `--no-gpu --no-live` for direct CPU-only collection. The `--cpu`/`--gpu` selectors control direct solver rows; live verifier runs are a separate validation phase and may exercise CPU routing. At least one direct resource class must remain enabled. Retained runs reject a dirty Git tree by default (`--no-require-clean` is for throwaway development smoke only), and the run metadata records every workload/validation parameter alongside the exact commit and hardware identity.
 
 ## Authoritative protocol compatibility tests
 
@@ -100,6 +100,7 @@ Protocol compatibility is tested against the implementation that actually issues
 - **Cap.js:** `ci/live-capjs-e2e.sh` uses current `capjs-core` `generateChallenge` and `validateChallenge`.
 - **ALTCHA v2:** `ci/live-altcha-e2e.sh` uses current `altcha-lib` `createChallenge` and `verifySolution` for both supported algorithms.
 - **mCaptcha:** `ci/live-mcaptcha-e2e.sh` validates the native work response with the `mcaptcha_pow_sha256` crate used by mCaptcha itself.
+- **haphash:** `ci/live-haphash-e2e.sh` clones current `dgl/haphash`, serves its actual `challenge.html`, and submits proofs to the real HAProxy SHA-256 ACL verifier. Hardware runs additionally exercise Debian's live Varnish-derived deployment, whose current wire shape is `SHA256(pow_challenge_cookie_value + ";" + decimal_nonce)` at difficulty 2; the harness deliberately fails if that page shape changes rather than inheriting the obsolete historical client prefix.
 
 Every non-Anubis harness also submits a deliberately corrupted proof and requires the authoritative verifier to reject it. `.github/workflows/live-protocols.yml` runs these gates independently so one expensive upstream build does not serialize the rest of the matrix.
 

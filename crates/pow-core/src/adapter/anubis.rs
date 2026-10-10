@@ -2,7 +2,7 @@
 use sha2::Digest;
 
 use crate::{
-    compute_mask_anubis,
+    compute_mask_zero_nibbles,
     message::DecimalMessage,
     solver::{SOLVE_TYPE_MASK, Solver},
 };
@@ -110,7 +110,7 @@ impl ChallengeDescriptor {
             }
             return (Some((0, hash_arr)), 0);
         }
-        let mask = compute_mask_anubis(self.rules.difficulty.try_into().unwrap());
+        let mask = compute_mask_zero_nibbles(self.rules.difficulty.try_into().unwrap());
 
         let mut result = None;
         let mut attempted_nonces = 0;

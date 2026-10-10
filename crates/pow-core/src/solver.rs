@@ -265,8 +265,8 @@ pub(crate) mod tests {
     mod pow_sha256;
 
     use crate::{
-        compute_mask_anubis, compute_mask_cerberus, compute_mask_goaway, compute_target_mcaptcha,
-        extract128_be, message::IEEE754LosslessFixupPrefix,
+        compute_mask_cerberus, compute_mask_goaway, compute_mask_zero_nibbles,
+        compute_target_mcaptcha, extract128_be, message::IEEE754LosslessFixupPrefix,
     };
 
     use super::*;
@@ -321,7 +321,7 @@ pub(crate) mod tests {
 
                 let target_bytes = compute_target_mcaptcha(DIFFICULTY as u64).to_be_bytes();
                 let target_u64 = u64::from_be_bytes(target_bytes[..8].try_into().unwrap());
-                let mask_anubis = compute_mask_anubis(ANUBIS_DIFFICULTY);
+                let mask_anubis = compute_mask_zero_nibbles(ANUBIS_DIFFICULTY);
                 let (nonce, result) = solver
                     .solve::<SOLVE_TYPE_GT>(target_u64, !0)
                     .expect("solver failed");
@@ -721,7 +721,7 @@ pub(crate) mod tests {
         let (nonce, hash) = solver
             .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(
                 0,
-                crate::compute_mask_anubis(2.try_into().unwrap()),
+                crate::compute_mask_zero_nibbles(2.try_into().unwrap()),
             )
             .unwrap();
         assert_eq!(nonce, 78);
@@ -748,7 +748,7 @@ pub(crate) mod tests {
         let (nonce, hash) = solver
             .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(
                 0,
-                crate::compute_mask_anubis(2.try_into().unwrap()),
+                crate::compute_mask_zero_nibbles(2.try_into().unwrap()),
             )
             .unwrap();
         assert_eq!(nonce, 128);
@@ -772,7 +772,7 @@ pub(crate) mod tests {
                     };
 
                     let mut solver = factory(msg.clone()).unwrap();
-                    let mask = crate::compute_mask_anubis(3.try_into().unwrap());
+                    let mask = crate::compute_mask_zero_nibbles(3.try_into().unwrap());
                     let (nonce, hash) = solver
                         .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(0, mask)
                         .unwrap();
