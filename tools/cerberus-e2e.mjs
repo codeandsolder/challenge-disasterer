@@ -23,8 +23,13 @@ async function issueAndSolve() {
   const challenge = JSON.parse(attr(html, "x-challenge"));
   const meta = JSON.parse(attr(html, "x-meta"));
   const scriptUrl = new URL(attr(html, "src"), cerberusUrl);
+  const expectedVersion = process.env.CERBERUS_EXPECTED_VERSION;
+  if (!expectedVersion) throw new Error("missing CERBERUS_EXPECTED_VERSION from pinned upstream source");
   const rawVersion = scriptUrl.searchParams.get("v");
-  challenge.version = rawVersion ? rawVersion.replace(/^v/, "") : "0.4.9";
+  if (rawVersion && rawVersion.replace(/^v/, "") !== expectedVersion) {
+    throw new Error(`Cerberus page/source version mismatch: page=${rawVersion} source=${expectedVersion}`);
+  }
+  challenge.version = expectedVersion;
 
   const response = await fetch(`${serviceUrl}/solve`, {
     method: "POST",

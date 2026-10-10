@@ -17,6 +17,13 @@ trap cleanup EXIT
 
 git clone --quiet --depth 1 --branch "$CERBERUS_REF" https://github.com/sjtug/cerberus "$TMP/cerberus"
 echo "UPSTREAM_COMMIT protocol=cerberus ref=${CERBERUS_REF:-HEAD} commit=$(git -C "$TMP/cerberus" rev-parse HEAD)"
+CERBERUS_EXPECTED_VERSION="$(sed -n 's/^[[:space:]]*Version[[:space:]]*=[[:space:]]*"v\([0-9][0-9.]*\)".*/\1/p' "$TMP/cerberus/core/const.go" | head -n1)"
+if [[ -z "$CERBERUS_EXPECTED_VERSION" ]]; then
+  echo "could not derive Cerberus protocol version from checked-out core/const.go" >&2
+  exit 1
+fi
+export CERBERUS_EXPECTED_VERSION
+echo "UPSTREAM_PROTOCOL_VERSION protocol=cerberus version=${CERBERUS_EXPECTED_VERSION}"
 
 (
   cd "$TMP"
