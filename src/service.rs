@@ -19,7 +19,7 @@ use tracing::{info, warn};
 
 use crate::{
     anubis::{self, Challenge},
-    classic_pow, hashx, hashx_cpu_jit,
+    anubis_wasm, classic_pow, hashx, hashx_cpu_jit,
     routing::{RouteEntry, RoutingCalibration},
     stats::{Calibration, StatsStore},
 };
@@ -324,6 +324,39 @@ impl AppState {
             solver: "anubis".to_owned(),
             backend: "cpu".to_owned(),
             implementation: None,
+            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
+            queue_ms,
+            solve_ms: result.solve_ms,
+            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    async fn run_anubis_wasm(
+        &self,
+        solver: String,
+        challenge: anubis_wasm::Challenge,
+        implementation: Option<String>,
+        queued_at: Instant,
+    ) -> anyhow::Result<SolveResponse> {
+        let permit = self.cpu_slots.clone().acquire_owned().await?;
+        let started = Instant::now();
+        let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
+        let response_solver = solver.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            match solver.as_str() {
+                "anubis-sha256" => anubis_wasm::solve_sha256(&challenge, implementation.as_deref()),
+                "anubis-argon2id" => {
+                    anubis_wasm::solve_argon2id(&challenge, implementation.as_deref())
+                }
+                _ => anyhow::bail!("unsupported Anubis WASM solver: {solver}"),
+            }
+        })
+        .await??;
+        Ok(SolveResponse {
+            solver: response_solver,
+            backend: "cpu".to_owned(),
+            implementation: Some(result.implementation),
             answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
             queue_ms,
             solve_ms: result.solve_ms,
@@ -864,6 +897,55 @@ pub async fn solve(
             };
             (difficulty, result)
         }
+        "anubis-sha256" | "anubis-argon2id" => {
+            let expected_algorithm = if request.solver == "anubis-sha256" {
+                "sha256"
+            } else {
+                "argon2id"
+            };
+            if request
+                .algorithm
+                .as_deref()
+                .is_some_and(|algorithm| algorithm != expected_algorithm)
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "{} solver requires algorithm={expected_algorithm}",
+                            request.solver
+                        ),
+                    }),
+                ));
+            }
+            let challenge: anubis_wasm::Challenge = serde_json::from_value(request.challenge)
+                .map_err(|err| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: err.to_string(),
+                        }),
+                    )
+                })?;
+            challenge.validate().map_err(|err| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+            })?;
+            let difficulty = u8::try_from(challenge.difficulty).unwrap_or(u8::MAX);
+            let result = state
+                .run_anubis_wasm(
+                    request.solver.clone(),
+                    challenge,
+                    request.implementation.clone(),
+                    queued_at,
+                )
+                .await;
+            (difficulty, result)
+        }
         "anubis-hashx" | "anubis-hashx-jit" | "anubis-hashx-auto" => {
             if request
                 .algorithm
@@ -1041,9 +1123,20 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         expected.insert(difficulty, eta_ms);
     }
     let general = state.stats.read().await.snapshot();
+    let mut anubis_sha_implementations = vec!["auto", "safe"];
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        anubis_sha_implementations.push("avx2");
+    }
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx512f") {
+        anubis_sha_implementations.push("avx512");
+    }
     let mut available_solvers = vec![
         "anubis",
         "anubis-cpu",
+        "anubis-sha256",
+        "anubis-argon2id",
         "anubis-hashx-jit",
         "anubis-hashx-auto",
     ];
@@ -1063,6 +1156,22 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_max: 16,
             router: false,
             implementations: Vec::new(),
+        },
+        SolverCapability {
+            solver: "anubis-sha256",
+            algorithms: &["sha256"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: false,
+            implementations: anubis_sha_implementations,
+        },
+        SolverCapability {
+            solver: "anubis-argon2id",
+            algorithms: &["argon2id"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: false,
+            implementations: vec!["argon2-0.5.3"],
         },
         SolverCapability {
             solver: "anubis-hashx-jit",

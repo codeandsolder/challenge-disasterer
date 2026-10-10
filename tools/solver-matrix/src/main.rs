@@ -4,13 +4,14 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use argon2::Argon2;
 use clap::{Parser, ValueEnum};
 use pow_core::{
     build_mcaptcha_prefix, compute_mask_anubis, compute_mask_cerberus, compute_mask_goaway,
     compute_target_mcaptcha,
     message::{
-        AltchaMessage, CapJSEmitter, CerberusBinaryMessage, CerberusMessage, DecimalMessage,
-        GoAwayMessage,
+        AltchaMessage, BinaryMessage, CapJSEmitter, CerberusBinaryMessage, CerberusMessage,
+        DecimalMessage, GoAwayMessage,
     },
     solver::{SOLVE_TYPE_GT, SOLVE_TYPE_MASK, Solver, SolverDyn},
 };
@@ -31,6 +32,9 @@ struct Args {
     /// Hard candidate ceiling per solve.
     #[arg(long, default_value_t = 50_000_000)]
     limit: u64,
+    /// Exact candidate ceiling for the memory-hard Anubis Argon2id rows.
+    #[arg(long, default_value_t = 64)]
+    argon2_limit: u64,
     /// Include CPU implementations in the matrix.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     cpu: bool,
@@ -254,6 +258,108 @@ fn decimal_backends(message: impl Fn() -> DecimalMessage) -> Vec<(&'static str, 
     out
 }
 
+fn binary_backends(message: impl Fn() -> BinaryMessage) -> Vec<(&'static str, Box<dyn DynPow>)> {
+    let mut out: Vec<(&'static str, Box<dyn DynPow>)> = vec![
+        (
+            "safe",
+            Box::new(pow_core::solver::safe::BinarySolver::from(message())),
+        ),
+        ("auto", Box::new(pow_core::BinarySolver::from(message()))),
+    ];
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        out.push((
+            "avx2",
+            Box::new(pow_core::solver::avx2::BinarySolver::from(message())),
+        ));
+    }
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx512f") {
+        out.push((
+            "avx512",
+            Box::new(pow_core::solver::avx512::BinarySolver::from(message())),
+        ));
+    }
+    out
+}
+
+fn leading_zero_bits(hash: &[u8; 32], difficulty: u32) -> bool {
+    let full_bytes = (difficulty / 8) as usize;
+    let remaining = difficulty % 8;
+    if hash[..full_bytes].iter().any(|byte| *byte != 0) {
+        return false;
+    }
+    remaining == 0 || (hash[full_bytes] & (0xff << (8 - remaining))) == 0
+}
+
+fn run_argon2_case(meta: &Meta, sample: u32, data: &[u8], args: &Args) -> Result<()> {
+    anyhow::ensure!(
+        args.argon2_limit > 0,
+        "argon2-limit must be greater than zero"
+    );
+    anyhow::ensure!(
+        args.argon2_limit <= (1_u64 << 32),
+        "argon2-limit must fit the Anubis u32 nonce space"
+    );
+    let difficulty = 1_u32;
+    let started = Instant::now();
+    let mut attempted = 0_u64;
+    let mut found = None;
+    for nonce in 0..args.argon2_limit {
+        let salt = nonce.to_le_bytes();
+        let mut hash = [0_u8; 32];
+        Argon2::default()
+            .hash_password_into(data, &salt, &mut hash)
+            .map_err(|error| anyhow::anyhow!("Argon2id matrix hash failed: {error}"))?;
+        attempted += 1;
+        match args.mode {
+            Mode::Correctness if leading_zero_bits(&hash, difficulty) => {
+                found = Some(nonce);
+                break;
+            }
+            Mode::Throughput => {
+                let prefix = u64::from_be_bytes(hash[..8].try_into().expect("8-byte prefix"));
+                anyhow::ensure!(prefix != 0, "throughput target unexpectedly found a proof");
+            }
+            Mode::Correctness => {}
+        }
+    }
+    if matches!(args.mode, Mode::Correctness) {
+        anyhow::ensure!(
+            found.is_some(),
+            "Argon2id correctness search exhausted candidate limit"
+        );
+    } else {
+        anyhow::ensure!(
+            attempted == args.argon2_limit,
+            "Argon2id throughput run attempted {attempted} candidates, expected exactly {}",
+            args.argon2_limit
+        );
+    }
+    let solve_ns = started.elapsed().as_nanos();
+    emit(Record {
+        schema: 1,
+        phase: phase_name(args.mode),
+        timestamp_unix_ms: timestamp_ms(),
+        host: meta.host.clone(),
+        cpu_model: meta.cpu_model.clone(),
+        commit: meta.commit.clone(),
+        protocol: "anubis",
+        variant: "wasm-argon2id-1.28",
+        implementation: "argon2-0.5.3".to_owned(),
+        accelerator: "cpu",
+        sample,
+        parameters: json!({"difficulty":difficulty,"data_len":data.len(),"candidate_limit":args.argon2_limit}),
+        attempted_work: attempted,
+        solve_ns,
+        work_per_second: rate(attempted, solve_ns),
+        found: found.is_some(),
+        nonce: found,
+        target_condition_ok: true,
+        gpu_adapter: None,
+    })
+}
+
 fn goaway_backends(message: impl Fn() -> GoAwayMessage) -> Vec<(&'static str, Box<dyn DynPow>)> {
     let mut out: Vec<(&'static str, Box<dyn DynPow>)> = vec![
         (
@@ -372,6 +478,39 @@ fn run_cpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
                 args.mode,
             )?;
         }
+
+        // Anubis 1.28 WASM SHA-256: raw challenge bytes plus a 32-bit nonce.
+        // End the challenge with 0x80 so upstream selects little-endian nonce bytes directly.
+        let mut anubis_wasm_data = vec![0x42_u8; 48];
+        anubis_wasm_data[..4].copy_from_slice(&sample_bytes);
+        *anubis_wasm_data.last_mut().expect("nonempty challenge") = 0x80;
+        let anubis_sha_mask = u64::MAX << (64 - 20);
+        for (implementation, solver) in binary_backends(|| {
+            BinaryMessage::new(
+                &anubis_wasm_data,
+                NonZeroU8::new(4).expect("four is nonzero"),
+            )
+        }) {
+            emit_cpu(
+                meta,
+                Case {
+                    protocol: "anubis",
+                    variant: "wasm-sha256-1.28",
+                    implementation,
+                    accelerator: "cpu",
+                    sample,
+                    parameters: json!({"difficulty":20,"data_len":anubis_wasm_data.len(),"nonce_endian":"little"}),
+                    target: 0,
+                    mask: anubis_sha_mask,
+                    ty: SOLVE_TYPE_MASK,
+                },
+                solver,
+                args.limit,
+                args.mode,
+            )?;
+        }
+
+        run_argon2_case(meta, sample, &anubis_wasm_data, args)?;
 
         // mCaptcha: canonical salt + bincode-style string prefix, expected candidates ~= difficulty factor.
         let mut mcaptcha_prefix = Vec::new();
@@ -581,6 +720,39 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             json!({"difficulty":5,"prefix_len":prefix.len()}),
             0,
             mask,
+            SOLVE_TYPE_MASK,
+            solver.get_attempted_nonces(),
+            elapsed,
+            solved.map(|x| (x.nonce, x.hash)),
+            &adapter,
+            args.mode,
+            args.limit,
+        )?;
+
+        let mut anubis_wasm_data = vec![0x42_u8; 48];
+        anubis_wasm_data[..4].copy_from_slice(&sample_bytes);
+        *anubis_wasm_data.last_mut().expect("nonempty challenge") = 0x80;
+        let anubis_sha_mask = u64::MAX << (64 - 20);
+        let mut solver = pow_core::gpu::BinarySolver::from(BinaryMessage::new(
+            &anubis_wasm_data,
+            NonZeroU8::new(4).expect("four is nonzero"),
+        ));
+        solver.set_limit(args.limit);
+        let started = Instant::now();
+        let (bench_target, bench_mask, _) =
+            benchmark_condition(args.mode, 0, anubis_sha_mask, SOLVE_TYPE_MASK);
+        let solved = solver
+            .solve::<SOLVE_TYPE_MASK>(&mut gpu, bench_target, bench_mask)
+            .await?;
+        let elapsed = started.elapsed().as_nanos();
+        emit_gpu(
+            meta,
+            "anubis",
+            "wasm-sha256-1.28",
+            sample,
+            json!({"difficulty":20,"data_len":anubis_wasm_data.len(),"nonce_endian":"little"}),
+            0,
+            anubis_sha_mask,
             SOLVE_TYPE_MASK,
             solver.get_attempted_nonces(),
             elapsed,

@@ -2,7 +2,7 @@
 
 A small local service for routing proof-of-work / anti-bot challenge solvers to an available backend.
 
-Current solvers: **Anubis SHA-256**, **Anubis HashX**, **Cerberus**, **go-away js-pow-sha256**, **Cap.js**, **mCaptcha**, and **ALTCHA v2** (SHA-256 and PBKDF2/SHA-256). The former `pow-buster-imp` solver engine now lives in-tree as `crates/pow-core`; there is no runtime or Git dependency on the old repository. Classic protocols expose concrete CPU implementations (`safe`, AVX2, SHA-NI where applicable, AVX-512 when present, plus `auto`) and one persistent generalized WGPU context. Anubis keeps its specialized SHA GPU path, while HashX keeps upstream CPU JIT plus every advertised portable/native GPU implementation. `/solve` returns protocol-native answer JSON so callers do not need a second conversion layer.
+Current solvers: **Anubis fast/slow SHA-256**, **Anubis WASM SHA-256**, **Anubis Argon2id**, **Anubis HashX**, **Cerberus**, **go-away js-pow-sha256**, **Cap.js**, **mCaptcha**, and **ALTCHA v2** (SHA-256 and PBKDF2/SHA-256). The former `pow-buster-imp` solver engine now lives in-tree as `crates/pow-core`; there is no runtime or Git dependency on the old repository. Classic protocols expose concrete CPU implementations (`safe`, AVX2, SHA-NI where applicable, AVX-512 when present, plus `auto`) and one persistent generalized WGPU context. Anubis keeps its specialized SHA GPU path, while HashX keeps upstream CPU JIT plus every advertised portable/native GPU implementation. `/solve` returns protocol-native answer JSON so callers do not need a second conversion layer.
 
 ## API
 
@@ -34,7 +34,7 @@ Response:
 
 `GET /stats` returns available solvers plus machine-readable `solver_capabilities` (algorithms, difficulty domain, whether an endpoint is itself a router, and concrete implementations), startup calibration, queued/active GPU work, CPU capacity, rolling timing data, and aggregate counters. This capability description is also the discovery contract used by the routing calibrator and by optional external solver services.
 
-`batch_size_hint` defaults to 1 and tells calibrated routes how much concurrent work the caller is about to submit. Explicit solver names continue to force their family. `anubis` is the automatic fast/slow SHA route; `anubis-hashx` remains the explicit HashX GPU family; `anubis-hashx-jit` forces the upstream CPU JIT; and `anubis-hashx-auto` is the calibrated CPU/GPU/external HashX route.
+`batch_size_hint` defaults to 1 and tells calibrated routes how much concurrent work the caller is about to submit. Explicit solver names continue to force their family. `anubis` is the automatic fast/slow SHA route; `anubis-sha256` and `anubis-argon2id` implement the current Anubis WASM challenge methods on CPU; `anubis-hashx` is the explicit HashX GPU family; `anubis-hashx-jit` forces the upstream CPU JIT; and `anubis-hashx-auto` is the calibrated CPU/GPU/external HashX route.
 
 ## Backend policy
 
@@ -42,7 +42,7 @@ Response:
 - A normal build attempts one persistent native `wgpu` device/pipeline at startup. `--gpu=false` disables it at runtime.
 - Without a routing-calibration file, the historical SHA policy remains: a compatible operational GPU is preferred and CPU is the fallback. HashX auto similarly prefers its GPU family when available and otherwise uses the upstream CPU JIT.
 - With `--routing-calibration <report.json>`, the automatic `anubis` and `anubis-hashx-auto` endpoints choose the fastest compatible **concrete** calibrated route for the requested algorithm, difficulty, and nearest calibrated batch size. Local GPU rows are usable only on the adapter they were measured on; CPU and configured external providers remain eligible.
-- Explicit endpoints (`anubis-cpu`, `anubis-gpu`, `anubis-hashx`, `anubis-hashx-jit`) retain force semantics and bypass the cross-family calibrated router.
+- Explicit endpoints (`anubis-cpu`, `anubis-gpu`, `anubis-sha256`, `anubis-argon2id`, `anubis-hashx`, `anubis-hashx-jit`) retain force semantics and bypass the cross-family calibrated router.
 - CPU concurrency is bounded by `--cpu-workers`.
 - Both available backends are calibrated at startup. `/stats` bases the new-request ETA on the active backend; GPU ETA includes expected work already queued or executing.
 
@@ -71,12 +71,12 @@ On multi-GPU hosts the runner enumerates every non-CPU Vulkan adapter, runs CPU 
 The direct matrix deliberately separates two questions that must not be conflated:
 
 - **correctness:** normal protocol targets; every returned proof is checked against the protocol condition and the live harness subsequently submits it to the authoritative implementation;
-- **throughput:** a fixed candidate budget with a 64-bit mask target (`target=0`, `mask=2^64-1`), so every implementation performs exactly the same amount of work. An accidental 64-bit hit or any attempted-work mismatch fails the run instead of becoming a bogus speed result.
+- **throughput:** SHA-family solvers use a fixed candidate budget with a 64-bit mask target (`target=0`, `mask=2^64-1`), so every implementation of the same algorithm performs exactly the same amount of work. An accidental 64-bit hit or any attempted-work mismatch fails the run instead of becoming a bogus speed result. Argon2id uses its own exact `--argon2-limit` candidate budget because one memory-hard Argon2 candidate is not comparable to one SHA candidate.
   When GPU benchmarking is enabled the budget must be a multiple of 8192, the specialized Anubis kernel's natural work quantum; the runner defaults to 1,048,576 candidates and rejects misaligned budgets rather than rounding them silently.
 
 HashX uses the live Anubis harness's paired benchmark rather than a duplicate synthetic verifier. CPU JIT, automatic routing, and every GPU implementation solve the **same freshly issued challenge** in rotating order; the harness requires identical nonce/hash across implementations before reporting timing. This covers `wgsl-specialized`, the adapter-specific persistent Vulkan backend, and `cuda-sm75-sass` when available.
 
-Current Anubis also ships WASM `sha256` and `argon2id` challenge algorithms. The stock-browser benchmark exercises those upstream implementations so they remain visible in coverage reports, but challenge-disasterer does not yet expose native `sha256` or `argon2id` solver routes; they are an explicit remaining coverage gap rather than being counted as validated native solvers.
+Current Anubis also ships WASM `sha256` and `argon2id` challenge algorithms. challenge-disasterer exposes both as native CPU solver routes: `anubis-sha256` reuses the in-tree binary SHA-256 backends (`safe`, `auto`, AVX2, and AVX-512 where available), while `anubis-argon2id` uses the same Argon2 0.5.3 defaults and nonce-byte rules as upstream. The real-Anubis harness submits both proof types back to the current upstream verifier, and the stock-browser benchmark remains as an independent reference.
 
 Example:
 

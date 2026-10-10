@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+argon2 = "0.5.3"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 pow-core = { package = "challenge-pow-core", path = "../../crates/pow-core", features = ["gpu", "json", "compare-64bit"] }
