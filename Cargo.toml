@@ -40,5 +40,5 @@ unsafe_code = "deny"
 all = { level = "deny", priority = -1 }
 
 [workspace]
-members = ["crates/pow-core", "tools/solver-matrix"]
+members = ["crates/pow-core", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix"]
 resolver = "3"
