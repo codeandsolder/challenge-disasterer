@@ -112,7 +112,10 @@ fn validate_token(label: &str, value: &str) -> anyhow::Result<()> {
 
 #[derive(Parser, Debug, Clone)]
 #[command(about = "Exercise challenge-disasterer against a real Anubis server")]
-#[allow(clippy::struct_excessive_bools, reason = "independent CLI feature switches are clearer as booleans")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent CLI feature switches are clearer as booleans"
+)]
 struct Args {
     /// Current upstream Anubis binary, built from the source revision under test.
     #[arg(long)]
@@ -124,7 +127,10 @@ struct Args {
 
     /// Anubis algorithm, solver, difficulty, and optional required implementation.
     /// Repeat to test multiple solver/protocol pairs.
-    #[arg(long = "case", value_name = "ALGORITHM:SOLVER:DIFFICULTY[:IMPLEMENTATION]")]
+    #[arg(
+        long = "case",
+        value_name = "ALGORITHM:SOLVER:DIFFICULTY[:IMPLEMENTATION]"
+    )]
     cases: Vec<CaseSpec>,
 
     /// Enable challenge-disasterer's GPU backend. CI defaults to CPU-only.
@@ -144,7 +150,11 @@ struct Args {
     exercise_all_gpu_adapters: bool,
 
     /// `HashX` difficulties used for paired routing/implementation benchmarks.
-    #[arg(long, value_delimiter = ',', default_value = "1,8,16,18,20,21,22,23,24")]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "1,8,16,18,20,21,22,23,24"
+    )]
     hashx_routing_difficulties: Vec<u32>,
 
     /// Extra argument forwarded verbatim to challenge-disasterer.
@@ -588,7 +598,10 @@ fn calibration_candidates(
     let selected_adapter = stats.calibration.gpu_adapter.clone();
     let mut out = Vec::new();
     for capability in capabilities {
-        let cpu_only = matches!(capability.solver.as_str(), "anubis-cpu" | "anubis-hashx-jit");
+        let cpu_only = matches!(
+            capability.solver.as_str(),
+            "anubis-cpu" | "anubis-hashx-jit"
+        );
         if cpu_only && !include_cpu_only {
             continue;
         }
@@ -659,7 +672,10 @@ fn calibration_parameter_cases(
 }
 
 fn candidate_supports(candidate: &CalibrationCandidate, case: &CaseSpec) -> bool {
-    candidate.algorithms.iter().any(|algorithm| algorithm == &case.algorithm)
+    candidate
+        .algorithms
+        .iter()
+        .any(|algorithm| algorithm == &case.algorithm)
         && (candidate.difficulty_min..=candidate.difficulty_max).contains(&case.difficulty)
 }
 
@@ -701,9 +717,7 @@ fn issue_calibration_challenge(
         "Anubis calibration challenge request failed with {}",
         response.status()
     );
-    let html = response
-        .text()
-        .context("read calibration challenge page")?;
+    let html = response.text().context("read calibration challenge page")?;
     let envelope: ChallengeEnvelope = extract_json_script(&html, "anubis_challenge")?;
     ensure!(
         envelope.rules.algorithm == parameter.algorithm,
@@ -819,7 +833,8 @@ fn calibrate_batch(
     let mut case = parameter.clone();
     case.solver.clone_from(&candidate.solver);
     case.implementation.clone_from(&candidate.implementation);
-    case.force_implementation.clone_from(&candidate.implementation);
+    case.force_implementation
+        .clone_from(&candidate.implementation);
     case.batch_size_hint = batch_size;
     let solver_client = ClientBuilder::new()
         .timeout(Duration::from_secs(600))
@@ -841,26 +856,27 @@ fn calibrate_batch(
         }
 
         let started = Instant::now();
-        let solved = thread::scope(|scope| -> anyhow::Result<Vec<CalibrationSolvedItem>> {
-            let mut handles = Vec::with_capacity(batch_size);
-            for item in work {
-                let case = &case;
-                let solver_base = candidate.base_url.as_str();
-                let solver_client = &solver_client;
-                handles.push(scope.spawn(move || {
-                    solve_calibration_item(case, solver_base, solver_client, item)
-                }));
-            }
-            let mut solved = Vec::with_capacity(batch_size);
-            for handle in handles {
-                solved.push(
-                    handle
-                        .join()
-                        .map_err(|_| anyhow!("calibration solver thread panicked"))??,
-                );
-            }
-            Ok(solved)
-        })?;
+        let solved =
+            thread::scope(|scope| -> anyhow::Result<Vec<CalibrationSolvedItem>> {
+                let mut handles = Vec::with_capacity(batch_size);
+                for item in work {
+                    let case = &case;
+                    let solver_base = candidate.base_url.as_str();
+                    let solver_client = &solver_client;
+                    handles.push(scope.spawn(move || {
+                        solve_calibration_item(case, solver_base, solver_client, item)
+                    }));
+                }
+                let mut solved = Vec::with_capacity(batch_size);
+                for handle in handles {
+                    solved.push(
+                        handle
+                            .join()
+                            .map_err(|_| anyhow!("calibration solver thread panicked"))??,
+                    );
+                }
+                Ok(solved)
+            })?;
         makespans.push(started.elapsed().as_secs_f64() * 1000.0);
 
         // Current Anubis uses a non-reentrant WASM validation runner. Validate serially
@@ -924,17 +940,19 @@ fn calibration_winners(entries: &[CalibrationEntry]) -> Vec<CalibrationWinner> {
         }
     }
     best.into_iter()
-        .map(|((algorithm, difficulty, batch_size), entry)| CalibrationWinner {
-            algorithm,
-            difficulty,
-            batch_size,
-            provider: entry.provider.clone(),
-            provider_url: entry.provider_url.clone(),
-            adapter: entry.adapter.clone(),
-            solver: entry.solver.clone(),
-            implementation: entry.implementation.clone(),
-            makespan_ms: entry.makespan_ms,
-        })
+        .map(
+            |((algorithm, difficulty, batch_size), entry)| CalibrationWinner {
+                algorithm,
+                difficulty,
+                batch_size,
+                provider: entry.provider.clone(),
+                provider_url: entry.provider_url.clone(),
+                adapter: entry.adapter.clone(),
+                solver: entry.solver.clone(),
+                implementation: entry.implementation.clone(),
+                makespan_ms: entry.makespan_ms,
+            },
+        )
         .collect()
 }
 
@@ -985,7 +1003,10 @@ fn post_hashx_solver(
         .with_context(|| format!("submit HashX solve via {solver}/{implementation:?}"))?;
     let status = response.status();
     let body = response.text().context("read paired solver response")?;
-    ensure!(status.is_success(), "paired solver returned {status}: {body}");
+    ensure!(
+        status.is_success(),
+        "paired solver returned {status}: {body}"
+    );
     serde_json::from_str(&body).context("decode paired solver response")
 }
 
@@ -1063,7 +1084,10 @@ fn solve_case(
     solve_case_inner(index, case, anubis_base, solver_base, negative_check, true)
 }
 
-#[allow(clippy::too_many_lines, reason = "keeps one complete protocol round trip together")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps one complete protocol round trip together"
+)]
 fn solve_case_inner(
     index: usize,
     case: &CaseSpec,
@@ -1218,7 +1242,6 @@ fn solve_case_inner(
     })
 }
 
-
 fn paired_hashx_sample(
     index: usize,
     sample: usize,
@@ -1233,7 +1256,10 @@ fn paired_hashx_sample(
         .get(format!("{anubis_base}/"))
         .send()
         .context("request paired HashX challenge")?;
-    ensure!(response.status().is_success(), "paired challenge request failed");
+    ensure!(
+        response.status().is_success(),
+        "paired challenge request failed"
+    );
     let html = response.text().context("read paired challenge page")?;
     let envelope: ChallengeEnvelope = extract_json_script(&html, "anubis_challenge")?;
     ensure!(
@@ -1339,8 +1365,8 @@ fn print_paired_hashx_report(
     let (best_gpu_name, best_gpu_ms) = best_gpu.context("no GPU implementations to benchmark")?;
     let jit_ms = paired_mean(timings.get("cpu-jit").context("missing cpu-jit timings")?);
     let slowdown = auto_ms / best_gpu_ms.max(f64::MIN_POSITIVE);
-    let selection_matches_best = auto_implementations.len() == 1
-        && auto_implementations.contains_key(best_gpu_name);
+    let selection_matches_best =
+        auto_implementations.len() == 1 && auto_implementations.contains_key(best_gpu_name);
     let routing = if selection_matches_best || slowdown <= 1.25 {
         "OK"
     } else {
@@ -1387,7 +1413,10 @@ fn paired_hashx_benchmark(
         )?;
         *auto_implementations.entry(auto_implementation).or_default() += 1;
         for solved in solves {
-            timings.entry(solved.label).or_default().push(solved.solve_ms);
+            timings
+                .entry(solved.label)
+                .or_default()
+                .push(solved.solve_ms);
         }
     }
     print_paired_hashx_report(
@@ -1402,7 +1431,9 @@ fn paired_hashx_benchmark(
 fn expected_hashes(case: &CaseSpec) -> f64 {
     match case.algorithm.as_str() {
         "fast" | "slow" => 16_f64.powi(i32::try_from(case.difficulty).unwrap_or(i32::MAX)),
-        "hashx" | "argon2id" | "sha256" => 2_f64.powi(i32::try_from(case.difficulty).unwrap_or(i32::MAX)),
+        "hashx" | "argon2id" | "sha256" => {
+            2_f64.powi(i32::try_from(case.difficulty).unwrap_or(i32::MAX))
+        }
         _ => f64::NAN,
     }
 }
@@ -1463,9 +1494,11 @@ fn print_benchmark(case: &CaseSpec, trials: &[TrialResult]) -> anyhow::Result<()
     let solve_ms: f64 = trials.iter().map(|trial| trial.solve_ms).sum();
     let sample_count = u32::try_from(trials.len()).expect("benchmark sample count fits u32");
     let sample_count = f64::from(sample_count);
-    let hashes_per_s = expected_hashes(case) * sample_count * 1000.0
-        / solve_ms.max(f64::MIN_POSITIVE);
-    let backend = trials.first().map_or("unknown", |trial| trial.backend.as_str());
+    let hashes_per_s =
+        expected_hashes(case) * sample_count * 1000.0 / solve_ms.max(f64::MIN_POSITIVE);
+    let backend = trials
+        .first()
+        .map_or("unknown", |trial| trial.backend.as_str());
     let implementation = trials
         .first()
         .and_then(|trial| trial.implementation.as_deref());
@@ -1491,7 +1524,10 @@ fn print_benchmark(case: &CaseSpec, trials: &[TrialResult]) -> anyhow::Result<()
     Ok(())
 }
 
-#[allow(clippy::too_many_lines, reason = "top-level test orchestration is intentionally linear")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "top-level test orchestration is intentionally linear"
+)]
 fn run(
     args: Args,
     adapter_override: Option<&str>,
@@ -1508,7 +1544,9 @@ fn run(
         args.solver_bin.display()
     );
     ensure!(
-        args.hashx_routing_difficulties.iter().all(|difficulty| *difficulty > 0),
+        args.hashx_routing_difficulties
+            .iter()
+            .all(|difficulty| *difficulty > 0),
         "HashX routing difficulties must be greater than zero"
     );
 
@@ -1699,10 +1737,7 @@ fn run(
     wait_ready(&format!("{anubis_base}/"), &mut anubis)?;
 
     let correctness_count = cases.len().saturating_sub(
-        benchmark_cases.len()
-            + routing_cases.len()
-            + browser_cases.len()
-            + calibration_cases.len(),
+        benchmark_cases.len() + routing_cases.len() + browser_cases.len() + calibration_cases.len(),
     );
     let benchmark_start = correctness_count;
     let routing_start = benchmark_start + benchmark_cases.len();
@@ -1742,8 +1777,13 @@ fn run(
         let index = benchmark_start + offset;
         let mut trials = Vec::with_capacity(args.benchmark_samples);
         for _ in 0..args.benchmark_samples {
-            let trial = solve_case(index, case, &anubis_base, &solver_base, false)
-                .with_context(|| format!("benchmark case failed: {}:{}:{}", case.algorithm, case.solver, case.difficulty))?;
+            let trial =
+                solve_case(index, case, &anubis_base, &solver_base, false).with_context(|| {
+                    format!(
+                        "benchmark case failed: {}:{}:{}",
+                        case.algorithm, case.solver, case.difficulty
+                    )
+                })?;
             trials.push(trial);
         }
         print_benchmark(case, &trials)?;
@@ -1793,7 +1833,10 @@ fn run(
         print!("{}", String::from_utf8_lossy(&output.stdout));
         if !output.status.success() {
             eprintln!("{}", String::from_utf8_lossy(&output.stderr));
-            bail!("stock Anubis browser benchmark failed with {}", output.status);
+            bail!(
+                "stock Anubis browser benchmark failed with {}",
+                output.status
+            );
         }
     }
 
@@ -1878,7 +1921,10 @@ fn main() -> anyhow::Result<()> {
     let mut all_calibration_entries = Vec::new();
     if args.solver_gpu && args.exercise_all_gpu_adapters {
         let adapters = discover_gpu_adapters(&args.solver_bin)?;
-        ensure!(!adapters.is_empty(), "no usable Vulkan GPU adapters discovered");
+        ensure!(
+            !adapters.is_empty(),
+            "no usable Vulkan GPU adapters discovered"
+        );
         println!("GPU_ADAPTERS discovered={adapters:?}");
         let mut temps = Vec::with_capacity(adapters.len());
         for (index, adapter) in adapters.iter().enumerate() {
@@ -1928,8 +1974,17 @@ mod tests {
         let expected = "vulkan-extmul-persistent";
         let fuzz = fuzz_matrix(true, Some(expected))?;
         let bench = benchmark_matrix(true, Some(expected))?;
-        assert!(fuzz.iter().filter(|case| case.solver == "anubis-hashx").all(|case| case.implementation.as_deref() == Some(expected)));
-        assert!(bench.iter().filter(|case| case.solver == "anubis-hashx").all(|case| case.implementation.as_deref() == Some(expected)));
+        assert!(
+            fuzz.iter()
+                .filter(|case| case.solver == "anubis-hashx")
+                .all(|case| case.implementation.as_deref() == Some(expected))
+        );
+        assert!(
+            bench
+                .iter()
+                .filter(|case| case.solver == "anubis-hashx")
+                .all(|case| case.implementation.as_deref() == Some(expected))
+        );
         Ok(())
     }
 
@@ -1941,7 +1996,11 @@ mod tests {
         ];
         let matrix = implementation_fuzz_matrix(&implementations)?;
         assert_eq!(matrix.len(), 8);
-        assert!(matrix.iter().all(|case| case.force_implementation == case.implementation));
+        assert!(
+            matrix
+                .iter()
+                .all(|case| case.force_implementation == case.implementation)
+        );
         Ok(())
     }
 
