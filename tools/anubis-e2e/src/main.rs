@@ -1508,6 +1508,7 @@ fn fuzz_matrix(gpu: bool, implementation: Option<&str>) -> anyhow::Result<Vec<Ca
     }
     for difficulty in [1_u32, 3] {
         specs.push(format!("slow:anubis-cpu:{difficulty}").parse()?);
+        specs.push(format!("slow:anubis:{difficulty}").parse()?);
     }
     for difficulty in [1_u32, 2, 4, 8, 12, 16] {
         specs.push(format!("hashx:anubis-hashx-jit:{difficulty}").parse()?);
@@ -2039,6 +2040,22 @@ mod tests {
             .expect("valid implementation-qualified case");
         assert_eq!(concrete.difficulty, 18);
         assert_eq!(concrete.implementation.as_deref(), Some("cuda-sm75-sass"));
+    }
+
+    #[test]
+    fn fuzz_matrix_covers_anubis_router_algorithms() -> anyhow::Result<()> {
+        let matrix = fuzz_matrix(false, None)?;
+        assert!(
+            matrix
+                .iter()
+                .any(|case| case.solver == "anubis" && case.algorithm == "fast")
+        );
+        assert!(
+            matrix
+                .iter()
+                .any(|case| case.solver == "anubis" && case.algorithm == "slow")
+        );
+        Ok(())
     }
 
     #[test]
