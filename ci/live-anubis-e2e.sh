@@ -46,7 +46,7 @@ fi
 "${solver_build[@]}"
 cargo build --locked --manifest-path "${root}/tools/anubis-e2e/Cargo.toml"
 
-"${root}/tools/anubis-e2e/target/debug/challenge-disasterer-anubis-e2e" \
+"${root}/target/debug/challenge-disasterer-anubis-e2e" \
   --anubis-bin "${anubis_bin}" \
   --solver-bin "${root}/target/debug/challenge-disasterer" \
   --case fast:anubis:2 \

@@ -62,7 +62,7 @@ jobs:
 
       - name: Exercise solver against live Anubis
         run: |
-          tools/anubis-e2e/target/debug/challenge-disasterer-anubis-e2e \
+          target/debug/challenge-disasterer-anubis-e2e \
             --anubis-bin target/anubis-live-bin \
             --solver-bin target/release/challenge-disasterer \
             --fuzz \
