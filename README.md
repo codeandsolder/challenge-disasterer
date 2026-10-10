@@ -2,7 +2,7 @@
 
 A small local service for routing proof-of-work / anti-bot challenge solvers to an available backend.
 
-Current solvers: **Anubis SHA-256**, **Anubis HashX**, **Cerberus**, **go-away js-pow-sha256**, **Cap.js**, **mCaptcha**, and **ALTCHA v2** (SHA-256 and PBKDF2/SHA-256). Anubis SHA/HashX keep their existing CPU/GPU backends; the additional protocol adapters currently use the shared bounded CPU pool. `/solve` returns protocol-native answer JSON so callers do not need a second conversion layer.
+Current solvers: **Anubis SHA-256**, **Anubis HashX**, **Cerberus**, **go-away js-pow-sha256**, **Cap.js**, **mCaptcha**, and **ALTCHA v2** (SHA-256 and PBKDF2/SHA-256). The former `pow-buster-imp` solver engine now lives in-tree as `crates/pow-core`; there is no runtime or Git dependency on the old repository. Classic protocols expose concrete CPU implementations (`safe`, AVX2, SHA-NI where applicable, AVX-512 when present, plus `auto`) and one persistent generalized WGPU context. Anubis keeps its specialized SHA GPU path, while HashX keeps upstream CPU JIT plus every advertised portable/native GPU implementation. `/solve` returns protocol-native answer JSON so callers do not need a second conversion layer.
 
 ## API
 
@@ -61,6 +61,25 @@ cargo run --release --no-default-features -- --listen 127.0.0.1:17417
 ```
 
 The repository currently pins `nightly-2026-10-08`; Anubis assets are built with Rust 1.99 in the live-compatibility workflow.
+
+## Reproducible hardware matrix
+
+`tools/run-hardware-matrix.py` is the canonical cross-hardware validation/benchmark entry point. It writes immutable run directories containing host/toolchain/GPU metadata, JSONL direct-solver measurements, authoritative verifier logs, and a manifest of every gate. `tools/summarize-hardware-matrix.py` compares multiple run directories by identical `(phase, protocol, variant, implementation, accelerator)` keys and also extracts the paired HashX/Anubis benchmarks.
+
+The direct matrix deliberately separates two questions that must not be conflated:
+
+- **correctness:** normal protocol targets; every returned proof is checked against the protocol condition and the live harness subsequently submits it to the authoritative implementation;
+- **throughput:** a fixed candidate budget with a 64-bit mask target (`target=0`, `mask=2^64-1`), so every implementation performs exactly the same amount of work. An accidental 64-bit hit or any attempted-work mismatch fails the run instead of becoming a bogus speed result.
+
+HashX uses the live Anubis harness's paired benchmark rather than a duplicate synthetic verifier. CPU JIT, automatic routing, and every GPU implementation solve the **same freshly issued challenge** in rotating order; the harness requires identical nonce/hash across implementations before reporting timing. This covers `wgsl-specialized`, the adapter-specific persistent Vulkan backend, and `cuda-sm75-sass` when available.
+
+Example:
+
+```sh
+uv run tools/run-hardware-matrix.py   --output target/hardware-matrix/$(hostname)-$(date +%Y%m%d-%H%M%S)   --samples 5 --throughput-limit 1048576 --gpu --live
+
+uv run tools/summarize-hardware-matrix.py   target/hardware-matrix/sf314-42-*   target/hardware-matrix/cachyasus-*
+```
 
 ## Authoritative protocol compatibility tests
 

@@ -32,7 +32,18 @@ if [[ "${ANUBIS_SKIP_BUILD:-0}" != 1 ]]; then
   )
 fi
 
-cargo build --locked --no-default-features --manifest-path "${root}/Cargo.toml"
+solver_gpu=0
+for arg in "$@"; do
+  if [[ "$arg" == "--solver-gpu" ]]; then
+    solver_gpu=1
+    break
+  fi
+done
+solver_build=(cargo build --locked --manifest-path "${root}/Cargo.toml")
+if [[ "$solver_gpu" != 1 ]]; then
+  solver_build+=(--no-default-features)
+fi
+"${solver_build[@]}"
 cargo build --locked --manifest-path "${root}/tools/anubis-e2e/Cargo.toml"
 
 "${root}/tools/anubis-e2e/target/debug/challenge-disasterer-anubis-e2e" \

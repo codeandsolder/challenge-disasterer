@@ -46,6 +46,10 @@ struct Args {
     #[cfg(feature = "gpu")]
     #[arg(long, default_value_t = false, hide = true)]
     list_hashx_gpu_adapters: bool,
+    /// Run the specialized Anubis SHA GPU kernel for an exact candidate budget and exit.
+    #[cfg(feature = "gpu")]
+    #[arg(long, hide = true)]
+    benchmark_anubis_gpu_hashes: Option<u64>,
     /// Calibration JSON produced by tools/anubis-e2e --calibrate-routing.
     #[arg(long)]
     routing_calibration: Option<std::path::PathBuf>,
@@ -65,6 +69,31 @@ async fn main() -> anyhow::Result<()> {
         println!(
             "{}",
             serde_json::to_string(&hashx_gpu::adapter_names().await)?
+        );
+        return Ok(());
+    }
+    #[cfg(feature = "gpu")]
+    if let Some(hashes) = args.benchmark_anubis_gpu_hashes {
+        anyhow::ensure!(
+            hashes > 0,
+            "benchmark hash budget must be greater than zero"
+        );
+        let mut solver = gpu::GpuSolver::create().await?;
+        let adapter = solver.adapter().to_owned();
+        let hashes_per_second = solver.calibrate(hashes)?;
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema": 1,
+                "protocol": "anubis",
+                "variant": "specialized-sha256-wgpu",
+                "implementation": "specialized-wgpu",
+                "accelerator": "gpu",
+                "attempted_work": hashes,
+                "work_per_second": hashes_per_second,
+                "solve_ns": ((hashes as f64 / hashes_per_second) * 1e9).round() as u128,
+                "gpu_adapter": adapter,
+            })
         );
         return Ok(());
     }

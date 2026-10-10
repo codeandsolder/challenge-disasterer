@@ -118,18 +118,46 @@ def main() -> int:
         matrix_stdout.close()
         matrix_stderr.close()
 
+    if args.gpu:
+        specialized_stdout = out / "solver-specialized-anubis-gpu.jsonl"
+        specialized_stderr = out / "solver-specialized-anubis-gpu.stderr.log"
+        build = run(["cargo", "+nightly-2026-10-08", "build", "--locked", "--release"])
+        statuses["build-specialized-anubis-gpu"] = build.returncode
+        if build.returncode == 0:
+            with specialized_stdout.open("wb") as stdout, specialized_stderr.open("wb") as stderr:
+                specialized = run(
+                    [
+                        str(ROOT / "target/release/challenge-disasterer"),
+                        "--benchmark-anubis-gpu-hashes", str(args.throughput_limit),
+                    ],
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+            statuses["solver-specialized-anubis-gpu"] = specialized.returncode
+
     if args.live:
         for name in LIVE:
             script = ROOT / "ci" / f"live-{name}-e2e.sh"
             if name == "anubis":
-                cases = [None]
-            else:
-                cases = classic_implementations(name, args.all_implementations, args.gpu)
+                anubis_args = [
+                    "--fuzz",
+                    "--fuzz-repeats", str(max(1, min(args.samples, 4))),
+                    "--benchmark",
+                    "--benchmark-samples", str(args.samples),
+                    "--browser-reference", "false",
+                ]
+                if args.gpu:
+                    anubis_args.append("--solver-gpu")
+                with (out / "live-anubis.log").open("wb") as log:
+                    result = run([str(script), *anubis_args], stdout=log, stderr=subprocess.STDOUT)
+                statuses["live-anubis"] = result.returncode
+                continue
+
+            cases = classic_implementations(name, args.all_implementations, args.gpu)
             for implementation in cases:
-                suffix = name if implementation is None else f"{name}-{implementation}"
+                suffix = f"{name}-{implementation}"
                 env = os.environ.copy()
-                if implementation is not None:
-                    env["CHALLENGE_IMPLEMENTATION"] = implementation
+                env["CHALLENGE_IMPLEMENTATION"] = implementation
                 with (out / f"live-{suffix}.log").open("wb") as log:
                     result = run([str(script)], env=env, stdout=log, stderr=subprocess.STDOUT)
                 statuses[f"live-{suffix}"] = result.returncode
