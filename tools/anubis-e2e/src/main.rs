@@ -1053,6 +1053,36 @@ fn implementation_fuzz_matrix(implementations: &[String]) -> anyhow::Result<Vec<
     Ok(specs)
 }
 
+fn wasm_implementation_fuzz_matrix(stats: &SolverStats) -> anyhow::Result<Vec<CaseSpec>> {
+    let mut specs = Vec::new();
+    for capability in &stats.solver_capabilities {
+        let difficulties: &[u32] = match capability.solver.as_str() {
+            "anubis-sha256" => &[1, 8, 16, 20],
+            "anubis-argon2id" => &[1, 2],
+            _ => continue,
+        };
+        for implementation in &capability.implementations {
+            for &difficulty in difficulties {
+                if !(capability.difficulty_min..=capability.difficulty_max).contains(&difficulty) {
+                    continue;
+                }
+                let algorithm = capability
+                    .algorithms
+                    .first()
+                    .context("Anubis WASM capability has no algorithm")?;
+                let mut spec: CaseSpec = format!(
+                    "{algorithm}:{}:{difficulty}:{implementation}",
+                    capability.solver
+                )
+                .parse()?;
+                spec.force_implementation = Some(implementation.clone());
+                specs.push(spec);
+            }
+        }
+    }
+    Ok(specs)
+}
+
 fn routing_matrix(difficulties: &[u32]) -> anyhow::Result<Vec<CaseSpec>> {
     difficulties
         .iter()
@@ -1705,6 +1735,7 @@ fn run(
             args.solver_gpu,
             args.expect_hashx_gpu_implementation.as_deref(),
         )?);
+        cases.extend(wasm_implementation_fuzz_matrix(&solver_stats)?);
     }
     if !implementations.is_empty() {
         cases.extend(implementation_fuzz_matrix(&implementations)?);
@@ -2038,6 +2069,43 @@ mod tests {
             matrix
                 .iter()
                 .all(|case| case.force_implementation == case.implementation)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wasm_implementation_matrix_forces_every_advertised_backend() -> anyhow::Result<()> {
+        let stats: SolverStats = serde_json::from_value(json!({
+            "solver_capabilities": [
+                {
+                    "solver": "anubis-sha256",
+                    "algorithms": ["sha256"],
+                    "difficulty_min": 1,
+                    "difficulty_max": 64,
+                    "implementations": ["auto", "safe", "avx2", "wgpu"]
+                },
+                {
+                    "solver": "anubis-argon2id",
+                    "algorithms": ["argon2id"],
+                    "difficulty_min": 1,
+                    "difficulty_max": 64,
+                    "implementations": ["argon2-0.5.3"]
+                }
+            ]
+        }))?;
+        let matrix = wasm_implementation_fuzz_matrix(&stats)?;
+        assert_eq!(matrix.len(), 18);
+        assert!(
+            matrix
+                .iter()
+                .all(|case| case.force_implementation == case.implementation)
+        );
+        assert_eq!(
+            matrix
+                .iter()
+                .filter(|case| case.implementation.as_deref() == Some("wgpu"))
+                .count(),
+            4
         );
         Ok(())
     }

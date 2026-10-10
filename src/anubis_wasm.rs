@@ -4,7 +4,7 @@ use anyhow::{Context, ensure};
 use argon2::Argon2;
 use pow_buster::message::BinaryMessage;
 use pow_buster::solver::SOLVE_TYPE_MASK;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
 const SEARCH_SPACE: u64 = 1_u64 << 32;
 const MAX_DIFFICULTY: u32 = 64;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Challenge {
     pub data: String,
     pub difficulty: u32,
@@ -118,22 +118,14 @@ pub fn verify_argon2id(challenge: &Challenge, answer: &Answer) -> bool {
     hex::encode(hash) == answer.hash && has_leading_zero_bits(&hash, challenge.difficulty)
 }
 
-pub fn solve_sha256(challenge: &Challenge, implementation: Option<&str>) -> anyhow::Result<Result> {
-    challenge.validate()?;
-    let data = challenge.bytes()?;
-    let implementation = Implementation::parse(implementation.unwrap_or("auto"))?;
-    let nonce_bytes = NonZeroU8::new(4).expect("four is nonzero");
-    let message = BinaryMessage::new(&data, nonce_bytes);
-    let mut solver = binary_solver(implementation, message)?;
-    solver.set_limit(SEARCH_SPACE);
-
-    let started = Instant::now();
-    let (search_nonce, hash_words) = solver
-        .solve(0, SOLVE_TYPE_MASK, prefix_mask(challenge.difficulty))
-        .context("Anubis WASM SHA-256 search exhausted u32 nonce space")?;
-    let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
+fn sha256_answer(
+    challenge: &Challenge,
+    data: &[u8],
+    search_nonce: u64,
+    hash_words: [u32; 8],
+) -> anyhow::Result<Answer> {
     let search_nonce = u32::try_from(search_nonce).context("SHA-256 nonce does not fit u32")?;
-    let protocol_nonce = if use_little_endian_nonce(&data) {
+    let protocol_nonce = if use_little_endian_nonce(data) {
         search_nonce
     } else {
         search_nonce.swap_bytes()
@@ -150,10 +142,54 @@ pub fn solve_sha256(challenge: &Challenge, implementation: Option<&str>) -> anyh
         verify_sha256(challenge, &answer),
         "optimized SHA-256 solver returned an invalid Anubis proof"
     );
+    Ok(answer)
+}
+
+pub fn solve_sha256(challenge: &Challenge, implementation: Option<&str>) -> anyhow::Result<Result> {
+    challenge.validate()?;
+    let data = challenge.bytes()?;
+    let implementation = Implementation::parse(implementation.unwrap_or("auto"))?;
+    let nonce_bytes = NonZeroU8::new(4).expect("four is nonzero");
+    let message = BinaryMessage::new(&data, nonce_bytes);
+    let mut solver = binary_solver(implementation, message)?;
+    solver.set_limit(SEARCH_SPACE);
+
+    let started = Instant::now();
+    let (search_nonce, hash_words) = solver
+        .solve(0, SOLVE_TYPE_MASK, prefix_mask(challenge.difficulty))
+        .context("Anubis WASM SHA-256 search exhausted u32 nonce space")?;
+    let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let answer = sha256_answer(challenge, &data, search_nonce, hash_words)?;
     Ok(Result {
         answer,
         solve_ms,
         implementation: implementation.name().to_owned(),
+    })
+}
+
+#[cfg(feature = "gpu")]
+pub async fn solve_sha256_gpu(
+    gpu: &mut pow_buster::gpu::GpuContext,
+    challenge: &Challenge,
+) -> anyhow::Result<Result> {
+    challenge.validate()?;
+    let data = challenge.bytes()?;
+    let nonce_bytes = NonZeroU8::new(4).expect("four is nonzero");
+    let message = BinaryMessage::new(&data, nonce_bytes);
+    let mut solver = pow_buster::gpu::BinarySolver::from(message);
+    solver.set_limit(SEARCH_SPACE);
+
+    let started = Instant::now();
+    let solution = solver
+        .solve::<SOLVE_TYPE_MASK>(gpu, 0, prefix_mask(challenge.difficulty))
+        .await?
+        .context("Anubis WASM SHA-256 GPU search exhausted u32 nonce space")?;
+    let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let answer = sha256_answer(challenge, &data, solution.nonce, solution.hash)?;
+    Ok(Result {
+        answer,
+        solve_ms,
+        implementation: "wgpu".to_owned(),
     })
 }
 
