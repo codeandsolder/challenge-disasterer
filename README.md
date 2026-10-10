@@ -95,7 +95,7 @@ Use `--no-cpu --no-live` for direct GPU-only collection on a host whose CPU is b
 Protocol compatibility is tested against the implementation that actually issues or verifies each proof rather than against a duplicate verifier in this repository:
 
 - **Anubis:** `ci/live-anubis-e2e.sh` starts the current upstream Anubis server, obtains a live challenge, submits the disasterer proof to Anubis, and requires the resulting authorization cookie to reach a protected upstream.
-- **Cerberus:** `ci/live-cerberus-e2e.sh` builds the current official Cerberus Caddy plugin, obtains a real challenge page, submits the proof to its real `/answer` endpoint, and requires its approval cookie to pass the protected route.
+- **Cerberus:** `ci/live-cerberus-e2e.sh` builds the official Cerberus Caddy plugin, obtains a real challenge page, submits the proof to its real `/answer` endpoint, and requires its approval cookie to pass the protected route. The hardware runner executes current upstream plus `v0.4.6` and `v0.4.5` for every available backend, covering the binary-format boundary and the last decimal-format release against their own authoritative verifiers.
 - **go-away:** `ci/live-goaway-e2e.sh` runs the current upstream `js-pow-sha256` WASM runtime and uses its own `MakeChallenge` and `VerifyChallenge` ABI.
 - **Cap.js:** `ci/live-capjs-e2e.sh` uses current `capjs-core` `generateChallenge` and `validateChallenge`.
 - **ALTCHA v2:** `ci/live-altcha-e2e.sh` uses current `altcha-lib` `createChallenge` and `verifySolution` for both supported algorithms.
