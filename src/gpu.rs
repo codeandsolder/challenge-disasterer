@@ -44,11 +44,7 @@ pub struct GpuSolver {
 impl GpuSolver {
     pub async fn create() -> anyhow::Result<Self> {
         let instance = wgpu::Instance::default();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                ..Default::default()
-            })
+        let adapter = wgpu::util::initialize_adapter_from_env_or_default(&instance, None)
             .await
             .context("no WebGPU/Vulkan adapter")?;
         let info = adapter.get_info();
@@ -121,7 +117,23 @@ impl GpuSolver {
         &self.adapter
     }
 
+    pub const fn work_quantum() -> u64 {
+        HASHES_PER_WG
+    }
+
     pub fn calibrate(&mut self, hashes: u64) -> anyhow::Result<f64> {
+        anyhow::ensure!(
+            hashes > 0,
+            "GPU calibration hash budget must be greater than zero"
+        );
+        let remainder = hashes % HASHES_PER_WG;
+        let hashes = if remainder == 0 {
+            hashes
+        } else {
+            hashes
+                .checked_add(HASHES_PER_WG - remainder)
+                .context("GPU calibration hash budget overflow")?
+        };
         let challenge = Challenge {
             data: "a".repeat(128),
             difficulty: 16,
@@ -305,7 +317,7 @@ fn shader_source() -> String {
         rounds.push_str(&format!("{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"));
     }
     format!(
-        r#"
+        r"
 struct InParams {{ s0:u32,s1:u32,s2:u32,s3:u32,s4:u32,s5:u32,s6:u32,s7:u32,base_lo:u32,base_hi:u32,bitlen:u32,mask0:u32,mask1:u32 }};
 struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }};
 @group(0) @binding(0) var<uniform> P:InParams;
@@ -313,20 +325,70 @@ struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }}
 fn rotr(x:u32,n:u32)->u32{{return (x>>n)|(x<<(32u-n));}}
 @compute @workgroup_size({WG_SIZE})
 fn solve(@builtin(global_invocation_id) gid:vec3<u32>,@builtin(num_workgroups) nwg:vec3<u32>){{
- let stride=nwg.x*{WG_SIZE}u; var lo=P.base_lo+gid.x; var hi=P.base_hi; if(lo<P.base_lo){{hi=hi+1u;}}
+ let gid_lo=gid.x<<7u;let gid_hi=gid.x>>25u;let base_lo=P.base_lo+gid_lo;var base_hi=P.base_hi+gid_hi;if(base_lo<P.base_lo){{base_hi=base_hi+1u;}}
+ let d2=(base_lo>>6u)&7u;let d3=(base_lo>>9u)&7u;let d4=(base_lo>>12u)&7u;let d5=(base_lo>>15u)&7u;let d6=(base_lo>>18u)&7u;let d7=(base_lo>>21u)&7u;let d8=(base_lo>>24u)&7u;let d9=(base_lo>>27u)&7u;let d10=((base_lo>>30u)|(base_hi<<2u))&7u;let d11=(base_hi>>1u)&7u;let d12=(base_hi>>4u)&7u;let d13=(base_hi>>7u)&7u;let d14=(base_hi>>10u)&7u;let d15=(base_hi>>13u)&7u;let d16=(base_hi>>16u)&7u;let d17=(base_hi>>19u)&7u;
+ let nw0=0x31303030u|(d17<<16u)|(d16<<8u)|d15;let nw1=0x30303030u|(d14<<24u)|(d13<<16u)|(d12<<8u)|d11;let nw2=0x30303030u|(d10<<24u)|(d9<<16u)|(d8<<8u)|d7;let nw3=0x30303030u|(d6<<24u)|(d5<<16u)|(d4<<8u)|d3;var nw4=0x30303080u|(d2<<24u);
+ const GM:array<u32,7>=array<u32,7>(0x00000100u,0x00000200u,0x00000400u,0x00010000u,0x00020000u,0x00040000u,0x01000000u);
  for(var step=0u;step<{STEPS}u;step=step+1u){{
   if((step&{}u)==0u && atomicLoad(&R.flag)!=0u){{return;}}
-  let d0=lo&7u;let d1=(lo>>3u)&7u;let d2=(lo>>6u)&7u;let d3=(lo>>9u)&7u;let d4=(lo>>12u)&7u;let d5=(lo>>15u)&7u;let d6=(lo>>18u)&7u;let d7=(lo>>21u)&7u;let d8=(lo>>24u)&7u;let d9=(lo>>27u)&7u;let d10=((lo>>30u)|(hi<<2u))&7u;let d11=(hi>>1u)&7u;let d12=(hi>>4u)&7u;let d13=(hi>>7u)&7u;let d14=(hi>>10u)&7u;let d15=(hi>>13u)&7u;let d16=(hi>>16u)&7u;let d17=(hi>>19u)&7u;
-  var w0=0x31303030u|(d17<<16u)|(d16<<8u)|d15;var w1=0x30303030u|(d14<<24u)|(d13<<16u)|(d12<<8u)|d11;var w2=0x30303030u|(d10<<24u)|(d9<<16u)|(d8<<8u)|d7;var w3=0x30303030u|(d6<<24u)|(d5<<16u)|(d4<<8u)|d3;var w4=0x30303080u|(d2<<24u)|(d1<<16u)|(d0<<8u);
+  var w0=nw0;var w1=nw1;var w2=nw2;var w3=nw3;var w4=nw4;
   var w5=0u;var w6=0u;var w7=0u;var w8=0u;var w9=0u;var w10=0u;var w11=0u;var w12=0u;var w13=0u;var w14=0u;var w15=P.bitlen;
   var a=P.s0;var b=P.s1;var c=P.s2;var d=P.s3;var e=P.s4;var f=P.s5;var g=P.s6;var h=P.s7;
   {rounds}
   let r0=P.s0+a;let r1=P.s1+b;
-  if((r0&P.mask0)==0u&&(r1&P.mask1)==0u){{if(atomicExchange(&R.flag,1u)==0u){{R.nonce_lo=lo;R.nonce_hi=hi;R.hash[0]=r0;R.hash[1]=r1;R.hash[2]=P.s2+c;R.hash[3]=P.s3+d;R.hash[4]=P.s4+e;R.hash[5]=P.s5+f;R.hash[6]=P.s6+g;R.hash[7]=P.s7+h;}}}}
-  let nl=lo+stride;if(nl<lo){{hi=hi+1u;}}lo=nl;
+  if((r0&P.mask0)==0u&&(r1&P.mask1)==0u){{if(atomicExchange(&R.flag,1u)==0u){{let gray=step^(step>>1u);R.nonce_lo=base_lo+gray;R.nonce_hi=base_hi;R.hash[0]=r0;R.hash[1]=r1;R.hash[2]=P.s2+c;R.hash[3]=P.s3+d;R.hash[4]=P.s4+e;R.hash[5]=P.s5+f;R.hash[6]=P.s6+g;R.hash[7]=P.s7+h;}}}}
+  let ns=step+1u;if(ns<{STEPS}u){{nw4=nw4^GM[countTrailingZeros(ns)];}}
  }}
 }}
-"#,
+",
         CANCEL_INTERVAL - 1
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gray_block_masks_cover_exactly_128_candidates() {
+        const GRAY_MASKS: [u32; 7] = [
+            0x0000_0100,
+            0x0000_0200,
+            0x0000_0400,
+            0x0001_0000,
+            0x0002_0000,
+            0x0004_0000,
+            0x0100_0000,
+        ];
+
+        assert_eq!(STEPS, 128);
+        assert_eq!(HASHES_PER_WG, u64::from(WG_SIZE) * u64::from(STEPS));
+
+        let mut word = 0x3030_3080_u32;
+        let mut seen = [false; STEPS as usize];
+        let mut previous_gray: Option<u32> = None;
+        for step in 0..STEPS {
+            let gray = step ^ (step >> 1);
+            assert!(gray < STEPS);
+            assert!(!seen[gray as usize]);
+            seen[gray as usize] = true;
+
+            if let Some(previous) = previous_gray {
+                assert_eq!((previous ^ gray).count_ones(), 1);
+            }
+            previous_gray = Some(gray);
+
+            let expected = 0x3030_3080_u32
+                | ((gray & 0o7) << 8)
+                | (((gray >> 3) & 0o7) << 16)
+                | (((gray >> 6) & 0o1) << 24);
+            assert_eq!(word, expected, "step={step} gray={gray}");
+
+            let next = step + 1;
+            if next < STEPS {
+                word ^= GRAY_MASKS[next.trailing_zeros() as usize];
+            }
+        }
+        assert!(seen.into_iter().all(|entry| entry));
+    }
 }

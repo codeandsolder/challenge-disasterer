@@ -1,0 +1,776 @@
+use sha2::digest::generic_array::GenericArray;
+
+use crate::{
+    Align16, Align64, decompose_blocks_mut,
+    message::{
+        AltchaMessage, BinaryMessage, CerberusMessage, DecimalMessage, DoubleBlockMessage,
+        GoAwayMessage, SingleBlockMessage,
+    },
+};
+
+/// Safe decimal nonce single block solver.
+///
+///
+/// Current implementation: generic sha2 crate fallback.
+pub struct SingleBlockSolver {
+    pub(super) message: SingleBlockMessage,
+
+    pub(super) attempted_nonces: u64,
+
+    pub(super) limit: u64,
+}
+
+impl From<SingleBlockMessage> for SingleBlockSolver {
+    fn from(message: SingleBlockMessage) -> Self {
+        Self {
+            message,
+            attempted_nonces: 0,
+            limit: u64::MAX,
+        }
+    }
+}
+
+impl SingleBlockSolver {
+    fn solve_impl<const TYPE: u8, const NO_TRAILING_ZEROS: bool>(
+        &mut self,
+        target: u64,
+        mask: u64,
+    ) -> Option<(u64, [u32; 8])> {
+        let mut message_be = Align64(sha2::digest::generic_array::GenericArray::default());
+        for i in 0..16 {
+            message_be.0[i * 4..i * 4 + 4].copy_from_slice(&self.message.message[i].to_be_bytes());
+        }
+        let target = target & mask;
+
+        for nonzero_digit in 1..=9 {
+            let start = self.message.digit_index;
+            let varying_range = if NO_TRAILING_ZEROS {
+                message_be.0[start..start + 8].fill(b'0');
+                message_be.0[start + 8] = b'0' + nonzero_digit as u8;
+                start..start + 8
+            } else {
+                message_be.0[start] = b'0' + nonzero_digit as u8;
+                message_be.0[start + 1..start + 9].fill(b'0');
+                start + 1..start + 9
+            };
+
+            for key in 0..100_000_000 {
+                if self.attempted_nonces >= self.limit {
+                    return None;
+                }
+
+                let mut state = self.message.prefix_state;
+                sha2::compress256(&mut state, core::array::from_ref(&*message_be));
+                self.attempted_nonces += 1;
+
+                let pass = if TYPE == crate::solver::SOLVE_TYPE_GT {
+                    (state[0] as u64) << 32 | (state[1] as u64) > target
+                } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                    (state[0] as u64) << 32 | (state[1] as u64) < target
+                } else {
+                    ((state[0] as u64) << 32 | (state[1] as u64)) & mask == target & mask
+                };
+
+                if pass {
+                    let mut transformed_key = key;
+                    if NO_TRAILING_ZEROS {
+                        transformed_key *= 10;
+                        transformed_key += nonzero_digit;
+                    } else {
+                        transformed_key += 100_000_000 * nonzero_digit;
+                    }
+                    return Some((transformed_key + self.message.nonce_addend, state));
+                }
+
+                if key + 1 < 100_000_000 {
+                    let wrapped = crate::solver::increment_ascii_decimal(
+                        &mut message_be.0[varying_range.clone()],
+                    );
+                    debug_assert!(!wrapped);
+                }
+            }
+        }
+
+        None
+    }
+}
+
+impl crate::solver::Solver for SingleBlockSolver {
+    type Output = [u32; 8];
+    fn set_limit(&mut self, limit: u64) {
+        self.limit = limit;
+    }
+
+    fn get_attempted_nonces(&self) -> u64 {
+        self.attempted_nonces
+    }
+
+    fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        if self.message.no_trailing_zeros {
+            self.solve_impl::<TYPE, true>(target, mask)
+        } else {
+            self.solve_impl::<TYPE, false>(target, mask)
+        }
+    }
+}
+
+/// Safe decimal nonce double block solver.
+///
+///
+/// Current implementation: generic sha2 crate fallback.
+pub struct DoubleBlockSolver {
+    pub(super) message: DoubleBlockMessage,
+    pub(super) attempted_nonces: u64,
+
+    pub(super) limit: u64,
+}
+
+impl From<DoubleBlockMessage> for DoubleBlockSolver {
+    fn from(message: DoubleBlockMessage) -> Self {
+        Self {
+            message,
+            attempted_nonces: 0,
+            limit: u64::MAX,
+        }
+    }
+}
+
+impl crate::solver::Solver for DoubleBlockSolver {
+    type Output = [u32; 8];
+    fn set_limit(&mut self, limit: u64) {
+        self.limit = limit;
+    }
+
+    fn get_attempted_nonces(&self) -> u64 {
+        self.attempted_nonces
+    }
+
+    fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        if self.attempted_nonces >= self.limit {
+            return None;
+        }
+        let target = target & mask;
+
+        let mut buffer: sha2::digest::crypto_common::Block<sha2::Sha256> = Default::default();
+        for i in 0..16 {
+            buffer[i * 4..i * 4 + 4].copy_from_slice(&self.message.message[i].to_be_bytes());
+        }
+
+        let mut buffer2: sha2::digest::crypto_common::Block<sha2::Sha256> = Default::default();
+        buffer2[56..].copy_from_slice(&(self.message.message_length * 8).to_be_bytes());
+
+        let mut terminal_message_schedule = [0; 64];
+        terminal_message_schedule[14] = ((self.message.message_length * 8) >> 32) as u32;
+        terminal_message_schedule[15] = (self.message.message_length * 8) as u32;
+        crate::sha256::do_message_schedule_k_w(&mut terminal_message_schedule);
+
+        let first_key = if self.message.nonce_addend == 0 {
+            100_000_000
+        } else {
+            0
+        };
+        let digit_start = DoubleBlockMessage::DIGIT_IDX as usize;
+        buffer[digit_start..digit_start + 9].fill(b'0');
+        if first_key != 0 {
+            buffer[digit_start] = b'1';
+        }
+
+        for key in first_key..1_000_000_000 {
+            let mut state = self.message.prefix_state;
+            sha2::compress256(&mut state, &[buffer]);
+
+            let save_a = state[0];
+            let save_b = state[1];
+
+            crate::sha256::sha2_arx_without_constants::<0, 64>(
+                &mut state,
+                terminal_message_schedule,
+            );
+
+            state[0] = state[0].wrapping_add(save_a);
+            state[1] = state[1].wrapping_add(save_b);
+
+            let ab = (state[0] as u64) << 32 | (state[1] as u64);
+
+            self.attempted_nonces += 1;
+
+            let cmp_fn = |x: &u64, y: &u64| {
+                if TYPE == crate::solver::SOLVE_TYPE_GT {
+                    x > y
+                } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                    x < y
+                } else {
+                    x & mask == y & mask
+                }
+            };
+            if cmp_fn(&ab, &target) {
+                crate::unlikely();
+
+                let mut state = self.message.prefix_state;
+                sha2::compress256(&mut state, &[buffer, buffer2]);
+                return Some((key as u64 + self.message.nonce_addend, *state));
+            }
+
+            if self.attempted_nonces >= self.limit {
+                return None;
+            }
+
+            if key + 1 < 1_000_000_000 {
+                let wrapped = crate::solver::increment_ascii_decimal(
+                    &mut buffer[digit_start..digit_start + 9],
+                );
+                debug_assert!(!wrapped);
+            }
+        }
+
+        crate::unlikely();
+
+        None
+    }
+}
+
+impl_decimal_solver!(
+    [SingleBlockSolver, DoubleBlockSolver] => DecimalSolver
+);
+
+/// SHA-NI GoAway solver.
+///
+///
+/// Current implementation: generic sha2 crate fallback.
+pub struct GoAwaySolver {
+    pub(super) message: GoAwayMessage,
+    pub(super) attempted_nonces: u64,
+    pub(super) limit: u64,
+}
+
+impl From<GoAwayMessage> for GoAwaySolver {
+    fn from(message: GoAwayMessage) -> Self {
+        Self {
+            message,
+            attempted_nonces: 0,
+            limit: u64::MAX,
+        }
+    }
+}
+
+impl GoAwaySolver {
+    const MSG_LEN: u32 = 10 * 4 * 8;
+}
+
+impl crate::solver::Solver for GoAwaySolver {
+    type Output = [u32; 8];
+    fn set_limit(&mut self, limit: u64) {
+        self.limit = limit;
+    }
+
+    fn get_attempted_nonces(&self) -> u64 {
+        self.attempted_nonces
+    }
+
+    fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        let target = target & mask;
+
+        let mut buffer =
+            Align16([sha2::digest::crypto_common::Block::<sha2::Sha256>::default(); 16]);
+        for i in 0..8 {
+            buffer[0][i * 4..i * 4 + 4].copy_from_slice(&self.message.challenge[i].to_be_bytes());
+        }
+        buffer[0][32..36].copy_from_slice(&self.message.high_word.to_be_bytes());
+        buffer[0][40] = 0x80;
+        buffer[0][60..64].copy_from_slice(&(Self::MSG_LEN).to_be_bytes());
+
+        for key in 0u32.. {
+            buffer[0][36..40].copy_from_slice(&key.to_be_bytes());
+
+            let mut state = crate::sha256::IV;
+            sha2::compress256(&mut state, &*buffer);
+
+            state[0] = state[0].wrapping_add(crate::sha256::IV[0]);
+            state[1] = state[1].wrapping_add(crate::sha256::IV[1]);
+
+            let state_ab = (state[0] as u64) << 32 | (state[1] as u64);
+            self.attempted_nonces += 1;
+
+            let cmp_fn = |x: &u64, y: &u64| {
+                if TYPE == crate::solver::SOLVE_TYPE_GT {
+                    x > y
+                } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                    x < y
+                } else {
+                    x & mask == y & mask
+                }
+            };
+            if cmp_fn(&state_ab, &target) {
+                crate::unlikely();
+
+                return Some(((self.message.high_word as u64) << 32 | key as u64, state));
+            }
+
+            if self.attempted_nonces >= self.limit {
+                return None;
+            }
+        }
+        crate::unlikely();
+
+        None
+    }
+}
+
+/// Safe binary nonce solver.
+///
+/// Output: nonce in little endian order
+///
+/// Current implementation: generic sha2 crate fallback.
+pub struct BinarySolver {
+    pub(super) message: BinaryMessage,
+    pub(super) attempted_nonces: u64,
+    pub(super) limit: u64,
+}
+
+impl From<BinaryMessage> for BinarySolver {
+    fn from(message: BinaryMessage) -> Self {
+        Self {
+            message,
+            attempted_nonces: 0,
+            limit: u64::MAX,
+        }
+    }
+}
+
+impl crate::solver::Solver for BinarySolver {
+    type Output = [u32; 8];
+    fn set_limit(&mut self, limit: u64) {
+        self.limit = limit;
+    }
+
+    fn get_attempted_nonces(&self) -> u64 {
+        self.attempted_nonces
+    }
+
+    fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        let salt = &self.message.salt_residual[..self.message.salt_residual_len];
+        let mut blocks = [GenericArray::default(); 2];
+        blocks[0][..salt.len()].copy_from_slice(salt);
+        let mut ptr = salt.len();
+        let mut cur_block = 0;
+
+        for _ in 0..self.message.nonce_byte_count.get() {
+            blocks[cur_block][ptr] = 0;
+            ptr += 1;
+            if ptr == 64 {
+                cur_block = 1;
+                ptr = 0;
+            }
+        }
+        blocks[cur_block][ptr] = 0x80;
+        ptr += 1;
+        if ptr + 8 > 64 {
+            cur_block = 1;
+        }
+        blocks[cur_block][(64 - 8)..]
+            .copy_from_slice(&(self.message.message_length as u64 * 8).to_be_bytes());
+
+        let used_blocks = &mut blocks[..=cur_block];
+
+        for x in 0..(self
+            .limit
+            .min(256u64.saturating_pow(self.message.nonce_byte_count.get() as u32))
+            .max(1))
+        {
+            let mut state = self.message.prefix_state;
+            let nonce_bytes = &x.to_le_bytes()[..self.message.nonce_byte_count.get() as usize];
+            for (i, byte) in nonce_bytes.iter().enumerate() {
+                unsafe {
+                    used_blocks
+                        .as_mut_ptr()
+                        .cast::<u8>()
+                        .add(self.message.salt_residual_len + i)
+                        .write(*byte);
+                }
+            }
+
+            sha2::compress256(&mut state, used_blocks);
+            self.attempted_nonces += 1;
+
+            let cmp_fn = |x: u64, y: u64| {
+                if TYPE == crate::solver::SOLVE_TYPE_GT {
+                    x > y
+                } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                    x < y
+                } else {
+                    x & mask == y & mask
+                }
+            };
+            if cmp_fn((state[0] as u64) << 32 | (state[1] as u64), target) {
+                return Some((x, state.0));
+            }
+
+            if self.attempted_nonces >= self.limit {
+                return None;
+            }
+        }
+
+        None
+    }
+}
+
+/// Safe Cerberus solver.
+///
+///
+/// Current implementation: scalar fallback.
+pub struct CerberusSolver {
+    message: CerberusMessage,
+    attempted_nonces: u64,
+    limit: u64,
+}
+
+impl From<CerberusMessage> for CerberusSolver {
+    fn from(message: CerberusMessage) -> Self {
+        Self {
+            message,
+            attempted_nonces: 0,
+            limit: !0,
+        }
+    }
+}
+
+impl crate::solver::Solver for CerberusSolver {
+    type Output = [u32; 8];
+    fn set_limit(&mut self, limit: u64) {
+        self.limit = limit;
+    }
+
+    fn get_attempted_nonces(&self) -> u64 {
+        self.attempted_nonces
+    }
+
+    fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        debug_assert_eq!(target, 0);
+
+        let remaining_limit = self.limit.saturating_sub(self.attempted_nonces);
+
+        match &self.message {
+            CerberusMessage::Decimal(message) => {
+                let mut msg = core::array::from_fn(|i| {
+                    u32::from_le_bytes([
+                        message.salt_residual[i * 4],
+                        message.salt_residual[i * 4 + 1],
+                        message.salt_residual[i * 4 + 2],
+                        message.salt_residual[i * 4 + 3],
+                    ])
+                });
+                assert!(
+                    message.salt_residual_len + 8 < message.salt_residual.len(),
+                    "there must be at least 9 bytes of headroom for the nonce"
+                );
+                {
+                    let bytes = decompose_blocks_mut(&mut msg);
+                    bytes[message.salt_residual_len..message.salt_residual_len + 9].fill(b'0');
+                }
+                let search_limit = remaining_limit.min(1_000_000_000);
+                for nonce in 0u64..search_limit {
+                    let hash = crate::blake3::compress8(
+                        &message.prefix_state,
+                        &msg,
+                        0,
+                        message.salt_residual_len as u32 + 9,
+                        message.flags,
+                    );
+                    self.attempted_nonces += 1;
+                    if ((hash[0] as u64) << 32 | (hash[1] as u64)) & mask == 0 {
+                        crate::unlikely();
+
+                        return Some((nonce + message.nonce_addend, hash));
+                    }
+
+                    if nonce + 1 < search_limit {
+                        let bytes = decompose_blocks_mut(&mut msg);
+                        let wrapped = crate::solver::increment_ascii_decimal(
+                            &mut bytes[message.salt_residual_len..message.salt_residual_len + 9],
+                        );
+                        debug_assert!(!wrapped);
+                    }
+                }
+            }
+            CerberusMessage::Binary(message) => {
+                let mut msg = [0; 16];
+                msg[0] = message.first_word;
+                let search_limit = remaining_limit.min(u64::from(u32::MAX) + 1);
+                for nonce in 0..search_limit {
+                    msg[1] = nonce as u32;
+
+                    let hash = crate::blake3::compress8(
+                        &message.midstate,
+                        &msg,
+                        0,
+                        8,
+                        crate::blake3::FLAG_CHUNK_END | crate::blake3::FLAG_ROOT,
+                    );
+                    self.attempted_nonces += 1;
+                    if ((hash[0] as u64) << 32 | (hash[1] as u64)) & mask == 0 {
+                        crate::unlikely();
+
+                        return Some((msg[1] as u64 | ((msg[0] as u64) << 32), hash));
+                    }
+                }
+            }
+        };
+
+        None
+    }
+}
+
+/// Safe Altcha SHA-256 solver
+pub struct AltchaSha256Solver {
+    pub(super) message: AltchaMessage,
+    pub(super) attempted_nonces: u64,
+    pub(super) limit: u64,
+}
+
+impl From<AltchaMessage> for AltchaSha256Solver {
+    fn from(message: AltchaMessage) -> Self {
+        Self {
+            message,
+            attempted_nonces: 0,
+            limit: u64::MAX,
+        }
+    }
+}
+
+impl AltchaSha256Solver {
+    fn solve_nested_impl<const TYPE: u8>(
+        &mut self,
+        target: u64,
+        mask: u64,
+    ) -> Option<(u64, [u32; 8])> {
+        let mut blocks = GenericArray::default();
+        let mut subblocks = GenericArray::default();
+        blocks[0..16].copy_from_slice(&self.message.salt);
+        blocks[16..32].copy_from_slice(&self.message.nonce);
+        blocks[32 + 4] = 0x80;
+        blocks[60..].copy_from_slice(&((32u32 + 4) * 8).to_be_bytes());
+        let key_length = self.message.key_length.get().min(32);
+
+        for counter in 0u32.. {
+            if self.attempted_nonces >= self.limit {
+                return None;
+            }
+            let mut state = crate::sha256::IV;
+            blocks[32..(32 + 4)].copy_from_slice(&counter.to_be_bytes());
+            sha2::compress256(&mut state, core::array::from_ref(&blocks));
+
+            for _ in 1..self.message.cost.get() {
+                for i in 0..8 {
+                    subblocks[i * 4..i * 4 + 4].copy_from_slice(&state[i].to_be_bytes());
+                }
+                subblocks[key_length as usize] = 0x80;
+                subblocks[(key_length as usize + 1)..40].fill(0);
+                subblocks[60..].copy_from_slice(&(key_length * 8).to_be_bytes());
+                state = crate::sha256::IV;
+                sha2::compress256(&mut state, core::array::from_ref(&subblocks));
+            }
+            self.attempted_nonces += 1;
+            let cmp64_fn = |x: u64, y: u64| {
+                if TYPE == crate::solver::SOLVE_TYPE_GT {
+                    x > y
+                } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                    x < y
+                } else {
+                    x & mask == y & mask
+                }
+            };
+            if cmp64_fn((state[0] as u64) << 32 | (state[1] as u64), target) {
+                return Some((counter as u64, state));
+            }
+        }
+        None
+    }
+
+    fn solve_pbkdf2_impl<const TYPE: u8>(
+        &mut self,
+        target: u64,
+        mask: u64,
+    ) -> Option<(u64, [u32; 8])> {
+        let mut buffer = [0; 32];
+        let mut password = [0; 16 + 4];
+        password[..16].copy_from_slice(&self.message.nonce);
+        for counter in 0u32.. {
+            if self.attempted_nonces >= self.limit {
+                return None;
+            }
+            password[16..16 + 4].copy_from_slice(&counter.to_be_bytes());
+            pbkdf2::pbkdf2::<pbkdf2::hmac::Hmac<sha2::Sha256>>(
+                &password,
+                &self.message.salt,
+                self.message.cost.get(),
+                &mut buffer,
+            )
+            .unwrap();
+            self.attempted_nonces += 1;
+            let cmp64_fn = |x: u64, y: u64| {
+                if TYPE == crate::solver::SOLVE_TYPE_GT {
+                    x > y
+                } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                    x < y
+                } else {
+                    x & mask == y & mask
+                }
+            };
+            if cmp64_fn(u64::from_be_bytes(buffer[..8].try_into().unwrap()), target) {
+                return Some((
+                    counter as u64,
+                    core::array::from_fn(|i| {
+                        u32::from_be_bytes([
+                            buffer[i * 4],
+                            buffer[i * 4 + 1],
+                            buffer[i * 4 + 2],
+                            buffer[i * 4 + 3],
+                        ])
+                    }),
+                ));
+            }
+        }
+
+        None
+    }
+}
+
+impl crate::solver::Solver for AltchaSha256Solver {
+    type Output = [u32; 8];
+    fn set_limit(&mut self, limit: u64) {
+        self.limit = limit;
+    }
+
+    fn get_attempted_nonces(&self) -> u64 {
+        self.attempted_nonces
+    }
+
+    fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        if self.message.pbkdf2 {
+            self.solve_pbkdf2_impl::<TYPE>(target, mask)
+        } else {
+            self.solve_nested_impl::<TYPE>(target, mask)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::message::{CerberusBinaryMessage, CerberusDecimalMessage};
+
+    use super::*;
+
+    #[test]
+    fn test_solve_decimal() {
+        crate::solver::tests::test_decimal_validator::<DecimalSolver, _>(|prefix, search_space| {
+            if let Some(solver) = SingleBlockMessage::new(prefix, search_space).map(Into::into) {
+                Some(DecimalSolver::SingleBlock(solver))
+            } else {
+                DoubleBlockMessage::new(prefix, search_space).map(Into::into)
+            }
+        });
+    }
+
+    #[test]
+    fn test_solve_cerberus_decimal() {
+        for i in 0..=1 {
+            crate::solver::tests::test_cerberus_decimal_validator::<CerberusSolver, _>(|prefix| {
+                Some(CerberusMessage::Decimal(CerberusDecimalMessage::new(prefix, i)?).into())
+            });
+        }
+    }
+    #[test]
+    fn test_solve_cerberus_binary() {
+        for i in 0..=1 {
+            crate::solver::tests::test_cerberus_binary_validator::<CerberusSolver, _>(|prefix| {
+                Some(CerberusMessage::Binary(CerberusBinaryMessage::new(prefix, i)).into())
+            });
+        }
+    }
+
+    #[test]
+    fn test_solve_decimal_f64() {
+        crate::solver::tests::test_decimal_validator_f64_safe::<DecimalSolver, _>(
+            |prefix, search_space| {
+                if let Some((solver, p)) =
+                    SingleBlockMessage::new_f64(prefix, search_space).map(|(x, p)| (x.into(), p))
+                {
+                    Some((DecimalSolver::SingleBlock(solver), p))
+                } else {
+                    DoubleBlockMessage::new(prefix, search_space)
+                        .map(|x| (DecimalSolver::DoubleBlock(x.into()), None))
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn test_solve_binary() {
+        crate::solver::tests::test_binary_validator::<BinarySolver, _>(
+            |prefix, nonce_byte_count| {
+                BinarySolver::from(BinaryMessage::new(prefix, nonce_byte_count))
+            },
+        )
+    }
+
+    #[test]
+    fn test_solve_goaway() {
+        crate::solver::tests::test_goaway_validator::<GoAwaySolver, _>(|prefix| {
+            GoAwaySolver::from(GoAwayMessage::new(
+                core::array::from_fn(|i| {
+                    u32::from_be_bytes([
+                        prefix[i * 4],
+                        prefix[i * 4 + 1],
+                        prefix[i * 4 + 2],
+                        prefix[i * 4 + 3],
+                    ])
+                }),
+                0,
+            ))
+        });
+    }
+
+    #[test]
+    fn test_exact_attempt_limits() {
+        fn exhaust_one<S: crate::solver::Solver<Output = [u32; 8]>>(mut solver: S) {
+            solver.set_limit(1);
+            assert!(
+                solver
+                    .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
+                    .is_none()
+            );
+            assert_eq!(solver.get_attempted_nonces(), 1);
+        }
+
+        let salt = [b'a'; 64];
+        exhaust_one(SingleBlockSolver::from(
+            SingleBlockMessage::new(&salt, 0).expect("single block"),
+        ));
+        let double = (0..64)
+            .find_map(|len| DoubleBlockMessage::new(&salt[..len], 0))
+            .expect("double block shape");
+        exhaust_one(DoubleBlockSolver::from(double));
+        exhaust_one(BinarySolver::from(BinaryMessage::new(
+            &salt,
+            4.try_into().unwrap(),
+        )));
+        exhaust_one(GoAwaySolver::from(GoAwayMessage::new_bytes(
+            (&salt[..32]).try_into().unwrap(),
+            0,
+        )));
+        exhaust_one(AltchaSha256Solver::from(AltchaMessage {
+            nonce: [1; 16],
+            salt: [2; 16],
+            cost: 1.try_into().unwrap(),
+            pbkdf2: false,
+            key_length: 32.try_into().unwrap(),
+        }));
+    }
+
+    #[test]
+    fn test_solve_altcha() {
+        crate::solver::tests::test_altcha_validator::<AltchaSha256Solver, _>(|message| {
+            Some(AltchaSha256Solver::from(message))
+        });
+    }
+}
