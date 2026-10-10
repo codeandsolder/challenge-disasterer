@@ -117,7 +117,23 @@ impl GpuSolver {
         &self.adapter
     }
 
+    pub const fn work_quantum() -> u64 {
+        HASHES_PER_WG
+    }
+
     pub fn calibrate(&mut self, hashes: u64) -> anyhow::Result<f64> {
+        anyhow::ensure!(
+            hashes > 0,
+            "GPU calibration hash budget must be greater than zero"
+        );
+        let remainder = hashes % HASHES_PER_WG;
+        let hashes = if remainder == 0 {
+            hashes
+        } else {
+            hashes
+                .checked_add(HASHES_PER_WG - remainder)
+                .context("GPU calibration hash budget overflow")?
+        };
         let challenge = Challenge {
             data: "a".repeat(128),
             difficulty: 16,

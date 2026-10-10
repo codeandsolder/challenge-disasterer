@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LIVE = ("altcha", "capjs", "cerberus", "goaway", "mcaptcha", "anubis")
+ANUBIS_GPU_QUANTUM = 8192
 
 
 def run(argv: list[str], *, env: dict[str, str] | None = None, stdout=None, stderr=None) -> subprocess.CompletedProcess:
@@ -83,7 +84,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--correctness-limit", type=int, default=50_000_000)
-    parser.add_argument("--throughput-limit", type=int, default=1_000_000)
+    parser.add_argument("--throughput-limit", type=int, default=1_048_576)
     parser.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--live", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
@@ -93,6 +94,10 @@ def main() -> int:
         help="Run authoritative classic-protocol verifiers against every CPU implementation available on this host.",
     )
     args = parser.parse_args()
+    if args.gpu and args.throughput_limit % ANUBIS_GPU_QUANTUM != 0:
+        parser.error(
+            f"--throughput-limit must be a multiple of {ANUBIS_GPU_QUANTUM} when --gpu is enabled"
+        )
 
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)

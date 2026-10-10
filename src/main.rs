@@ -82,6 +82,11 @@ async fn main() -> anyhow::Result<()> {
             hashes > 0,
             "benchmark hash budget must be greater than zero"
         );
+        anyhow::ensure!(
+            hashes % gpu::GpuSolver::work_quantum() == 0,
+            "benchmark hash budget must be a multiple of {}",
+            gpu::GpuSolver::work_quantum()
+        );
         let mut solver = gpu::GpuSolver::create().await?;
         let adapter = solver.adapter().to_owned();
         let hashes_per_second = solver.calibrate(hashes)?;
