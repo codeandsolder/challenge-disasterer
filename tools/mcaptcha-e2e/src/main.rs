@@ -6,6 +6,7 @@ use std::io::{self, Read};
 struct ServiceResponse {
     answer: Answer,
     solve_ms: f64,
+    implementation: String,
 }
 
 #[derive(Deserialize)]
@@ -29,6 +30,12 @@ fn main() {
         .read_to_string(&mut input)
         .expect("read response");
     let response: ServiceResponse = serde_json::from_str(&input).expect("parse service response");
+    let expected_implementation =
+        std::env::var("CHALLENGE_IMPLEMENTATION").unwrap_or_else(|_| "auto".to_owned());
+    assert_eq!(
+        response.implementation, expected_implementation,
+        "service silently used a different mCaptcha implementation"
+    );
 
     let phrase = "challenge-disasterer-mcaptcha-e2e".to_owned();
     let salt = "mcaptcha-e2e-salt-long-enough-and-stable".to_owned();
@@ -56,7 +63,7 @@ fn main() {
     );
 
     println!(
-        "mCaptcha: PASS nonce={} solve_ms={:.3}",
-        response.answer.nonce, response.solve_ms
+        "mCaptcha: PASS implementation={} nonce={} solve_ms={:.3}",
+        response.implementation, response.answer.nonce, response.solve_ms
     );
 }

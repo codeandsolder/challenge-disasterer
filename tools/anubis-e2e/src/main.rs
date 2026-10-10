@@ -1512,6 +1512,9 @@ fn fuzz_matrix(gpu: bool, implementation: Option<&str>) -> anyhow::Result<Vec<Ca
     for difficulty in [1_u32, 2, 4, 8, 12, 16] {
         specs.push(format!("hashx:anubis-hashx-jit:{difficulty}").parse()?);
     }
+    for difficulty in [1_u32, 8, 16] {
+        specs.push(format!("hashx:anubis-hashx-auto:{difficulty}").parse()?);
+    }
     for difficulty in [1_u32, 4, 8] {
         specs.push(format!("sha256:anubis-sha256:{difficulty}").parse()?);
     }
@@ -2036,6 +2039,20 @@ mod tests {
             .expect("valid implementation-qualified case");
         assert_eq!(concrete.difficulty, 18);
         assert_eq!(concrete.implementation.as_deref(), Some("cuda-sm75-sass"));
+    }
+
+    #[test]
+    fn fuzz_matrix_covers_hashx_auto_router() -> anyhow::Result<()> {
+        for gpu in [false, true] {
+            let matrix = fuzz_matrix(gpu, None)?;
+            let difficulties = matrix
+                .iter()
+                .filter(|case| case.solver == "anubis-hashx-auto")
+                .map(|case| case.difficulty)
+                .collect::<Vec<_>>();
+            assert_eq!(difficulties, vec![1, 8, 16]);
+        }
+        Ok(())
     }
 
     #[test]
