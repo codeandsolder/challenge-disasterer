@@ -1,3 +1,5 @@
 target/
 
 /tools/preexisting-baseline/target/
+
+__pycache__/
