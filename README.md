@@ -86,6 +86,8 @@ uv run tools/run-hardware-matrix.py   --output target/hardware-matrix/$(hostname
 uv run tools/summarize-hardware-matrix.py   target/hardware-matrix/sf314-42-*   target/hardware-matrix/cachyasus-*
 ```
 
+Use `--no-cpu --no-live` for direct GPU-only collection on a host whose CPU is busy, or `--no-gpu --no-live` for direct CPU-only collection. The `--cpu`/`--gpu` selectors control direct solver rows; live verifier runs are a separate validation phase and may exercise CPU routing. At least one direct resource class must remain enabled.
+
 ## Authoritative protocol compatibility tests
 
 Protocol compatibility is tested against the implementation that actually issues or verifies each proof rather than against a duplicate verifier in this repository:
