@@ -652,13 +652,17 @@ pub(crate) mod tests {
         let (nonce, result) = solver
             .solve::<SOLVE_TYPE_MASK>(0, mask)
             .expect("solver failed");
-        assert!(result[0].leading_zeros() >= DIFFICULTY.get() as u32);
 
         let mut hasher = Sha256::default();
         hasher.update(test_prefix);
         hasher.update(nonce.to_be_bytes());
         let hash = hasher.finalize();
-        assert!(u128::from_be_bytes(hash[..16].try_into().unwrap()) >= DIFFICULTY.get() as _);
+        let expected = core::array::from_fn(|i| {
+            u32::from_be_bytes(hash[i * 4..i * 4 + 4].try_into().unwrap())
+        });
+        assert_eq!(result, expected, "solver returned the wrong GoAway digest");
+        let prefix = (u64::from(expected[0]) << 32) | u64::from(expected[1]);
+        assert_eq!(prefix & mask, 0, "returned GoAway nonce misses target");
 
         let eq_target = 0b10111 << (64 - 5);
         let eq_mask = !0 << (64 - 5);

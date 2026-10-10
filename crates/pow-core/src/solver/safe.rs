@@ -233,8 +233,7 @@ impl_decimal_solver!(
     [SingleBlockSolver, DoubleBlockSolver] => DecimalSolver
 );
 
-/// SHA-NI GoAway solver.
-///
+/// Safe GoAway solver.
 ///
 /// Current implementation: generic sha2 crate fallback.
 pub struct GoAwaySolver {
@@ -283,10 +282,7 @@ impl crate::solver::Solver for GoAwaySolver {
             buffer[0][36..40].copy_from_slice(&key.to_be_bytes());
 
             let mut state = crate::sha256::IV;
-            sha2::compress256(&mut state, &*buffer);
-
-            state[0] = state[0].wrapping_add(crate::sha256::IV[0]);
-            state[1] = state[1].wrapping_add(crate::sha256::IV[1]);
+            sha2::compress256(&mut state, core::array::from_ref(&buffer[0]));
 
             let state_ab = (state[0] as u64) << 32 | (state[1] as u64);
             self.attempted_nonces += 1;
