@@ -14,6 +14,10 @@ jobs:
   altcha:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        implementation: [auto, safe]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -21,12 +25,18 @@ jobs:
           node-version: 22
       - name: Set up Rust
         run: rustup toolchain install nightly-2026-10-08 --profile minimal
-      - name: Verify against current ALTCHA
+      - name: Verify against current ALTCHA (${{ matrix.implementation }})
+        env:
+          CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-altcha-e2e.sh
 
   capjs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        implementation: [auto, safe]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -34,12 +44,19 @@ jobs:
           node-version: 22
       - name: Set up Rust
         run: rustup toolchain install nightly-2026-10-08 --profile minimal
-      - name: Verify against current Cap.js
+      - name: Verify against current Cap.js (${{ matrix.implementation }})
+        env:
+          CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-capjs-e2e.sh
 
   cerberus:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        implementation: [auto, safe]
+        upstream_ref: [dist, v0.4.6, v0.4.5]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -50,12 +67,19 @@ jobs:
           go-version: "1.27.x"
       - name: Set up Rust
         run: rustup toolchain install nightly-2026-10-08 --profile minimal
-      - name: Verify against current Cerberus
+      - name: Verify Cerberus ${{ matrix.upstream_ref }} (${{ matrix.implementation }})
+        env:
+          CERBERUS_REF: ${{ matrix.upstream_ref }}
+          CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-cerberus-e2e.sh
 
   goaway:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        implementation: [auto, safe]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -63,12 +87,18 @@ jobs:
           go-version: "1.27.x"
       - name: Set up Rust
         run: rustup toolchain install nightly-2026-10-08 --profile minimal
-      - name: Verify against current go-away
+      - name: Verify against current go-away (${{ matrix.implementation }})
+        env:
+          CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-goaway-e2e.sh
 
   haphash:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        implementation: [auto, safe]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -78,17 +108,25 @@ jobs:
         run: rustup toolchain install nightly-2026-10-08 --profile minimal
       - name: Install HAProxy
         run: sudo apt-get update -qq && sudo apt-get install -y haproxy
-      - name: Verify against current haphash HAProxy
+      - name: Verify against current haphash HAProxy (${{ matrix.implementation }})
+        env:
+          CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-haphash-e2e.sh
 
   mcaptcha:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        implementation: [auto, safe]
     steps:
       - uses: actions/checkout@v7
       - name: Set up Rust
         run: rustup toolchain install nightly-2026-10-08 --profile minimal
       - name: Install ripgrep
         run: sudo apt-get update -qq && sudo apt-get install -y ripgrep
-      - name: Verify against mCaptcha verifier
+      - name: Verify against mCaptcha verifier (${{ matrix.implementation }})
+        env:
+          CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-mcaptcha-e2e.sh

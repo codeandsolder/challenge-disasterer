@@ -53,6 +53,13 @@ def metadata() -> dict:
         "kernel": text(["uname", "-a"]),
         "vulkan": text(["bash", "-lc", "vulkaninfo --summary 2>/dev/null | rg 'deviceName|driverName|driverInfo' || true"]),
         "nvidia": text(["bash", "-lc", "nvidia-smi --query-gpu=name,driver_version,pci.bus_id --format=csv,noheader 2>/dev/null || true"]),
+        "tools": {
+            "go": text(["bash", "-lc", "go version 2>/dev/null || true"]),
+            "node": text(["bash", "-lc", "node --version 2>/dev/null || true"]),
+            "haproxy": text(["bash", "-lc", "haproxy -v 2>/dev/null | head -n1 || true"]),
+            "chromium": text(["bash", "-lc", "chromium --version 2>/dev/null || true"]),
+            "sccache": text(["bash", "-lc", "sccache --version 2>/dev/null || true"]),
+        },
         "wgp_adapter_name": os.environ.get("WGPU_ADAPTER_NAME"),
     }
 
@@ -251,30 +258,37 @@ def main() -> int:
                     "--fuzz-repeats", str(max(1, min(args.samples, 4))),
                     "--benchmark",
                     "--benchmark-samples", str(args.samples),
-                    "--browser-reference", str(args.browser_reference).lower(),
                 ]
+                browser_reference_pending = args.browser_reference
                 if args.cpu:
+                    cpu_args = [
+                        *anubis_args,
+                        "--browser-reference", str(browser_reference_pending).lower(),
+                    ]
                     with (out / "live-anubis-cpu.log").open("wb") as log:
-                        result = run([str(script), *anubis_args], stdout=log, stderr=subprocess.STDOUT)
+                        result = run([str(script), *cpu_args], stdout=log, stderr=subprocess.STDOUT)
                     statuses["live-anubis-cpu"] = result.returncode
+                    browser_reference_pending = False
                 if args.gpu and gpu_adapters:
                     for index, adapter in enumerate(gpu_adapters):
                         env = os.environ.copy()
                         env["WGPU_ADAPTER_NAME"] = adapter
+                        gpu_args = [
+                            *anubis_args,
+                            "--browser-reference", str(browser_reference_pending).lower(),
+                            "--solver-gpu",
+                            "--exercise-all-gpu-adapters",
+                            "false",
+                        ]
                         with (out / f"live-anubis-gpu-{index}.log").open("wb") as log:
                             result = run(
-                                [
-                                    str(script),
-                                    *anubis_args,
-                                    "--solver-gpu",
-                                    "--exercise-all-gpu-adapters",
-                                    "false",
-                                ],
+                                [str(script), *gpu_args],
                                 env=env,
                                 stdout=log,
                                 stderr=subprocess.STDOUT,
                             )
                         statuses[f"live-anubis-gpu-{index}"] = result.returncode
+                        browser_reference_pending = False
                 continue
 
             cases = classic_implementations(name, args.all_implementations, bool(gpu_adapters))
