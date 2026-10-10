@@ -344,3 +344,51 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>,@builtin(num_workgroups) n
         CANCEL_INTERVAL - 1
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gray_block_masks_cover_exactly_128_candidates() {
+        const GRAY_MASKS: [u32; 7] = [
+            0x0000_0100,
+            0x0000_0200,
+            0x0000_0400,
+            0x0001_0000,
+            0x0002_0000,
+            0x0004_0000,
+            0x0100_0000,
+        ];
+
+        assert_eq!(STEPS, 128);
+        assert_eq!(HASHES_PER_WG, u64::from(WG_SIZE) * u64::from(STEPS));
+
+        let mut word = 0x3030_3080_u32;
+        let mut seen = [false; STEPS as usize];
+        let mut previous_gray: Option<u32> = None;
+        for step in 0..STEPS {
+            let gray = step ^ (step >> 1);
+            assert!(gray < STEPS);
+            assert!(!seen[gray as usize]);
+            seen[gray as usize] = true;
+
+            if let Some(previous) = previous_gray {
+                assert_eq!((previous ^ gray).count_ones(), 1);
+            }
+            previous_gray = Some(gray);
+
+            let expected = 0x3030_3080_u32
+                | ((gray & 0o7) << 8)
+                | (((gray >> 3) & 0o7) << 16)
+                | (((gray >> 6) & 0o1) << 24);
+            assert_eq!(word, expected, "step={step} gray={gray}");
+
+            let next = step + 1;
+            if next < STEPS {
+                word ^= GRAY_MASKS[next.trailing_zeros() as usize];
+            }
+        }
+        assert!(seen.into_iter().all(|entry| entry));
+    }
+}

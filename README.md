@@ -72,6 +72,7 @@ The direct matrix deliberately separates two questions that must not be conflate
 
 - **correctness:** normal protocol targets; every returned proof is checked against the protocol condition and the live harness subsequently submits it to the authoritative implementation;
 - **throughput:** a fixed candidate budget with a 64-bit mask target (`target=0`, `mask=2^64-1`), so every implementation performs exactly the same amount of work. An accidental 64-bit hit or any attempted-work mismatch fails the run instead of becoming a bogus speed result.
+  When GPU benchmarking is enabled the budget must be a multiple of 8192, the specialized Anubis kernel's natural work quantum; the runner defaults to 1,048,576 candidates and rejects misaligned budgets rather than rounding them silently.
 
 HashX uses the live Anubis harness's paired benchmark rather than a duplicate synthetic verifier. CPU JIT, automatic routing, and every GPU implementation solve the **same freshly issued challenge** in rotating order; the harness requires identical nonce/hash across implementations before reporting timing. This covers `wgsl-specialized`, the adapter-specific persistent Vulkan backend, and `cuda-sm75-sass` when available.
 
