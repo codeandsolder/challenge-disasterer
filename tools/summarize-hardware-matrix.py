@@ -65,7 +65,11 @@ def load(run: Path):
                     "effective_h_s": float(item["effective_h_s"]),
                     "mean_solver_ms": float(item["mean_solver_ms"]),
                 })
-    return meta, rows, paired, benches
+    baselines = []
+    baseline_path = run / "preexisting-baseline.jsonl"
+    if baseline_path.is_file():
+        baselines = [json.loads(line) for line in baseline_path.read_text().splitlines() if line.strip()]
+    return meta, rows, paired, benches, baselines
 
 
 def main() -> int:
@@ -76,12 +80,14 @@ def main() -> int:
     metas = {}
     paired_hashx = []
     anubis_benchmarks = []
+    baseline_rows = []
     for run in args.runs:
-        meta, rows, paired, benches = load(run)
+        meta, rows, paired, benches, baselines = load(run)
         host = meta["hostname"]
         metas[host] = meta
         paired_hashx.extend({"host": host, **item} for item in paired)
         anubis_benchmarks.extend({"host": host, **item} for item in benches)
+        baseline_rows.extend({"host": host, **item} for item in baselines)
         for row in rows:
             key = (row["phase"], row["protocol"], row["variant"], row["implementation"], row["accelerator"], host, row.get("gpu_adapter"))
             grouped[key].append(row)
@@ -104,9 +110,41 @@ def main() -> int:
             "median_work_per_second": statistics.median(row["work_per_second"] for row in rows),
             "median_attempted_work": statistics.median(row["attempted_work"] for row in rows),
         })
+    baseline_grouped = defaultdict(list)
+    for row in baseline_rows:
+        baseline_grouped[(row["host"], row["baseline"], row["protocol"], row["variant"], row["implementation"])].append(row)
+    baseline_summary = []
+    for key, rows in sorted(baseline_grouped.items()):
+        host, baseline, protocol, variant, implementation = key
+        baseline_summary.append({
+            "host": host, "baseline": baseline, "protocol": protocol, "variant": variant,
+            "implementation": implementation, "samples": len(rows),
+            "median_work_per_second": statistics.median(row["work_per_second"] for row in rows),
+            "median_solve_ms": statistics.median(row["solve_ns"] for row in rows) / 1e6,
+        })
+
+    comparisons = []
+    legacy_by_key = {(r["host"], r["protocol"], r["variant"]): r for r in baseline_summary if r["baseline"] != "current"}
+    current_auto = {(r["host"], r["protocol"], r["variant"]): r for r in baseline_summary if r["baseline"] == "current"}
+    for key, legacy in sorted(legacy_by_key.items()):
+        host, protocol, variant = key
+        candidates = [r for r in summary if r["host"] == host and r["phase"] == "throughput" and r["protocol"] == protocol and r["variant"] == variant and r["accelerator"] == "cpu"]
+        best = max(candidates, key=lambda r: r["median_work_per_second"], default=None)
+        matched = current_auto.get(key)
+        comparisons.append({
+            "host": host, "protocol": protocol, "variant": variant,
+            "legacy_baseline": legacy["baseline"],
+            "legacy_median_work_per_second": legacy["median_work_per_second"],
+            "matched_current_auto_ratio": None if matched is None else matched["median_work_per_second"] / legacy["median_work_per_second"],
+            "best_current_implementation": None if best is None else best["implementation"],
+            "best_current_ratio": None if best is None else best["median_work_per_second"] / legacy["median_work_per_second"],
+        })
+
     print(json.dumps({
         "hosts": metas,
         "results": summary,
+        "preexisting_baselines": baseline_summary,
+        "preexisting_comparison": comparisons,
         "paired_hashx": paired_hashx,
         "anubis_benchmarks": anubis_benchmarks,
     }, indent=2))

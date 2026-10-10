@@ -14,6 +14,7 @@ cleanup() {
 trap cleanup EXIT
 
 git clone --quiet --depth 1 --branch "$CAP_REF" https://github.com/tiagozip/cap "$TMP/cap"
+echo "UPSTREAM_COMMIT protocol=capjs ref=${CAP_REF:-HEAD} commit=$(git -C "$TMP/cap" rev-parse HEAD)"
 (
   cd "$TMP/cap/core"
   npm install --silent --ignore-scripts

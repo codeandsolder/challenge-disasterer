@@ -14,6 +14,7 @@ cleanup() {
 trap cleanup EXIT
 
 git clone --quiet --depth 1 --branch "$GOAWAY_REF" https://github.com/WeebDataHoarder/go-away "$TMP/go-away"
+echo "UPSTREAM_COMMIT protocol=goaway ref=${GOAWAY_REF:-HEAD} commit=$(git -C "$TMP/go-away" rev-parse HEAD)"
 
 cd "$ROOT"
 BUILD_ARGS=(--locked --release)

@@ -13,6 +13,7 @@ cleanup() {
 trap cleanup EXIT
 
 git clone --quiet --depth 1 --branch "$ALTCHA_REF" https://github.com/altcha-org/altcha-lib "$TMP/altcha-lib"
+echo "UPSTREAM_COMMIT protocol=altcha ref=${ALTCHA_REF:-HEAD} commit=$(git -C "$TMP/altcha-lib" rev-parse HEAD)"
 (
   cd "$TMP/altcha-lib"
   npm ci --silent

@@ -66,6 +66,8 @@ The repository currently pins `nightly-2026-10-08`; Anubis assets are built with
 
 `tools/run-hardware-matrix.py` is the canonical cross-hardware validation/benchmark entry point. It writes immutable run directories containing host/toolchain/GPU metadata, JSONL direct-solver measurements, authoritative verifier logs, and a manifest of every gate. `tools/summarize-hardware-matrix.py` compares multiple run directories by identical `(phase, protocol, variant, implementation, accelerator)` keys and also extracts the paired HashX/Anubis benchmarks.
 
+The same run also executes `tools/preexisting-baseline`, pinned to the original `eternal-flame-AD/pow-buster@d359adb` ancestor. It runs alternating old/new samples with identical message bytes and exact candidate budgets for every solver family the old implementation had in common with the current core (Anubis decimal and WASM SHA-256 shape, mCaptcha, Cap.js, go-away, and both Cerberus formats). The summarizer reports both matched `auto` old/new ratios and the fastest current CPU implementation versus that historical baseline. Protocols added later, such as ALTCHA and HashX, are compared against their authoritative upstream/browser references instead of inventing a nonexistent old baseline.
+
 On multi-GPU hosts the runner enumerates every non-CPU Vulkan adapter, runs CPU rows once, and explicitly forces each GPU adapter for both the generalized WGPU matrix and the specialized Anubis SHA kernel. Adapter identity is part of every GPU result key, so an iGPU and dGPU can never be silently pooled into one number.
 
 The direct matrix deliberately separates two questions that must not be conflated:
