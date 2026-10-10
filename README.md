@@ -66,12 +66,16 @@ The repository currently pins `nightly-2026-10-08`; Anubis assets are built with
 
 `tools/run-hardware-matrix.py` is the canonical cross-hardware validation/benchmark entry point. It writes immutable run directories containing host/toolchain/GPU metadata, JSONL direct-solver measurements, authoritative verifier logs, and a manifest of every gate. `tools/summarize-hardware-matrix.py` compares multiple run directories by identical `(phase, protocol, variant, implementation, accelerator)` keys and also extracts the paired HashX/Anubis benchmarks.
 
+On multi-GPU hosts the runner enumerates every non-CPU Vulkan adapter, runs CPU rows once, and explicitly forces each GPU adapter for both the generalized WGPU matrix and the specialized Anubis SHA kernel. Adapter identity is part of every GPU result key, so an iGPU and dGPU can never be silently pooled into one number.
+
 The direct matrix deliberately separates two questions that must not be conflated:
 
 - **correctness:** normal protocol targets; every returned proof is checked against the protocol condition and the live harness subsequently submits it to the authoritative implementation;
 - **throughput:** a fixed candidate budget with a 64-bit mask target (`target=0`, `mask=2^64-1`), so every implementation performs exactly the same amount of work. An accidental 64-bit hit or any attempted-work mismatch fails the run instead of becoming a bogus speed result.
 
 HashX uses the live Anubis harness's paired benchmark rather than a duplicate synthetic verifier. CPU JIT, automatic routing, and every GPU implementation solve the **same freshly issued challenge** in rotating order; the harness requires identical nonce/hash across implementations before reporting timing. This covers `wgsl-specialized`, the adapter-specific persistent Vulkan backend, and `cuda-sm75-sass` when available.
+
+Current Anubis also ships WASM `sha256` and `argon2id` challenge algorithms. The stock-browser benchmark exercises those upstream implementations so they remain visible in coverage reports, but challenge-disasterer does not yet expose native `sha256` or `argon2id` solver routes; they are an explicit remaining coverage gap rather than being counted as validated native solvers.
 
 Example:
 

@@ -42,7 +42,7 @@ mod tests {
         let mut state = core::array::from_fn(|i| crate::sha256::IV[i % 8].wrapping_add(i as u32));
         let mut state_v: [_; 16] =
             core::array::from_fn(|i| unsafe { _mm512_set1_epi32(state[i] as _) });
-        g(
+        crate::blake3::g(
             &mut state,
             0,
             4,

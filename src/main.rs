@@ -50,6 +50,10 @@ struct Args {
     #[cfg(feature = "gpu")]
     #[arg(long, hide = true)]
     benchmark_anubis_gpu_hashes: Option<u64>,
+    /// Sample index attached to the specialized Anubis GPU benchmark record.
+    #[cfg(feature = "gpu")]
+    #[arg(long, hide = true, default_value_t = 0)]
+    benchmark_sample: usize,
     /// Calibration JSON produced by tools/anubis-e2e --calibrate-routing.
     #[arg(long)]
     routing_calibration: Option<std::path::PathBuf>,
@@ -89,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
                 "variant": "specialized-sha256-wgpu",
                 "implementation": "specialized-wgpu",
                 "accelerator": "gpu",
+                "sample": args.benchmark_sample,
                 "attempted_work": hashes,
                 "work_per_second": hashes_per_second,
                 "solve_ns": ((hashes as f64 / hashes_per_second) * 1e9).round() as u128,

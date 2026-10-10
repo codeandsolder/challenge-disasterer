@@ -31,9 +31,15 @@ struct Args {
     /// Hard candidate ceiling per solve.
     #[arg(long, default_value_t = 50_000_000)]
     limit: u64,
+    /// Include CPU implementations in the matrix.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    cpu: bool,
     /// Include the generalized WGPU backend selected by WGPU_ADAPTER_NAME/default selection.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     gpu: bool,
+    /// Print usable GPU adapter names as JSON and exit.
+    #[arg(long, default_value_t = false)]
+    list_gpu_adapters: bool,
     /// Matrix phase. Throughput uses an effectively impossible 64-bit target and must exhaust exactly `limit` candidates.
     #[arg(long, value_enum, default_value_t = Mode::Correctness)]
     mode: Mode,
@@ -826,12 +832,21 @@ fn emit_gpu(
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    if args.list_gpu_adapters {
+        println!(
+            "{}",
+            serde_json::to_string(&pow_core::gpu::GpuContext::adapter_names().await)?
+        );
+        return Ok(());
+    }
     let meta = Meta {
         host: read_trimmed("/proc/sys/kernel/hostname"),
         cpu_model: cpu_model(),
         commit: args.commit.clone(),
     };
-    run_cpu_matrix(&meta, &args)?;
+    if args.cpu {
+        run_cpu_matrix(&meta, &args)?;
+    }
     if args.gpu {
         run_gpu_matrix(&meta, &args).await?;
     }

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Rust
+        run: rustup toolchain install nightly-2026-10-08 --profile minimal --component clippy,rustfmt
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Test
+        run: cargo test --locked --workspace --all-features
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Compile AVX-512-only test paths
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-feature=+avx512f
+        run: cargo test --locked --target x86_64-unknown-linux-gnu -p challenge-pow-core --no-default-features --features std,compare-64bit --no-run

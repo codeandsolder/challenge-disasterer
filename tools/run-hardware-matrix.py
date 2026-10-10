@@ -100,40 +100,83 @@ def main() -> int:
     (out / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
 
     statuses: dict[str, int] = {}
-    for phase, limit in (("correctness", args.correctness_limit), ("throughput", args.throughput_limit)):
-        matrix_stdout = (out / f"solver-{phase}.jsonl").open("wb")
-        matrix_stderr = (out / f"solver-{phase}.stderr.log").open("wb")
-        matrix = run(
-            [
-                "cargo", "+nightly-2026-10-08", "run", "--locked", "--release",
-                "--manifest-path", "tools/solver-matrix/Cargo.toml", "--",
-                "--samples", str(args.samples), "--limit", str(limit),
-                "--mode", phase,
-                "--gpu", str(args.gpu).lower(), "--commit", meta["git_sha"],
-            ],
-            stdout=matrix_stdout,
-            stderr=matrix_stderr,
-        )
-        statuses[f"solver-{phase}"] = matrix.returncode
-        matrix_stdout.close()
-        matrix_stderr.close()
+    matrix_bin = ROOT / "target/release/challenge-disasterer-solver-matrix"
+    matrix_build = run([
+        "cargo", "+nightly-2026-10-08", "build", "--locked", "--release",
+        "--manifest-path", "tools/solver-matrix/Cargo.toml",
+    ])
+    statuses["build-solver-matrix"] = matrix_build.returncode
 
-    if args.gpu:
+    gpu_adapters: list[str] = []
+    if matrix_build.returncode == 0 and args.gpu:
+        discovered = subprocess.run(
+            [str(matrix_bin), "--list-gpu-adapters"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        statuses["gpu-adapter-discovery"] = discovered.returncode
+        if discovered.returncode == 0:
+            gpu_adapters = json.loads(discovered.stdout)
+            if not gpu_adapters:
+                statuses["gpu-adapter-discovery"] = 1
+    meta["gpu_adapters"] = gpu_adapters
+    (out / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
+
+    if matrix_build.returncode == 0:
+        for phase, limit in (("correctness", args.correctness_limit), ("throughput", args.throughput_limit)):
+            with (out / f"solver-{phase}.jsonl").open("wb") as matrix_stdout, \
+                 (out / f"solver-{phase}.stderr.log").open("wb") as matrix_stderr:
+                common = [
+                    str(matrix_bin),
+                    "--samples", str(args.samples), "--limit", str(limit),
+                    "--mode", phase, "--commit", meta["git_sha"],
+                ]
+                cpu = run(
+                    [*common, "--cpu", "true", "--gpu", "false"],
+                    stdout=matrix_stdout,
+                    stderr=matrix_stderr,
+                )
+                statuses[f"solver-{phase}-cpu"] = cpu.returncode
+                for index, adapter in enumerate(gpu_adapters):
+                    env = os.environ.copy()
+                    env["WGPU_ADAPTER_NAME"] = adapter
+                    gpu = run(
+                        [*common, "--cpu", "false", "--gpu", "true"],
+                        env=env,
+                        stdout=matrix_stdout,
+                        stderr=matrix_stderr,
+                    )
+                    statuses[f"solver-{phase}-gpu-{index}"] = gpu.returncode
+
+    if args.gpu and gpu_adapters:
         specialized_stdout = out / "solver-specialized-anubis-gpu.jsonl"
         specialized_stderr = out / "solver-specialized-anubis-gpu.stderr.log"
         build = run(["cargo", "+nightly-2026-10-08", "build", "--locked", "--release"])
         statuses["build-specialized-anubis-gpu"] = build.returncode
         if build.returncode == 0:
+            specialized_codes = []
             with specialized_stdout.open("wb") as stdout, specialized_stderr.open("wb") as stderr:
-                specialized = run(
-                    [
-                        str(ROOT / "target/release/challenge-disasterer"),
-                        "--benchmark-anubis-gpu-hashes", str(args.throughput_limit),
-                    ],
-                    stdout=stdout,
-                    stderr=stderr,
-                )
-            statuses["solver-specialized-anubis-gpu"] = specialized.returncode
+                for adapter in gpu_adapters:
+                    env = os.environ.copy()
+                    env["WGPU_ADAPTER_NAME"] = adapter
+                    for sample in range(args.samples):
+                        specialized = run(
+                            [
+                                str(ROOT / "target/release/challenge-disasterer"),
+                                "--benchmark-anubis-gpu-hashes", str(args.throughput_limit),
+                                "--benchmark-sample", str(sample),
+                            ],
+                            env=env,
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+                        specialized_codes.append(specialized.returncode)
+            statuses["solver-specialized-anubis-gpu"] = next(
+                (code for code in specialized_codes if code != 0), 0
+            )
 
     if args.live:
         for name in LIVE:

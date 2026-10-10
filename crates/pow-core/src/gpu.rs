@@ -85,17 +85,58 @@ pub struct GpuContext {
 }
 
 impl GpuContext {
-    /// Create a GPU solver using the high-performance adapter selected by `wgpu`.
+    /// Enumerate usable non-CPU GPU adapters.
+    pub async fn adapter_names() -> Vec<String> {
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let mut names = instance
+            .enumerate_adapters(wgpu::Backends::VULKAN)
+            .await
+            .into_iter()
+            .filter_map(|adapter| {
+                let info = adapter.get_info();
+                (info.device_type != wgpu::DeviceType::Cpu).then_some(info.name)
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// Create a GPU solver. `WGPU_ADAPTER_NAME` forces a matching adapter; otherwise
+    /// the high-performance adapter selected by `wgpu` is used.
     pub async fn create() -> Result<Self, GpuError> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| GpuError::new(format!("request GPU adapter: {e}")))?;
+        let adapter = if let Ok(requested) = std::env::var("WGPU_ADAPTER_NAME") {
+            let requested = requested.to_lowercase();
+            let adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN).await;
+            let available = adapters
+                .iter()
+                .map(|adapter| adapter.get_info().name)
+                .collect::<Vec<_>>();
+            adapters
+                .into_iter()
+                .find(|adapter| {
+                    let info = adapter.get_info();
+                    info.device_type != wgpu::DeviceType::Cpu
+                        && info.name.to_lowercase().contains(&requested)
+                })
+                .ok_or_else(|| {
+                    GpuError::new(format!(
+                        "WGPU_ADAPTER_NAME={requested:?} matched no GPU adapter; available: {}",
+                        available.join(", ")
+                    ))
+                })?
+        } else {
+            instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| GpuError::new(format!("request GPU adapter: {e}")))?
+        };
         let info = adapter.get_info();
         let adapter_name = format!("{} ({:?}, {})", info.name, info.backend, info.driver);
         let limits = adapter.limits();
