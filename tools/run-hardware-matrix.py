@@ -253,22 +253,28 @@ def main() -> int:
                     "--benchmark-samples", str(args.samples),
                     "--browser-reference", str(args.browser_reference).lower(),
                 ]
+                if args.cpu:
+                    with (out / "live-anubis-cpu.log").open("wb") as log:
+                        result = run([str(script), *anubis_args], stdout=log, stderr=subprocess.STDOUT)
+                    statuses["live-anubis-cpu"] = result.returncode
                 if args.gpu and gpu_adapters:
                     for index, adapter in enumerate(gpu_adapters):
                         env = os.environ.copy()
                         env["WGPU_ADAPTER_NAME"] = adapter
                         with (out / f"live-anubis-gpu-{index}.log").open("wb") as log:
                             result = run(
-                                [str(script), *anubis_args, "--solver-gpu"],
+                                [
+                                    str(script),
+                                    *anubis_args,
+                                    "--solver-gpu",
+                                    "--exercise-all-gpu-adapters",
+                                    "false",
+                                ],
                                 env=env,
                                 stdout=log,
                                 stderr=subprocess.STDOUT,
                             )
                         statuses[f"live-anubis-gpu-{index}"] = result.returncode
-                else:
-                    with (out / "live-anubis.log").open("wb") as log:
-                        result = run([str(script), *anubis_args], stdout=log, stderr=subprocess.STDOUT)
-                    statuses["live-anubis"] = result.returncode
                 continue
 
             cases = classic_implementations(name, args.all_implementations, bool(gpu_adapters))
