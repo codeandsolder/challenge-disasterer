@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 PORT="${ALTCHA_E2E_PORT:-17427}"
+CHALLENGE_IMPLEMENTATION="${CHALLENGE_IMPLEMENTATION:-auto}"
 ALTCHA_REF="${ALTCHA_REF:-main}"
 cleanup() {
   if [[ -n "${SOLVER_PID:-}" ]]; then kill "$SOLVER_PID" 2>/dev/null || true; fi
@@ -19,8 +20,10 @@ git clone --quiet --depth 1 --branch "$ALTCHA_REF" https://github.com/altcha-org
 )
 
 cd "$ROOT"
-cargo build --locked --release --no-default-features
-"$ROOT/target/release/challenge-disasterer" --listen "127.0.0.1:$PORT" --gpu=false >"$TMP/solver.log" 2>&1 &
+BUILD_ARGS=(--locked --release)
+if [[ "$CHALLENGE_IMPLEMENTATION" != "wgpu" ]]; then BUILD_ARGS+=(--no-default-features); fi
+cargo build "${BUILD_ARGS[@]}"
+"$ROOT/target/release/challenge-disasterer" --listen "127.0.0.1:$PORT" --gpu="$([[ "$CHALLENGE_IMPLEMENTATION" == "wgpu" ]] && echo true || echo false)" >"$TMP/solver.log" 2>&1 &
 SOLVER_PID=$!
 
 for _ in $(seq 1 100); do

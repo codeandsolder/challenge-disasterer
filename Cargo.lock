@@ -337,6 +337,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "challenge-disasterer-solver-matrix"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "challenge-pow-core",
+ "clap",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "challenge-pow-core"
 version = "0.1.0"
 dependencies = [

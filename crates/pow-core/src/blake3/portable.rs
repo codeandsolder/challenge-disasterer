@@ -1,9 +1,6 @@
 //! Portable-SIMD BLAKE3 compression core shared by architecture wrappers.
 use super::MESSAGE_SCHEDULE;
 use core::simd::Simd;
-#[macro_use]
-#[path = "loop_macros.rs"]
-mod loop_macros;
 #[inline(always)]
 fn ror<const N: usize>(x: Simd<u32, N>, s: u32) -> Simd<u32, N> {
     (x >> s) | (x << (32 - s))
@@ -19,11 +16,11 @@ pub(super) fn g<const N: usize>(
 ) {
     *a = *a + *b + x;
     *d = ror(*d ^ *a, 16);
-    *c = *c + *d;
+    *c += *d;
     *b = ror(*b ^ *c, 12);
     *a = *a + *b + y;
     *d = ror(*d ^ *a, 8);
-    *c = *c + *d;
+    *c += *d;
     *b = ror(*b ^ *c, 7);
 }
 #[inline(always)]
@@ -79,6 +76,6 @@ pub(super) fn compress<const N: usize, const CONSTANT_WORD_COUNT: usize, const P
         }
     });
     repeat8!(i, {
-        v[i] = v[i] ^ v[i + 8];
+        v[i] ^= v[i + 8];
     });
 }

@@ -90,36 +90,38 @@ impl Ctrl {
 }
 
 fn base(opcode: u16, guard: Pred, ctrl: Ctrl) -> u128 {
-    ((opcode as u128) << 64) | ((guard.bits() as u128) << 76) | ((ctrl.encode() as u128) << 41)
+    (u128::from(opcode) << 64)
+        | (u128::from(guard.bits()) << 76)
+        | (u128::from(ctrl.encode()) << 41)
 }
 
 fn set_icr(code: &mut u128, mode: u8) {
     *code &= !(1u128 << 73);
-    *code |= (mode as u128) << 72;
+    *code |= u128::from(mode) << 72;
 }
 
 fn put_src1(code: &mut u128, src: Src1) {
     match src {
-        Src1::Reg(reg) => *code |= (reg.bits() as u128) << 96,
+        Src1::Reg(reg) => *code |= u128::from(reg.bits()) << 96,
         Src1::Imm(imm) => {
             set_icr(code, 0x8);
-            *code |= (imm as u128) << 96;
+            *code |= u128::from(imm) << 96;
         }
         Src1::Const { bank, offset } => {
             set_icr(code, 0xa);
-            *code |= ((offset as u128) << 6) << 96;
-            *code |= ((bank as u128) << 6) << 112;
+            *code |= (u128::from(offset) << 6) << 96;
+            *code |= (u128::from(bank) << 6) << 112;
         }
     }
 }
 
 fn put_pred(code: &mut u128, pred: Pred, shift: u32) {
-    *code |= (pred.bits() as u128) << shift;
+    *code |= u128::from(pred.bits()) << shift;
 }
 
 fn mov(rd: Reg, src: Src1, guard: Pred, stall: u8) -> u128 {
     let mut code = base(0x202, guard, Ctrl::standard(stall));
-    code |= (rd.bits() as u128) << 80;
+    code |= u128::from(rd.bits()) << 80;
     put_src1(&mut code, src);
     code | 0xf00
 }
@@ -140,9 +142,9 @@ fn iadd3(
     stall: u8,
 ) -> u128 {
     let mut code = base(0x210, guard, Ctrl::standard(stall));
-    code |= (rd.bits() as u128) << 80;
-    code |= (rs0.bits() as u128) << 88;
-    code |= rs2.bits() as u128;
+    code |= u128::from(rd.bits()) << 80;
+    code |= u128::from(rs0.bits()) << 88;
+    code |= u128::from(rs2.bits());
     if rs0_neg {
         code |= 1u128 << 8;
     }
@@ -183,9 +185,9 @@ fn imad(
     ctrl: Ctrl,
 ) -> u128 {
     let mut code = base(if wide { 0x225 } else { 0x224 }, guard, ctrl);
-    code |= (rd.bits() as u128) << 80;
-    code |= (rs0.bits() as u128) << 88;
-    code |= rs2.bits() as u128;
+    code |= u128::from(rd.bits()) << 80;
+    code |= u128::from(rs0.bits()) << 88;
+    code |= u128::from(rs2.bits());
     if x {
         code |= 1u128 << 10;
     }
@@ -238,7 +240,7 @@ fn isetp(
     code |= 7u128 << 4;
     put_pred(&mut code, pd0, 17);
     put_pred(&mut code, pd1, 20);
-    code |= (rs0.bits() as u128) << 88;
+    code |= u128::from(rs0.bits()) << 88;
     put_src1(&mut code, src1);
     put_pred(&mut code, ps0, 23);
     code
@@ -257,10 +259,10 @@ fn lop3(
 ) -> u128 {
     let mut code = base(0x212, guard, Ctrl::standard(stall));
     code |= 7u128 << 17;
-    code |= (rd.bits() as u128) << 80;
-    code |= (rs0.bits() as u128) << 88;
-    code |= rs2.bits() as u128;
-    code |= (lut as u128) << 8;
+    code |= u128::from(rd.bits()) << 80;
+    code |= u128::from(rs0.bits()) << 88;
+    code |= u128::from(rs2.bits());
+    code |= u128::from(lut) << 8;
     put_src1(&mut code, src1);
     put_pred(&mut code, ps0, 23);
     code
@@ -275,22 +277,22 @@ enum ShfKind {
 
 fn shf(kind: ShfKind, rd: Reg, rs0: Reg, amount: u8, rs2: Reg, guard: Pred, stall: u8) -> u128 {
     let mut code = base(0x219, guard, Ctrl::standard(stall));
-    code |= (rd.bits() as u128) << 80;
-    code |= (rs0.bits() as u128) << 88;
-    code |= rs2.bits() as u128;
+    code |= u128::from(rd.bits()) << 80;
+    code |= u128::from(rs0.bits()) << 88;
+    code |= u128::from(rs2.bits());
     match kind {
         ShfKind::LeftU64Hi => code |= 1u128 << 16,
         ShfKind::LeftU32 => code |= 6u128 << 8,
         ShfKind::RightU64 => code |= 1u128 << 12,
     }
-    put_src1(&mut code, Src1::Imm(amount as u32));
+    put_src1(&mut code, Src1::Imm(u32::from(amount)));
     code
 }
 
 fn sel(rd: Reg, rs0: Reg, src1: Src1, ps0: Pred, guard: Pred, stall: u8) -> u128 {
     let mut code = base(0x207, guard, Ctrl::standard(stall));
-    code |= (rd.bits() as u128) << 80;
-    code |= (rs0.bits() as u128) << 88;
+    code |= u128::from(rd.bits()) << 80;
+    code |= u128::from(rs0.bits()) << 88;
     put_src1(&mut code, src1);
     put_pred(&mut code, ps0, 23);
     code
@@ -311,7 +313,7 @@ fn s2r(rd: Reg, sr: SpecialReg, write_barrier: u8) -> u128 {
         stall: 5,
     };
     let mut code = base(0x919, Pred::PT, ctrl);
-    code |= (rd.bits() as u128) << 80;
+    code |= u128::from(rd.bits()) << 80;
     code |= (match sr {
         SpecialReg::TidX => 33u128,
         SpecialReg::CtaidX => 37u128,
@@ -326,8 +328,8 @@ fn red_min_u32_gpu_strong(addr: Reg, src: Reg, guard: Pred, stall: u8) -> u128 {
     code |= 2u128 << 15;
     code |= 2u128 << 13;
     code |= 1u128 << 20;
-    code |= (addr.bits() as u128) << 88;
-    code |= (src.bits() as u128) << 96;
+    code |= u128::from(addr.bits()) << 88;
+    code |= u128::from(src.bits()) << 96;
     code
 }
 

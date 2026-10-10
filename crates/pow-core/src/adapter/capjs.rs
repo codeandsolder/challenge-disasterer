@@ -114,9 +114,7 @@ impl ChallengeDescriptor {
                         solver.get_attempted_nonces(),
                         core::sync::atomic::Ordering::Relaxed,
                     );
-                    let nonce_f64 = fixup_prefix
-                        .map(|x| x.fixup(nonce as u64))
-                        .unwrap_or(nonce as f64);
+                    let nonce_f64 = fixup_prefix.map(|x| x.fixup(nonce)).unwrap_or(nonce as f64);
                     *solution = nonce_f64;
                 },
             );
@@ -125,8 +123,7 @@ impl ChallengeDescriptor {
         let attempted_nonces = attempted_nonces.load(core::sync::atomic::Ordering::Relaxed);
         response.meta.elapsed = elapsed.as_micros() as u64;
         response.meta.attempted_nonces = attempted_nonces;
-        response.meta.hashrate =
-            attempted_nonces as u64 * 1000 * 1000 / response.meta.elapsed as u64;
+        response.meta.hashrate = attempted_nonces * 1000 * 1000 / response.meta.elapsed as u64;
         (Some(response), attempted_nonces)
     }
 
@@ -166,17 +163,14 @@ impl ChallengeDescriptor {
                 return (None, attempted_nonces);
             };
             attempted_nonces += solver.get_attempted_nonces();
-            response.solutions.push(
-                fixup_prefix
-                    .map(|x| x.fixup(nonce as u64))
-                    .unwrap_or(nonce as f64),
-            );
+            response
+                .solutions
+                .push(fixup_prefix.map(|x| x.fixup(nonce)).unwrap_or(nonce as f64));
         }
         #[cfg(feature = "std")]
         {
             response.meta.elapsed = start.elapsed().as_micros() as u64;
-            response.meta.hashrate =
-                attempted_nonces as u64 * 1000 * 1000 / response.meta.elapsed as u64;
+            response.meta.hashrate = attempted_nonces * 1000 * 1000 / response.meta.elapsed;
         }
         response.meta.attempted_nonces = attempted_nonces;
         (Some(response), attempted_nonces)

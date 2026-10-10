@@ -729,10 +729,6 @@ impl DoubleBlockSolver {
     }
 }
 
-#[macro_use]
-#[path = "impl_decimal_solver.rs"]
-mod impl_decimal_solver;
-
 impl_decimal_solver!(
     [SingleBlockSolver, DoubleBlockSolver] => DecimalSolver
 );

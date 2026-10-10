@@ -351,7 +351,7 @@ impl GpuSolver {
 
         let batch_size = persistent_batch(challenge.difficulty, self.persistent_wg_size);
         let mut base = 0_u64;
-        while base <= u64::from(u32::MAX) {
+        while u32::try_from(base).is_ok() {
             let remaining = u64::from(u32::MAX) + 1 - base;
             let batch = u64::from(batch_size).min(remaining) as u32;
             self.write_params(key, base, challenge.difficulty);
@@ -425,7 +425,7 @@ impl GpuSolver {
         self.queue
             .write_buffer(&self.solution, 0, &u32::MAX.to_le_bytes());
         let mut base = 0_u64;
-        while base <= u64::from(u32::MAX) {
+        while u32::try_from(base).is_ok() {
             let remaining = u64::from(u32::MAX) + 1 - base;
             let batch = u64::from(SPECIALIZED_BATCH).min(remaining) as u32;
             self.write_params(key, base, challenge.difficulty);
@@ -589,14 +589,14 @@ fn op_source(i: Instr) -> anyhow::Result<String> {
         GpuOp::AddConst => format!(
             "r[{d}u]=r[{d}u]+0x{v:016x}lu;\n",
             d = i.dst,
-            v = (i.imm as i32 as i64) as u64
+            v = i64::from(i.imm as i32) as u64
         ),
         GpuOp::Sub => format!("r[{d}u]=r[{d}u]-r[{s}u];\n", d = i.dst, s = i.src),
         GpuOp::Xor => format!("r[{d}u]=r[{d}u]^r[{s}u];\n", d = i.dst, s = i.src),
         GpuOp::XorConst => format!(
             "r[{d}u]=r[{d}u]^0x{v:016x}lu;\n",
             d = i.dst,
-            v = (i.imm as i32 as i64) as u64
+            v = i64::from(i.imm as i32) as u64
         ),
         GpuOp::Rotate => format!("r[{d}u]=ror(r[{d}u],{n}u);\n", d = i.dst, n = i.imm),
         GpuOp::Target | GpuOp::Branch => String::new(),
@@ -624,7 +624,7 @@ fn specialized_shader(program: &[Instr]) -> anyhow::Result<String> {
         }
     }
     Ok(format!(
-        r#"
+        r"
 struct Params{{w:array<u32,16>}};struct Out{{solution:atomic<u32>}};
 @group(0) @binding(0) var<storage,read> params:Params;@group(0) @binding(1) var<storage,read_write> out:Out;
 struct S{{v0:u64,v1:u64,v2:u64,v3:u64}};
@@ -638,6 +638,6 @@ fn run(r0:array<u64,8>)->array<u64,8>{{var r=r0;var allow=true;var mh=0u;{body}r
 fn hx(n:u64)->array<u64,4>{{let k=key();let r=run(init(k,n));var x=S(r[0]+k.v0,r[1]+k.v1,r[2],r[3]);var y=S(r[4],r[5],r[6]+k.v2,r[7]+k.v3);x=sip(x);y=sip(y);return array<u64,4>(x.v0^y.v0,x.v1^y.v1,x.v2^y.v2,x.v3^y.v3);}}
 fn bswap(x:u32)->u32{{return((x&0xffu)<<24u)|((x&0xff00u)<<8u)|((x&0xff0000u)>>8u)|((x&0xff000000u)>>24u);}}
 @compute @workgroup_size(64) fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{if(atomicLoad(&out.solution)!=0xffffffffu){{return;}}let nonce=params.w[8]+gid.x;let h=hx(u64(nonce));let d=params.w[9];let p0=bswap(u32(h[0]));let p1=bswap(u32(h[0]>>32u));var ok=false;if(d<=32u){{ok=(d==0u)||((p0>>(32u-d))==0u);}}else{{ok=(p0==0u)&&((p1>>(64u-d))==0u);}}if(ok){{_=atomicMin(&out.solution,nonce);}}}}
-"#
+"
     ))
 }

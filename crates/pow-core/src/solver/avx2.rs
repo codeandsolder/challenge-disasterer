@@ -872,10 +872,6 @@ impl DoubleBlockSolver {
     }
 }
 
-#[macro_use]
-#[path = "impl_decimal_solver.rs"]
-mod impl_decimal_solver;
-
 impl_decimal_solver!(
     [SingleBlockSolver, DoubleBlockSolver] => DecimalSolver
 );
@@ -914,6 +910,7 @@ impl From<crate::solver::safe::BinarySolver> for BinarySolver {
 impl BinarySolver {
     #[inline(never)]
     #[target_feature(enable = "avx2")]
+    #[allow(clippy::too_many_arguments)]
     fn solve_impl<
         const TYPE: u8,
         const FIRST_NONCE_WORD_IDX: usize,
@@ -978,7 +975,9 @@ impl BinarySolver {
                         (search_end - cursor).min(8).min((256 - lane_base) as u64) as usize;
                     let lane_id_v = _mm256_add_epi32(
                         _mm256_load_si256(lane_id_base.as_ptr().cast()),
-                        _mm256_set1_epi32(((lane_base as u32) << lane_id_byte_remainder * 8) as _),
+                        _mm256_set1_epi32(
+                            ((lane_base as u32) << (lane_id_byte_remainder * 8)) as _,
+                        ),
                     );
                     macro_rules! get_msg {
                         ($idx:expr) => {
@@ -1873,7 +1872,7 @@ impl crate::solver::Solver for CerberusSolver {
                         nonce_copy /= 10;
                     }
 
-                    let mut msg = core::array::from_fn(|i| {
+                    let msg = core::array::from_fn(|i| {
                         u32::from_le_bytes([
                             msg[i * 4],
                             msg[i * 4 + 1],
@@ -1884,7 +1883,7 @@ impl crate::solver::Solver for CerberusSolver {
 
                     let hash = crate::blake3::compress8(
                         &message.prefix_state,
-                        &mut msg,
+                        &msg,
                         0,
                         message.salt_residual_len as u32 + 9,
                         message.flags,
@@ -1986,8 +1985,8 @@ impl AltchaSha256Solver {
                 // key truncation if needed (generally not)
                 if KW < 8 && r > 0 {
                     blocks[KW] = _mm256_set1_epi32(0x80);
-                    for i in (KW + 1)..8 {
-                        blocks[i] = _mm256_setzero_si256();
+                    for block in blocks.iter_mut().take(8).skip(KW + 1) {
+                        *block = _mm256_setzero_si256();
                     }
                 }
                 let mut state =
@@ -2022,8 +2021,8 @@ impl AltchaSha256Solver {
                 crate::unlikely();
 
                 let perm = _mm256_set1_epi32(success_lane_idx as _);
-                for i in 0..8 {
-                    blocks[i] = _mm256_permutevar8x32_epi32(blocks[i], perm);
+                for block in blocks.iter_mut().take(8) {
+                    *block = _mm256_permutevar8x32_epi32(*block, perm);
                 }
                 return Some((
                     counter as u64 + success_lane_idx as u64,
@@ -2133,7 +2132,7 @@ impl AltchaSha256Solver {
                 _mm256_setzero_si256(),
                 _mm256_setzero_si256(),
                 _mm256_setzero_si256(),
-                _mm256_set1_epi32(512 + ((16 + 4) * 8) as i32),
+                _mm256_set1_epi32(512 + ((16 + 4) * 8)),
             ];
 
             let mut result: [__m256i; 8] = core::array::from_fn(|_| _mm256_setzero_si256());
@@ -2179,8 +2178,8 @@ impl AltchaSha256Solver {
             {
                 crate::unlikely();
                 let perm = _mm256_set1_epi32(success_lane_idx as _);
-                for i in 0..8 {
-                    result[i] = _mm256_permutevar8x32_epi32(result[i], perm);
+                for word in &mut result {
+                    *word = _mm256_permutevar8x32_epi32(*word, perm);
                 }
                 return Some((
                     counter as u64 + success_lane_idx as u64,
@@ -2243,7 +2242,7 @@ impl crate::solver::Solver for AltchaSha256Solver {
                     24 => self.solve_nested_impl::<TYPE, 6>(target, mask),
                     28 => self.solve_nested_impl::<TYPE, 7>(target, mask),
                     32 => self.solve_nested_impl::<TYPE, 8>(target, mask),
-                    _ => return self.solve_fallback::<TYPE>(target, mask),
+                    _ => self.solve_fallback::<TYPE>(target, mask),
                 }
             }
         }

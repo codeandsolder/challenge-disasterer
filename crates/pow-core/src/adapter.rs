@@ -43,20 +43,20 @@ impl<'de, const N: usize> serde::Deserialize<'de> for FixedHexString<N> {
                 for i in 0..N.min(v.len() / 2) {
                     let mut h = v[i * 2];
                     let mut l = v[i * 2 + 1];
-                    if h >= b'0' && h <= b'9' {
+                    if h.is_ascii_digit() {
                         h -= b'0';
-                    } else if h >= b'a' && h <= b'f' {
+                    } else if (b'a'..=b'f').contains(&h) {
                         h -= b'a' - 10;
-                    } else if h >= b'A' && h <= b'F' {
+                    } else if (b'A'..=b'F').contains(&h) {
                         h -= b'A' - 10;
                     } else {
                         return Err(serde::de::Error::custom("invalid hex character"));
                     }
-                    if l >= b'0' && l <= b'9' {
+                    if l.is_ascii_digit() {
                         l -= b'0';
-                    } else if l >= b'a' && l <= b'f' {
+                    } else if (b'a'..=b'f').contains(&l) {
                         l -= b'a' - 10;
-                    } else if l >= b'A' && l <= b'F' {
+                    } else if (b'A'..=b'F').contains(&l) {
                         l -= b'A' - 10;
                     } else {
                         return Err(serde::de::Error::custom("invalid hex character"));
@@ -64,11 +64,11 @@ impl<'de, const N: usize> serde::Deserialize<'de> for FixedHexString<N> {
                     res[i] = h * 16 + l;
                 }
                 if let Some(&b) = v.get(v.len() / 2 * 2) {
-                    let b = if b >= b'0' && b <= b'9' {
+                    let b = if b.is_ascii_digit() {
                         b - b'0'
-                    } else if b >= b'a' && b <= b'f' {
+                    } else if (b'a'..=b'f').contains(&b) {
                         b - b'a' + 10
-                    } else if b >= b'A' && b <= b'F' {
+                    } else if (b'A'..=b'F').contains(&b) {
                         b - b'A' + 10
                     } else {
                         return Err(serde::de::Error::custom("invalid hex character"));

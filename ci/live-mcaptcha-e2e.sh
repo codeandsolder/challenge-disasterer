@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 PORT="${MCAPTCHA_E2E_PORT:-17431}"
+CHALLENGE_IMPLEMENTATION="${CHALLENGE_IMPLEMENTATION:-auto}"
 cleanup() {
   if [[ -n "${SOLVER_PID:-}" ]]; then kill "$SOLVER_PID" 2>/dev/null || true; fi
   rm -rf "$TMP"
@@ -17,8 +18,10 @@ if ! rg -q 'mcaptcha_pow_sha256 = "0\.5"' "$TMP/mcaptcha/Cargo.toml"; then
 fi
 
 cd "$ROOT"
-cargo build --locked --release --no-default-features
-"$ROOT/target/release/challenge-disasterer" --listen "127.0.0.1:$PORT" --gpu=false >"$TMP/solver.log" 2>&1 &
+BUILD_ARGS=(--locked --release)
+if [[ "$CHALLENGE_IMPLEMENTATION" != "wgpu" ]]; then BUILD_ARGS+=(--no-default-features); fi
+cargo build "${BUILD_ARGS[@]}"
+"$ROOT/target/release/challenge-disasterer" --listen "127.0.0.1:$PORT" --gpu="$([[ "$CHALLENGE_IMPLEMENTATION" == "wgpu" ]] && echo true || echo false)" >"$TMP/solver.log" 2>&1 &
 SOLVER_PID=$!
 
 for _ in $(seq 1 100); do
@@ -27,9 +30,10 @@ for _ in $(seq 1 100); do
 done
 curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null
 
-cat >"$TMP/request.json" <<'JSON'
+cat >"$TMP/request.json" <<JSON
 {
   "solver": "mcaptcha",
+  "implementation": "$CHALLENGE_IMPLEMENTATION",
   "challenge": {
     "config": {
       "string": "challenge-disasterer-mcaptcha-e2e",

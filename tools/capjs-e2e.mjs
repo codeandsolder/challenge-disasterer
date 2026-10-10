@@ -1,4 +1,5 @@
 import { pathToFileURL } from "node:url";
+const implementation = process.env.CHALLENGE_IMPLEMENTATION ?? "auto";
 import { resolve } from "node:path";
 
 const [capRoot, serviceUrl = "http://127.0.0.1:17428"] = process.argv.slice(2);
@@ -22,6 +23,7 @@ async function runCase(challengeCount, challengeDifficulty, challengeSize) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       solver: "capjs",
+      implementation,
       challenge: {
         challenge: issued.challenge,
         token: issued.token,
@@ -30,6 +32,7 @@ async function runCase(challengeCount, challengeDifficulty, challengeSize) {
   });
   const body = await response.json();
   if (!response.ok) throw new Error(`solver failed: ${JSON.stringify(body)}`);
+    if (body.implementation !== implementation) throw new Error(`requested ${implementation}, got ${body.implementation}`);
 
   const solutions = body.answer.solutions;
   if (!Array.isArray(solutions) || solutions.length !== challengeCount) {

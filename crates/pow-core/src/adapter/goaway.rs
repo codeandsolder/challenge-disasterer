@@ -31,7 +31,7 @@ impl GoAwayConfig {
 
     /// Estimate the workload of a GoAway "js-pow-sha256" PoW.
     pub fn estimated_workload(&self) -> u64 {
-        2u64.pow(self.difficulty.get().try_into().unwrap())
+        2u64.pow(self.difficulty.get().into())
     }
 
     /// Solve a GoAway "js-pow-sha256" PoW.

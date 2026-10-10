@@ -20,8 +20,9 @@ type challengeConfig struct {
 }
 
 type solveResponse struct {
-	SolveMS float64 `json:"solve_ms"`
-	Answer  struct {
+	SolveMS        float64 `json:"solve_ms"`
+	Implementation string  `json:"implementation"`
+	Answer         struct {
 		Token string `json:"token"`
 	} `json:"answer"`
 }
@@ -71,9 +72,14 @@ func runCase(runner *wasm.Runner, serviceURL, difficulty string) error {
 		return fmt.Errorf("official MakeChallenge: %w", err)
 	}
 
+	implementation := os.Getenv("CHALLENGE_IMPLEMENTATION")
+	if implementation == "" {
+		implementation = "auto"
+	}
 	payload, _ := json.Marshal(map[string]any{
-		"solver":    "goaway",
-		"challenge": config,
+		"solver":         "goaway",
+		"implementation": implementation,
+		"challenge":      config,
 	})
 	response, err := http.Post(serviceURL+"/solve", "application/json", bytes.NewReader(payload))
 	if err != nil {
@@ -90,6 +96,9 @@ func runCase(runner *wasm.Runner, serviceURL, difficulty string) error {
 	var solved solveResponse
 	if err := json.Unmarshal(body, &solved); err != nil {
 		return err
+	}
+	if solved.Implementation != implementation {
+		return fmt.Errorf("requested implementation %s, got %s", implementation, solved.Implementation)
 	}
 
 	verify := func(result []byte) (_interface.VerifyChallengeOutput, error) {

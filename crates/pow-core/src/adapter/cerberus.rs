@@ -71,7 +71,7 @@ impl ChallengeDescriptor {
 
     /// Return the estimated workload.
     pub fn estimated_workload(&self) -> u64 {
-        4u64.saturating_pow(self.difficulty.get().try_into().unwrap())
+        4u64.saturating_pow(self.difficulty.get().into())
     }
 
     /// Return the mask.

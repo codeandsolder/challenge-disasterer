@@ -115,14 +115,8 @@ impl Config {
         T: Serialize,
     {
         match self.calculate(pow, t) {
-            Ok(res) => {
-                return if pow.result == res.to_string() {
-                    true
-                } else {
-                    false
-                };
-            }
-            Err(_) => return false,
+            Ok(res) => pow.result == res.to_string(),
+            Err(_) => false,
         }
     }
 
@@ -132,8 +126,8 @@ impl Config {
         T: Serialize,
     {
         match pow.result.parse::<u128>() {
-            Ok(res) => return res >= get_difficulty(target_diff),
-            Err(_) => return false,
+            Ok(res) => res >= get_difficulty(target_diff),
+            Err(_) => false,
         }
     }
 }
@@ -144,7 +138,7 @@ pub mod dev {
     pub fn score(prefix_sha: Sha256, nonce: u64) -> u128 {
         first_bytes_as_u128(
             prefix_sha
-                .chain(&nonce.to_string()) //used to be: to_be_bytes() converts to network endian
+                .chain(nonce.to_string()) //used to be: to_be_bytes() converts to network endian
                 // chain() expexets something that can be converted to &[u8], String is fine
                 .finalize()
                 .as_slice(),
@@ -161,7 +155,7 @@ pub mod dev {
             .allow_trailing_bytes()
             .with_no_limit()
             .with_big_endian()
-            .deserialize(&inp)
+            .deserialize(inp)
             .unwrap()
     }
 }
@@ -228,7 +222,7 @@ mod test {
     }
 
     fn check_time(prev: u128, current: u128) -> bool {
-        if prev < current { true } else { false }
+        prev < current
     }
 
     #[test]

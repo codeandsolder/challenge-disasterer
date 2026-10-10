@@ -1,3 +1,64 @@
+macro_rules! impl_decimal_solver {
+    ([$single_block_solver:ty, $double_block_solver:ty] => $decimal_solver:ident) => {
+        /// Safe decimal nonce solver variant
+        pub enum $decimal_solver {
+            /// Single block solver variant
+            SingleBlock($single_block_solver),
+            /// Double block solver variant
+            DoubleBlock($double_block_solver),
+        }
+
+        impl From<SingleBlockMessage> for $decimal_solver {
+            fn from(message: SingleBlockMessage) -> Self {
+                Self::SingleBlock(SingleBlockSolver::from(message))
+            }
+        }
+
+        impl From<DoubleBlockMessage> for $decimal_solver {
+            fn from(message: DoubleBlockMessage) -> Self {
+                Self::DoubleBlock(DoubleBlockSolver::from(message))
+            }
+        }
+
+        impl From<DecimalMessage> for $decimal_solver {
+            fn from(message: DecimalMessage) -> Self {
+                match message {
+                    DecimalMessage::SingleBlock(message) => {
+                        Self::SingleBlock(<$single_block_solver>::from(message))
+                    }
+                    DecimalMessage::DoubleBlock(message) => {
+                        Self::DoubleBlock(<$double_block_solver>::from(message))
+                    }
+                }
+            }
+        }
+
+        impl crate::solver::Solver for $decimal_solver {
+            type Output = [u32; 8];
+            fn set_limit(&mut self, limit: u64) {
+                match self {
+                    Self::SingleBlock(solver) => solver.set_limit(limit),
+                    Self::DoubleBlock(solver) => solver.set_limit(limit),
+                }
+            }
+
+            fn get_attempted_nonces(&self) -> u64 {
+                match self {
+                    Self::SingleBlock(solver) => solver.get_attempted_nonces(),
+                    Self::DoubleBlock(solver) => solver.get_attempted_nonces(),
+                }
+            }
+
+            fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+                match self {
+                    Self::SingleBlock(solver) => solver.solve::<TYPE>(target, mask),
+                    Self::DoubleBlock(solver) => solver.solve::<TYPE>(target, mask),
+                }
+            }
+        }
+    };
+}
+
 /// AVX-512 solver
 #[cfg(target_arch = "x86_64")]
 pub mod avx512;
@@ -223,7 +284,7 @@ pub(crate) mod tests {
     ) {
         for phrase_len in 0..64 {
             let mut concatenated_prefix = b"abc".to_vec();
-            let phrase_str = String::from_iter(std::iter::repeat('a').take(phrase_len));
+            let phrase_str = String::from_iter(std::iter::repeat_n('a', phrase_len));
             concatenated_prefix.extend_from_slice(&bincode::serialize(&phrase_str).unwrap());
 
             let config = pow_sha256::Config {
@@ -376,7 +437,7 @@ pub(crate) mod tests {
                 let mut msg = Vec::from_iter(b"abc".iter().cloned().cycle().take(prefix_len));
                 let mut solver = factory(&msg, NonZeroU8::new(nonce_byte_count).unwrap());
                 const DIFFICULTY: u64 = 100_000;
-                let target = compute_target_mcaptcha(DIFFICULTY as u64);
+                let target = compute_target_mcaptcha(DIFFICULTY);
                 let (nonce, result) = solver
                     .solve::<SOLVE_TYPE_GT>(target, !0)
                     .expect("solver failed");
@@ -485,7 +546,7 @@ pub(crate) mod tests {
                 };
 
                 let (nonce, hash) = solver
-                    .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(0, mask as u64)
+                    .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(0, mask)
                     .unwrap();
                 let mut msg = test_seed[..seed_len].to_vec();
                 write!(&mut msg, "{}", nonce).unwrap();
@@ -518,7 +579,7 @@ pub(crate) mod tests {
                     nonce, seed_len
                 );
                 assert!(hit);
-                assert!(check_small(&ref_hash_bytes, df as usize));
+                assert!(check_small(ref_hash_bytes, df as usize));
             }
         }
     }
@@ -541,7 +602,7 @@ pub(crate) mod tests {
                 };
 
                 let (nonce, hash) = solver
-                    .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(0, mask as u64)
+                    .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(0, mask)
                     .unwrap();
                 let mut msg = seed_hash.as_bytes().to_vec();
                 msg.extend_from_slice(nonce.rotate_right(32).to_le_bytes().as_slice());
@@ -570,7 +631,7 @@ pub(crate) mod tests {
                 let hit = ((ref_hash[0] as u64) << 32 | (ref_hash[1] as u64)) & mask == 0;
                 assert_eq!(hash, ref_hash, "incorrect output: {}", nonce);
                 assert!(hit);
-                assert!(check_small(&ref_hash_bytes, df as usize));
+                assert!(check_small(ref_hash_bytes, df as usize));
             }
         }
     }
@@ -594,8 +655,8 @@ pub(crate) mod tests {
         assert!(result[0].leading_zeros() >= DIFFICULTY.get() as u32);
 
         let mut hasher = Sha256::default();
-        hasher.update(&test_prefix);
-        hasher.update(&nonce.to_be_bytes());
+        hasher.update(test_prefix);
+        hasher.update(nonce.to_be_bytes());
         let hash = hasher.finalize();
         assert!(u128::from_be_bytes(hash[..16].try_into().unwrap()) >= DIFFICULTY.get() as _);
 
@@ -633,7 +694,7 @@ pub(crate) mod tests {
 
     pub(crate) fn test_altcha_validator<
         S: Solver<Output = [u32; 8]>,
-        F: for<'a> FnMut(crate::message::AltchaMessage) -> Option<S>,
+        F: FnMut(crate::message::AltchaMessage) -> Option<S>,
     >(
         mut factory: F,
     ) {

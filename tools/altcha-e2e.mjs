@@ -1,4 +1,5 @@
 import { pathToFileURL } from "node:url";
+const implementation = process.env.CHALLENGE_IMPLEMENTATION ?? "auto";
 import { resolve } from "node:path";
 
 const [altchaRoot, serviceUrl = "http://127.0.0.1:17427"] = process.argv.slice(2);
@@ -24,10 +25,11 @@ async function runCase(algorithm, cost, deriveKey) {
   const response = await fetch(`${serviceUrl}/solve`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ solver: "altcha", challenge }),
+    body: JSON.stringify({ solver: "altcha", challenge, implementation }),
   });
   const body = await response.json();
   if (!response.ok) throw new Error(`${algorithm}: solver failed: ${JSON.stringify(body)}`);
+  if (body.implementation !== implementation) throw new Error(`${algorithm}: requested ${implementation}, got ${body.implementation}`);
 
   const solution = {
     counter: body.answer.counter,

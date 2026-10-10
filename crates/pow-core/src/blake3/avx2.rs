@@ -18,18 +18,6 @@ pub(crate) fn compress_mb8<const CONSTANT_WORD_COUNT: usize, const PATCH_1: usiz
 
 #[cfg(test)]
 #[inline(always)]
-fn g4(a: &mut __m256i, b: &mut __m256i, c: &mut __m256i, d: &mut __m256i, x: __m256i, y: __m256i) {
-    let mut aa: u32x8 = (*a).into();
-    let mut bb: u32x8 = (*b).into();
-    let mut cc: u32x8 = (*c).into();
-    let mut dd: u32x8 = (*d).into();
-    portable::g(&mut aa, &mut bb, &mut cc, &mut dd, x.into(), y.into());
-    *a = aa.into();
-    *b = bb.into();
-    *c = cc.into();
-    *d = dd.into();
-}
-
 #[cfg(target_feature = "avx2")]
 #[cfg(test)]
 mod tests {

@@ -613,8 +613,8 @@ impl BinaryMessage {
         );
         let mut prefix_state = crate::Align16(sha256::IV);
 
-        let mut chunks = salt.chunks_exact(64);
-        for block in &mut chunks {
+        let (chunks, remainder) = salt.as_chunks::<64>();
+        for block in chunks {
             sha256::digest_block(
                 &mut prefix_state,
                 &core::array::from_fn(|i| {
@@ -627,7 +627,6 @@ impl BinaryMessage {
                 }),
             );
         }
-        let remainder = chunks.remainder();
         let mut salt_residual = [0; 64];
         salt_residual[..remainder.len()].copy_from_slice(remainder);
         Self {
@@ -722,11 +721,11 @@ impl CerberusDecimalMessage {
         if salt.len() > 1000 {
             return None;
         }
-        let mut chunks = salt.chunks_exact(64);
+        let (chunks, remainder) = salt.as_chunks::<64>();
         let mut prefix_state = crate::Align16(blake3::IV);
         let mut flags = blake3::FLAG_CHUNK_START | blake3::FLAG_CHUNK_END | blake3::FLAG_ROOT;
 
-        for (i, block) in (&mut chunks).enumerate() {
+        for (i, block) in chunks.iter().enumerate() {
             let block = core::array::from_fn(|i| {
                 u32::from_le_bytes([
                     block[i * 4],
@@ -741,7 +740,6 @@ impl CerberusDecimalMessage {
             prefix_state.copy_from_slice(&output);
             flags &= !blake3::FLAG_CHUNK_START;
         }
-        let remainder = chunks.remainder();
         let mut salt_residual = crate::Align64([0; 64]);
         salt_residual.0[..remainder.len()].copy_from_slice(remainder);
         let mut ptr = remainder.len();
@@ -753,11 +751,11 @@ impl CerberusDecimalMessage {
             // not enough room for 9 digits, assume 64-bit server and pad generously
             let head_digit = (working_set % 8) as u8 + 1; // i64::MAX starts with 9 so we can only use 1-8 as head digit
             nonce_addend = head_digit as u64;
-            salt_residual.0[remainder.len()] = head_digit as u8 + b'0';
+            salt_residual.0[remainder.len()] = head_digit + b'0';
             working_set /= 8;
-            for x in (remainder.len() + 1)..64 {
+            for byte in salt_residual.0.iter_mut().skip(remainder.len() + 1) {
                 let digit = working_set % 10;
-                salt_residual.0[x] = digit as u8 + b'0';
+                *byte = digit as u8 + b'0';
                 nonce_addend *= 10;
                 nonce_addend += digit as u64;
                 working_set /= 10;
@@ -785,7 +783,7 @@ impl CerberusDecimalMessage {
         }
 
         let head_digit = (working_set % 9) as u8 + 1;
-        salt_residual[ptr] = head_digit as u8 + b'0';
+        salt_residual[ptr] = head_digit + b'0';
         nonce_addend *= 10;
         nonce_addend += head_digit as u64;
         working_set /= 9;
@@ -968,7 +966,6 @@ impl CapJSEmitter {
 
 #[derive(Debug, Clone)]
 /// A message in the altcha (v2) format
-
 pub struct AltchaMessage {
     /// the nonce. always 16 bytes
     pub nonce: [u8; 16],
@@ -988,9 +985,9 @@ impl From<crate::adapter::altcha::ChallengeDescriptor> for AltchaMessage {
         Self {
             nonce: descriptor.nonce.0,
             salt: descriptor.salt.0,
-            cost: descriptor.cost.into(),
+            cost: descriptor.cost,
             pbkdf2: descriptor.algorithm == crate::adapter::altcha::Algorithm::SHA256Pbkdf2,
-            key_length: descriptor.key_length.into(),
+            key_length: descriptor.key_length,
         }
     }
 }

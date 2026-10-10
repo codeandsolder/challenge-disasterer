@@ -67,7 +67,7 @@ impl Sm75Cuda {
         let (mask0, mask1) = difficulty_masks(difficulty);
         let batch_size = batch_size(difficulty);
         let mut base = 0_u64;
-        while base <= u64::from(u32::MAX) {
+        while u32::try_from(base).is_ok() {
             let remaining = u64::from(u32::MAX) + 1 - base;
             let batch = u64::from(batch_size).min(remaining) as u32;
             debug_assert_eq!(batch % WARP_SIZE, 0);

@@ -1,3 +1,6 @@
+#[macro_use]
+mod loop_macros;
+
 mod portable;
 
 #[cfg(target_arch = "x86_64")]
@@ -8,9 +11,6 @@ pub mod avx2;
 
 #[cfg(target_arch = "wasm32")]
 pub mod simd128;
-
-#[macro_use]
-mod loop_macros;
 
 /// Initial hash values for BLAKE3
 pub(crate) const IV: [u32; 8] = crate::sha256::IV;
@@ -251,9 +251,10 @@ mod tests {
 
             let count_chunks = msg.len().div_ceil(64);
             ctr = 0;
-            let mut chunks = msg.chunks_exact(64);
+            let (chunks, remainder) = msg.as_chunks::<64>();
+            assert!(remainder.is_empty());
             let mut output = [0u32; 8];
-            while let Some(chunk) = chunks.next() {
+            for chunk in chunks {
                 let block = core::array::from_fn(|i| {
                     u32::from_le_bytes(chunk[i * 4..i * 4 + 4].try_into().unwrap())
                 });

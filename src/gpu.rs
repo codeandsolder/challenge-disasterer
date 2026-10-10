@@ -301,7 +301,7 @@ fn shader_source() -> String {
         rounds.push_str(&format!("{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"));
     }
     format!(
-        r#"
+        r"
 struct InParams {{ s0:u32,s1:u32,s2:u32,s3:u32,s4:u32,s5:u32,s6:u32,s7:u32,base_lo:u32,base_hi:u32,bitlen:u32,mask0:u32,mask1:u32 }};
 struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }};
 @group(0) @binding(0) var<uniform> P:InParams;
@@ -322,7 +322,7 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>,@builtin(num_workgroups) n
   let nl=lo+stride;if(nl<lo){{hi=hi+1u;}}lo=nl;
  }}
 }}
-"#,
+",
         CANCEL_INTERVAL - 1
     )
 }

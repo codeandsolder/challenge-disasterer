@@ -229,10 +229,6 @@ impl crate::solver::Solver for DoubleBlockSolver {
     }
 }
 
-#[macro_use]
-#[path = "impl_decimal_solver.rs"]
-mod impl_decimal_solver;
-
 impl_decimal_solver!(
     [SingleBlockSolver, DoubleBlockSolver] => DecimalSolver
 );
@@ -383,17 +379,17 @@ impl crate::solver::Solver for BinarySolver {
         {
             let mut state = self.message.prefix_state;
             let nonce_bytes = &x.to_le_bytes()[..self.message.nonce_byte_count.get() as usize];
-            for i in 0..self.message.nonce_byte_count.get() as usize {
+            for (i, byte) in nonce_bytes.iter().enumerate() {
                 unsafe {
                     used_blocks
                         .as_mut_ptr()
                         .cast::<u8>()
                         .add(self.message.salt_residual_len + i)
-                        .write(nonce_bytes[i]);
+                        .write(*byte);
                 }
             }
 
-            sha2::compress256(&mut state, &used_blocks);
+            sha2::compress256(&mut state, used_blocks);
             self.attempted_nonces += 1;
 
             let cmp_fn = |x: u64, y: u64| {
@@ -553,7 +549,7 @@ impl AltchaSha256Solver {
         blocks[16..32].copy_from_slice(&self.message.nonce);
         blocks[32 + 4] = 0x80;
         blocks[60..].copy_from_slice(&((32u32 + 4) * 8).to_be_bytes());
-        let key_length = (self.message.key_length.get() as u32).min(32);
+        let key_length = self.message.key_length.get().min(32);
 
         for counter in 0u32.. {
             if self.attempted_nonces >= self.limit {
@@ -606,7 +602,7 @@ impl AltchaSha256Solver {
             pbkdf2::pbkdf2::<pbkdf2::hmac::Hmac<sha2::Sha256>>(
                 &password,
                 &self.message.salt,
-                self.message.cost.get() as u32,
+                self.message.cost.get(),
                 &mut buffer,
             )
             .unwrap();

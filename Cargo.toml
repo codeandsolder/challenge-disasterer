@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 
 [features]
 default = ["gpu"]
-gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "pow-buster/gpu"]
+gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "pow-buster/gpu", "pow-buster/compare-64bit"]
 
 [dependencies]
 anyhow = "1"
@@ -40,5 +40,5 @@ unsafe_code = "deny"
 all = { level = "deny", priority = -1 }
 
 [workspace]
-members = ["crates/pow-core"]
+members = ["crates/pow-core", "tools/solver-matrix"]
 resolver = "3"

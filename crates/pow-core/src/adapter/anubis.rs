@@ -57,7 +57,7 @@ impl ChallengeDescriptor {
         if self.rules.algorithm == "preact" {
             return 1u64;
         }
-        16u64.saturating_pow(self.rules.difficulty.try_into().unwrap())
+        16u64.saturating_pow(self.rules.difficulty.into())
     }
 
     /// Get the rules of an Anubis PoW.
@@ -146,7 +146,7 @@ pub struct AnubisRules {
 impl AnubisRules {
     /// If the instant is instantly or almost instantly solved and not worth task spawning.
     pub fn instant(&self) -> bool {
-        return self.algorithm == "preact" || self.difficulty < 4;
+        self.algorithm == "preact" || self.difficulty < 4
     }
 
     /// Get the algorithm of an Anubis PoW.

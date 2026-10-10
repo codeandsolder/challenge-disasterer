@@ -54,6 +54,13 @@ struct HashxGpuJob {
     result: oneshot::Sender<anyhow::Result<HashxGpuResult>>,
 }
 
+#[cfg(feature = "gpu")]
+struct ClassicGpuJob {
+    solver: String,
+    challenge: Value,
+    result: oneshot::Sender<anyhow::Result<classic_pow::Result>>,
+}
+
 pub struct AppState {
     config: Config,
     calibration: Calibration,
@@ -61,8 +68,11 @@ pub struct AppState {
     gpu_tx: Option<mpsc::Sender<GpuJob>>,
     #[cfg(feature = "gpu")]
     hashx_gpu_tx: Option<mpsc::Sender<HashxGpuJob>>,
+    #[cfg(feature = "gpu")]
+    classic_gpu_tx: Option<mpsc::Sender<ClassicGpuJob>>,
     gpu_operational: bool,
     hashx_gpu_operational: bool,
+    classic_gpu_operational: bool,
     hashx_gpu_implementations: Vec<&'static str>,
     gpu_queue_work: Arc<AtomicU64>,
     gpu_queue_depth: Arc<AtomicU64>,
@@ -221,6 +231,46 @@ impl AppState {
         #[cfg(not(feature = "gpu"))]
         let (hashx_gpu_operational, hashx_gpu_implementations) = (false, Vec::new());
 
+        #[cfg(feature = "gpu")]
+        let (classic_gpu_tx, classic_gpu_operational) = if config.gpu_enabled {
+            match pow_buster::gpu::GpuContext::create().await {
+                Ok(mut gpu) => {
+                    let adapter = gpu.adapter().to_owned();
+                    match gpu.warm_up().await {
+                        Ok(()) => {
+                            info!(adapter = %adapter, "classic protocol WGPU backend ready");
+                            let (tx, mut rx) = mpsc::channel::<ClassicGpuJob>(128);
+                            tokio::spawn(async move {
+                                while let Some(job) = rx.recv().await {
+                                    let result = classic_pow::solve_gpu(
+                                        &mut gpu,
+                                        &job.solver,
+                                        job.challenge,
+                                    )
+                                    .await;
+                                    let _ = job.result.send(result);
+                                }
+                            });
+                            (Some(tx), true)
+                        }
+                        Err(err) => {
+                            warn!(%err, "classic protocol WGPU warm-up failed");
+                            (None, false)
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!(%err, "classic protocol WGPU unavailable");
+                    (None, false)
+                }
+            }
+        } else {
+            (None, false)
+        };
+
+        #[cfg(not(feature = "gpu"))]
+        let classic_gpu_operational = false;
+
         let routing = config
             .routing_calibration
             .as_deref()
@@ -241,8 +291,11 @@ impl AppState {
             gpu_tx,
             #[cfg(feature = "gpu")]
             hashx_gpu_tx,
+            #[cfg(feature = "gpu")]
+            classic_gpu_tx,
             gpu_operational,
             hashx_gpu_operational,
+            classic_gpu_operational,
             hashx_gpu_implementations,
             gpu_queue_work: queue_work,
             gpu_queue_depth: queue_depth,
@@ -398,6 +451,7 @@ impl AppState {
         &self,
         solver: String,
         challenge: Value,
+        implementation: Option<String>,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
         let permit = self.cpu_slots.clone().acquire_owned().await?;
@@ -406,15 +460,49 @@ impl AppState {
         let response_solver = solver.clone();
         let result = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            classic_pow::solve(&solver, challenge)
+            classic_pow::solve(&solver, challenge, implementation.as_deref())
         })
         .await??;
         Ok(SolveResponse {
             solver: response_solver,
             backend: "cpu".to_owned(),
-            implementation: None,
+            implementation: Some(result.implementation),
             answer: result.answer,
             queue_ms,
+            solve_ms: result.solve_ms,
+            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    #[cfg(feature = "gpu")]
+    async fn run_classic_gpu(
+        &self,
+        solver: String,
+        challenge: Value,
+        queued_at: Instant,
+    ) -> anyhow::Result<SolveResponse> {
+        let tx = self
+            .classic_gpu_tx
+            .as_ref()
+            .context("classic protocol WGPU backend unavailable")?;
+        let (result_tx, result_rx) = oneshot::channel();
+        tx.send(ClassicGpuJob {
+            solver: solver.clone(),
+            challenge,
+            result: result_tx,
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("classic protocol WGPU worker unavailable"))?;
+        let started = Instant::now();
+        let result = result_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("classic protocol WGPU worker dropped result"))??;
+        Ok(SolveResponse {
+            solver,
+            backend: "gpu".to_owned(),
+            implementation: Some(result.implementation),
+            answer: result.answer,
+            queue_ms: started.duration_since(queued_at).as_secs_f64() * 1000.0,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
         })
@@ -512,7 +600,7 @@ impl AppState {
                         match self.run_hashx_jit(challenge.clone(), queued_at).await {
                             Ok(response) => return Ok(response),
                             Err(err) => {
-                                warn!(solver = %route.solver, %err, "calibrated local HashX route failed; trying next candidate")
+                                warn!(solver = %route.solver, %err, "calibrated local HashX route failed; trying next candidate");
                             }
                         }
                     }
@@ -530,7 +618,7 @@ impl AppState {
                             {
                                 Ok(response) => return Ok(response),
                                 Err(err) => {
-                                    warn!(solver = %route.solver, implementation = ?route.implementation, %err, "calibrated local HashX route failed; trying next candidate")
+                                    warn!(solver = %route.solver, implementation = ?route.implementation, %err, "calibrated local HashX route failed; trying next candidate");
                                 }
                             }
                         }
@@ -561,15 +649,15 @@ impl AppState {
                         match verified {
                             Ok(true) => return Ok(response),
                             Ok(false) => {
-                                warn!(provider = %route.provider, "external HashX solver returned invalid answer; trying next calibrated candidate")
+                                warn!(provider = %route.provider, "external HashX solver returned invalid answer; trying next calibrated candidate");
                             }
                             Err(err) => {
-                                warn!(provider = %route.provider, %err, "external HashX answer validation failed; trying next calibrated candidate")
+                                warn!(provider = %route.provider, %err, "external HashX answer validation failed; trying next calibrated candidate");
                             }
                         }
                     }
                     Err(err) => {
-                        warn!(provider = %route.provider, %err, "external HashX solver failed; trying next calibrated candidate")
+                        warn!(provider = %route.provider, %err, "external HashX solver failed; trying next calibrated candidate");
                     }
                 }
             }
@@ -598,7 +686,7 @@ impl AppState {
                     "anubis-cpu" => match self.run_cpu(challenge.clone(), queued_at).await {
                         Ok(response) => return Ok(response),
                         Err(err) => {
-                            warn!(solver = %route.solver, %err, "calibrated local Anubis route failed; trying next candidate")
+                            warn!(solver = %route.solver, %err, "calibrated local Anubis route failed; trying next candidate");
                         }
                     },
                     "anubis-gpu" =>
@@ -608,7 +696,7 @@ impl AppState {
                             match self.run_gpu_only(challenge.clone(), queued_at).await {
                                 Ok(response) => return Ok(response),
                                 Err(err) => {
-                                    warn!(solver = %route.solver, %err, "calibrated local Anubis route failed; trying next candidate")
+                                    warn!(solver = %route.solver, %err, "calibrated local Anubis route failed; trying next candidate");
                                 }
                             }
                         }
@@ -634,15 +722,14 @@ impl AppState {
                     Ok(response) => {
                         let verified =
                             serde_json::from_value::<anubis::Answer>(response.answer.clone())
-                                .map(|answer| anubis::verify(&challenge, &answer))
-                                .unwrap_or(false);
+                                .is_ok_and(|answer| anubis::verify(&challenge, &answer));
                         if verified {
                             return Ok(response);
                         }
                         warn!(provider = %route.provider, "external Anubis solver returned invalid answer; trying next calibrated candidate");
                     }
                     Err(err) => {
-                        warn!(provider = %route.provider, %err, "external Anubis solver failed; trying next calibrated candidate")
+                        warn!(provider = %route.provider, %err, "external Anubis solver failed; trying next calibrated candidate");
                     }
                 }
             }
@@ -837,17 +924,37 @@ pub async fn solve(
             (difficulty, result)
         }
         "cerberus" | "goaway" | "capjs" | "mcaptcha" | "altcha" => {
-            if request.algorithm.is_some() || request.implementation.is_some() {
+            if request.algorithm.is_some() {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
-                        error: "algorithm/implementation overrides are not used by this protocol solver".to_owned(),
+                        error: "algorithm override is not used by this protocol solver".to_owned(),
                     }),
                 ));
             }
-            let result = state
-                .run_classic(request.solver.clone(), request.challenge, queued_at)
-                .await;
+            let result = if request.implementation.as_deref() == Some("wgpu") {
+                #[cfg(feature = "gpu")]
+                {
+                    state
+                        .run_classic_gpu(request.solver.clone(), request.challenge, queued_at)
+                        .await
+                }
+                #[cfg(not(feature = "gpu"))]
+                {
+                    Err(anyhow::anyhow!(
+                        "classic protocol WGPU backend not compiled"
+                    ))
+                }
+            } else {
+                state
+                    .run_classic(
+                        request.solver.clone(),
+                        request.challenge,
+                        request.implementation.clone(),
+                        queued_at,
+                    )
+                    .await
+            };
             (0, result)
         }
         other => {
@@ -974,13 +1081,35 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             implementations: Vec::new(),
         },
     ];
-    for (solver, algorithms, difficulty_max) in [
-        ("cerberus", &["blake3"] as &'static [&'static str], 64),
-        ("goaway", &["sha256"], 32),
-        ("capjs", &["sha256"], 64),
-        ("mcaptcha", &["sha256"], 64),
-        ("altcha", &["sha256", "pbkdf2-sha256"], 64),
+    for (solver, algorithms, difficulty_max, sha_ni) in [
+        (
+            "cerberus",
+            &["blake3"] as &'static [&'static str],
+            64,
+            false,
+        ),
+        ("goaway", &["sha256"], 32, true),
+        ("capjs", &["sha256"], 64, true),
+        ("mcaptcha", &["sha256"], 64, true),
+        ("altcha", &["sha256", "pbkdf2-sha256"], 64, false),
     ] {
+        let mut implementations = vec!["auto", "safe"];
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            if std::arch::is_x86_feature_detected!("avx2") {
+                implementations.push("avx2");
+            }
+            if sha_ni && std::arch::is_x86_feature_detected!("sha") {
+                implementations.push("sha-ni");
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx512f") {
+            implementations.push("avx512");
+        }
+        if state.classic_gpu_operational {
+            implementations.push("wgpu");
+        }
         available_solvers.push(solver);
         solver_capabilities.push(SolverCapability {
             solver,
@@ -988,7 +1117,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max,
             router: false,
-            implementations: Vec::new(),
+            implementations,
         });
     }
     if state.gpu_operational {

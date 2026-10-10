@@ -1,4 +1,5 @@
 const [serviceUrl = "http://127.0.0.1:17427", cerberusUrl = "http://127.0.0.1:17429/protected.iso"] = process.argv.slice(2);
+const implementation = process.env.CHALLENGE_IMPLEMENTATION ?? "auto";
 
 function attr(html, name) {
   const match = html.match(new RegExp(`${name}="([^"]*)"`));
@@ -28,10 +29,11 @@ async function issueAndSolve() {
   const response = await fetch(`${serviceUrl}/solve`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ solver: "cerberus", challenge }),
+    body: JSON.stringify({ solver: "cerberus", challenge, implementation }),
   });
   const solved = await response.json();
   if (!response.ok) throw new Error(`solver failed: ${JSON.stringify(solved)}`);
+  if (solved.implementation !== implementation) throw new Error(`requested ${implementation}, got ${solved.implementation}`);
   return { challenge, meta, solved };
 }
 

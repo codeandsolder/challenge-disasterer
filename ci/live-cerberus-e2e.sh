@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 SOLVER_PORT="${CERBERUS_SOLVER_PORT:-17427}"
+CHALLENGE_IMPLEMENTATION="${CHALLENGE_IMPLEMENTATION:-auto}"
 CERBERUS_PORT="${CERBERUS_E2E_PORT:-17429}"
 CERBERUS_REF="${CERBERUS_REF:-dist}"
 
@@ -66,9 +67,11 @@ EOF
 CADDY_PID=$!
 
 cd "$ROOT"
-cargo build --locked --release --no-default-features
+BUILD_ARGS=(--locked --release)
+if [[ "$CHALLENGE_IMPLEMENTATION" != "wgpu" ]]; then BUILD_ARGS+=(--no-default-features); fi
+cargo build "${BUILD_ARGS[@]}"
 "$ROOT/target/release/challenge-disasterer" \
-  --listen "127.0.0.1:$SOLVER_PORT" --gpu=false >"$TMP/solver.log" 2>&1 &
+  --listen "127.0.0.1:$SOLVER_PORT" --gpu="$([[ "$CHALLENGE_IMPLEMENTATION" == "wgpu" ]] && echo true || echo false)" >"$TMP/solver.log" 2>&1 &
 SOLVER_PID=$!
 
 for _ in $(seq 1 200); do

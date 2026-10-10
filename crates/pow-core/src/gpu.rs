@@ -403,7 +403,7 @@ impl GpuContext {
         difficulty: NonZeroU8,
         max_hashes: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
-        if prefix.len() % 64 != 0 {
+        if !prefix.len().is_multiple_of(64) {
             return Err(GpuError::new(format!(
                 "GPU Anubis solver requires a block-aligned prefix, got {} bytes",
                 prefix.len()
@@ -1307,8 +1307,8 @@ impl CerberusSolver {
                 crate::message::CerberusMessage::Decimal(message) => {
                     p[0] = 0;
                     p[8..16].copy_from_slice(&message.prefix_state.0);
-                    for (i, chunk) in message.salt_residual.chunks_exact(4).enumerate() {
-                        p[16 + i] = u32::from_le_bytes(chunk.try_into().unwrap());
+                    for (i, chunk) in message.salt_residual.as_chunks::<4>().0.iter().enumerate() {
+                        p[16 + i] = u32::from_le_bytes(*chunk);
                     }
                     p[32] = message.salt_residual_len as u32;
                     p[33] = message.salt_residual_len as u32 + 9;
@@ -1505,7 +1505,7 @@ fn expected_work<const TYPE: u8>(target: u64, mask: u64) -> u64 {
 
 fn midstate(prefix: &[u8]) -> [u32; 8] {
     let mut state = crate::sha256::IV;
-    for block in prefix.chunks_exact(64) {
+    for block in prefix.as_chunks::<64>().0 {
         let words = core::array::from_fn(|i| {
             u32::from_be_bytes(block[i * 4..i * 4 + 4].try_into().unwrap())
         });
@@ -2028,11 +2028,15 @@ fn verify_binary<const TYPE: u8>(
     flat[..16].copy_from_slice(&blocks[0]);
     flat[16..].copy_from_slice(&blocks[1]);
     let bytes = nonce.to_le_bytes();
-    for j in 0..usize::from(message.nonce_byte_count.get()) {
+    for (j, byte) in bytes
+        .iter()
+        .enumerate()
+        .take(usize::from(message.nonce_byte_count.get()))
+    {
         let pos = message.salt_residual_len + j;
         let wi = pos / 4;
         let sh = (3 - (pos % 4)) * 8;
-        flat[wi] = (flat[wi] & !(0xffu32 << sh)) | (u32::from(bytes[j]) << sh);
+        flat[wi] = (flat[wi] & !(0xffu32 << sh)) | (u32::from(*byte) << sh);
     }
     let mut state = message.prefix_state.0;
     crate::sha256::digest_block(&mut state, flat[..16].try_into().unwrap());
