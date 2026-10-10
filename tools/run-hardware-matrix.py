@@ -85,6 +85,7 @@ def main() -> int:
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--correctness-limit", type=int, default=50_000_000)
     parser.add_argument("--throughput-limit", type=int, default=1_048_576)
+    parser.add_argument("--cpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--live", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
@@ -94,6 +95,8 @@ def main() -> int:
         help="Run authoritative classic-protocol verifiers against every CPU implementation available on this host.",
     )
     args = parser.parse_args()
+    if not args.cpu and not args.gpu:
+        parser.error("at least one of --cpu or --gpu must be enabled")
     if args.gpu and args.throughput_limit % ANUBIS_GPU_QUANTUM != 0:
         parser.error(
             f"--throughput-limit must be a multiple of {ANUBIS_GPU_QUANTUM} when --gpu is enabled"
@@ -139,12 +142,13 @@ def main() -> int:
                     "--samples", str(args.samples), "--limit", str(limit),
                     "--mode", phase, "--commit", meta["git_sha"],
                 ]
-                cpu = run(
-                    [*common, "--cpu", "true", "--gpu", "false"],
-                    stdout=matrix_stdout,
-                    stderr=matrix_stderr,
-                )
-                statuses[f"solver-{phase}-cpu"] = cpu.returncode
+                if args.cpu:
+                    cpu = run(
+                        [*common, "--cpu", "true", "--gpu", "false"],
+                        stdout=matrix_stdout,
+                        stderr=matrix_stderr,
+                    )
+                    statuses[f"solver-{phase}-cpu"] = cpu.returncode
                 for index, adapter in enumerate(gpu_adapters):
                     env = os.environ.copy()
                     env["WGPU_ADAPTER_NAME"] = adapter
