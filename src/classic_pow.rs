@@ -60,7 +60,7 @@ pub fn solve(kind: &str, challenge: Value, implementation: Option<&str>) -> anyh
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Implementation {
+pub(crate) enum Implementation {
     Auto,
     Safe,
     Avx2,
@@ -69,7 +69,7 @@ enum Implementation {
 }
 
 impl Implementation {
-    fn parse(value: &str) -> anyhow::Result<Self> {
+    pub(crate) fn parse(value: &str) -> anyhow::Result<Self> {
         match value {
             "auto" => Ok(Self::Auto),
             "safe" => Ok(Self::Safe),
@@ -80,7 +80,7 @@ impl Implementation {
         }
     }
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Auto => "auto",
             Self::Safe => "safe",
@@ -91,7 +91,7 @@ impl Implementation {
     }
 }
 
-trait DynPow {
+pub(crate) trait DynPow {
     fn set_limit(&mut self, limit: u64);
     fn attempted(&self) -> u64;
     fn solve(&mut self, target: u64, ty: u8, mask: u64) -> Option<(u64, [u32; 8])>;
@@ -160,6 +160,32 @@ fn decimal_solver(
         ))),
         #[allow(unreachable_patterns)]
         _ => bail!("implementation unavailable on this target"),
+    }
+}
+
+pub(crate) fn binary_solver(
+    implementation: Implementation,
+    message: pow_buster::message::BinaryMessage,
+) -> anyhow::Result<Box<dyn DynPow>> {
+    ensure!(
+        !matches!(implementation, Implementation::ShaNi),
+        "binary SHA-256 has no SHA-NI backend"
+    );
+    require_x86_feature(implementation)?;
+    match implementation {
+        Implementation::Auto => Ok(Box::new(pow_buster::BinarySolver::from(message))),
+        Implementation::Safe => Ok(Box::new(pow_buster::solver::safe::BinarySolver::from(
+            message,
+        ))),
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        Implementation::Avx2 => Ok(Box::new(pow_buster::solver::avx2::BinarySolver::from(
+            message,
+        ))),
+        #[cfg(target_arch = "x86_64")]
+        Implementation::Avx512 => Ok(Box::new(pow_buster::solver::avx512::BinarySolver::from(
+            message,
+        ))),
+        _ => bail!("implementation unavailable for binary SHA-256"),
     }
 }
 

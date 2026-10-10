@@ -85,6 +85,12 @@ def main() -> int:
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--correctness-limit", type=int, default=50_000_000)
     parser.add_argument("--throughput-limit", type=int, default=1_048_576)
+    parser.add_argument(
+        "--argon2-limit",
+        type=int,
+        default=64,
+        help="Exact Argon2id candidate budget per deterministic matrix sample.",
+    )
     parser.add_argument("--cpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--live", action=argparse.BooleanOptionalAction, default=True)
@@ -140,6 +146,7 @@ def main() -> int:
                 common = [
                     str(matrix_bin),
                     "--samples", str(args.samples), "--limit", str(limit),
+                    "--argon2-limit", str(args.argon2_limit),
                     "--mode", phase, "--commit", meta["git_sha"],
                 ]
                 if args.cpu:

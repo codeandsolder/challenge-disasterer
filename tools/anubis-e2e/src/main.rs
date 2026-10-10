@@ -553,6 +553,22 @@ fn fallback_capabilities(stats: &SolverStats) -> Vec<SolverCapability> {
                 router: solver == "anubis",
                 implementations: Vec::new(),
             },
+            "anubis-sha256" => SolverCapability {
+                solver: solver.clone(),
+                algorithms: vec!["sha256".to_owned()],
+                difficulty_min: 1,
+                difficulty_max: 64,
+                router: false,
+                implementations: Vec::new(),
+            },
+            "anubis-argon2id" => SolverCapability {
+                solver: solver.clone(),
+                algorithms: vec!["argon2id".to_owned()],
+                difficulty_min: 1,
+                difficulty_max: 64,
+                router: false,
+                implementations: Vec::new(),
+            },
             "anubis-hashx-jit" => SolverCapability {
                 solver: solver.clone(),
                 algorithms: vec!["hashx".to_owned()],
@@ -600,7 +616,7 @@ fn calibration_candidates(
     for capability in capabilities {
         let cpu_only = matches!(
             capability.solver.as_str(),
-            "anubis-cpu" | "anubis-hashx-jit"
+            "anubis-cpu" | "anubis-sha256" | "anubis-argon2id" | "anubis-hashx-jit"
         );
         if cpu_only && !include_cpu_only {
             continue;
@@ -609,6 +625,20 @@ fn calibration_candidates(
             capability.solver.as_str(),
             "anubis" | "anubis-gpu" | "anubis-hashx" | "anubis-hashx-auto"
         );
+        if !capability.router && capability.implementations.len() == 1 {
+            out.push(CalibrationCandidate {
+                provider: provider.to_owned(),
+                base_url: base_url.to_owned(),
+                adapter: uses_adapter.then(|| selected_adapter.clone()).flatten(),
+                solver: capability.solver,
+                implementation: capability.implementations.into_iter().next(),
+                algorithms: capability.algorithms,
+                difficulty_min: capability.difficulty_min,
+                difficulty_max: capability.difficulty_max,
+                router: false,
+            });
+            continue;
+        }
         let router = capability.router || !capability.implementations.is_empty();
         out.push(CalibrationCandidate {
             provider: provider.to_owned(),
@@ -1452,6 +1482,12 @@ fn fuzz_matrix(gpu: bool, implementation: Option<&str>) -> anyhow::Result<Vec<Ca
     for difficulty in [1_u32, 2, 4, 8, 12, 16] {
         specs.push(format!("hashx:anubis-hashx-jit:{difficulty}").parse()?);
     }
+    for difficulty in [1_u32, 4, 8] {
+        specs.push(format!("sha256:anubis-sha256:{difficulty}").parse()?);
+    }
+    for difficulty in [1_u32, 2] {
+        specs.push(format!("argon2id:anubis-argon2id:{difficulty}").parse()?);
+    }
     if gpu {
         for difficulty in [1_u32, 2, 3, 4, 5] {
             specs.push(format!("fast:anubis-gpu:{difficulty}").parse()?);
@@ -1471,6 +1507,8 @@ fn benchmark_matrix(gpu: bool, implementation: Option<&str>) -> anyhow::Result<V
     let mut specs = vec![
         "fast:anubis-cpu:5".parse()?,
         "hashx:anubis-hashx-jit:18".parse()?,
+        "sha256:anubis-sha256:18".parse()?,
+        "argon2id:anubis-argon2id:4".parse()?,
     ];
     if gpu {
         specs.push("fast:anubis-gpu:5".parse()?);
@@ -2028,6 +2066,29 @@ mod tests {
         assert_eq!(stats.available_solvers, Vec::<String>::new());
         assert_eq!(stats.solver_capabilities.len(), 1);
         assert_eq!(stats.solver_capabilities[0].solver, "remote-hashx");
+        Ok(())
+    }
+
+    #[test]
+    fn singleton_implementation_calibrates_once_as_concrete_backend() -> anyhow::Result<()> {
+        let stats: SolverStats = serde_json::from_value(json!({
+            "solver_capabilities": [{
+                "solver": "anubis-argon2id",
+                "algorithms": ["argon2id"],
+                "difficulty_min": 1,
+                "difficulty_max": 64,
+                "router": false,
+                "implementations": ["argon2-0.5.3"]
+            }]
+        }))?;
+        let candidates = calibration_candidates("local", "http://127.0.0.1:1", &stats, true);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].solver, "anubis-argon2id");
+        assert_eq!(
+            candidates[0].implementation.as_deref(),
+            Some("argon2-0.5.3")
+        );
+        assert!(!candidates[0].router);
         Ok(())
     }
 
