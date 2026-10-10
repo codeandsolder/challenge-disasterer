@@ -230,13 +230,22 @@ def main() -> int:
                 continue
 
             cases = classic_implementations(name, args.all_implementations, args.gpu)
-            for implementation in cases:
-                suffix = f"{name}-{implementation}"
-                env = os.environ.copy()
-                env["CHALLENGE_IMPLEMENTATION"] = implementation
-                with (out / f"live-{suffix}.log").open("wb") as log:
-                    result = run([str(script)], env=env, stdout=log, stderr=subprocess.STDOUT)
-                statuses[f"live-{suffix}"] = result.returncode
+            upstream_variants = (
+                (("current", None), ("v0.4.6", "v0.4.6"), ("v0.4.5", "v0.4.5"))
+                if name == "cerberus"
+                else (("current", None),)
+            )
+            for upstream_label, upstream_ref in upstream_variants:
+                for implementation in cases:
+                    variant_suffix = "" if upstream_label == "current" else f"-{upstream_label}"
+                    suffix = f"{name}{variant_suffix}-{implementation}"
+                    env = os.environ.copy()
+                    env["CHALLENGE_IMPLEMENTATION"] = implementation
+                    if upstream_ref is not None:
+                        env["CERBERUS_REF"] = upstream_ref
+                    with (out / f"live-{suffix}.log").open("wb") as log:
+                        result = run([str(script)], env=env, stdout=log, stderr=subprocess.STDOUT)
+                    statuses[f"live-{suffix}"] = result.returncode
 
     manifest = {"metadata": meta, "statuses": statuses}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
