@@ -56,6 +56,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
+      - name: Test CPU-only solver matrix build
+        run: |
+          cargo test --locked -p challenge-disasterer-solver-matrix --no-default-features
+          cargo clippy --locked -p challenge-disasterer-solver-matrix --no-default-features -- -D warnings
+
       - name: Compile AVX-512-only test paths
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-feature=+avx512f -D warnings

@@ -3,7 +3,9 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result};
+#[cfg(feature = "gpu")]
+use anyhow::Context as _;
+use anyhow::Result;
 use argon2::Argon2;
 use clap::{Parser, ValueEnum};
 use pow_core::{
@@ -756,6 +758,7 @@ fn run_cpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "gpu")]
 async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
     let mut gpu = pow_core::gpu::GpuContext::create()
         .await
@@ -1080,6 +1083,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "gpu")]
 #[allow(clippy::too_many_arguments)]
 fn emit_gpu(
     meta: &Meta,
@@ -1143,11 +1147,16 @@ fn emit_gpu(
 async fn main() -> Result<()> {
     let args = Args::parse();
     if args.list_gpu_adapters {
-        println!(
-            "{}",
-            serde_json::to_string(&pow_core::gpu::GpuContext::adapter_names().await)?
-        );
-        return Ok(());
+        #[cfg(feature = "gpu")]
+        {
+            println!(
+                "{}",
+                serde_json::to_string(&pow_core::gpu::GpuContext::adapter_names().await)?
+            );
+            return Ok(());
+        }
+        #[cfg(not(feature = "gpu"))]
+        anyhow::bail!("GPU support is not compiled into this solver-matrix binary");
     }
     let meta = Meta {
         host: read_trimmed("/proc/sys/kernel/hostname"),
@@ -1158,7 +1167,10 @@ async fn main() -> Result<()> {
         run_cpu_matrix(&meta, &args)?;
     }
     if args.gpu {
+        #[cfg(feature = "gpu")]
         run_gpu_matrix(&meta, &args).await?;
+        #[cfg(not(feature = "gpu"))]
+        anyhow::bail!("--gpu true requires the solver-matrix gpu feature");
     }
     Ok(())
 }
