@@ -277,6 +277,7 @@ def main() -> int:
                             *anubis_args,
                             "--browser-reference", str(browser_reference_pending).lower(),
                             "--solver-gpu",
+                            "--gpu-only",
                             "--exercise-all-gpu-adapters",
                             "false",
                         ]

@@ -137,6 +137,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     solver_gpu: bool,
 
+    /// Restrict fuzz/benchmark matrices to GPU-backed routes. Requires `--solver-gpu`.
+    #[arg(long, default_value_t = false)]
+    gpu_only: bool,
+
     /// Require `HashX` GPU fuzz/benchmark cases to use this concrete implementation.
     #[arg(long)]
     expect_hashx_gpu_implementation: Option<String>,
@@ -1498,29 +1502,41 @@ fn expected_hashes(case: &CaseSpec) -> f64 {
     }
 }
 
-fn fuzz_matrix(gpu: bool, implementation: Option<&str>) -> anyhow::Result<Vec<CaseSpec>> {
+fn fuzz_matrix(
+    gpu: bool,
+    implementation: Option<&str>,
+    gpu_only: bool,
+) -> anyhow::Result<Vec<CaseSpec>> {
+    ensure!(
+        !gpu_only || gpu,
+        "GPU-only fuzzing requires the GPU backend"
+    );
     let mut specs = Vec::new();
-    for difficulty in [1_u32, 2, 3, 4, 5] {
-        specs.push(format!("fast:anubis-cpu:{difficulty}").parse()?);
+    if !gpu_only {
+        for difficulty in [1_u32, 2, 3, 4, 5] {
+            specs.push(format!("fast:anubis-cpu:{difficulty}").parse()?);
+        }
+        for difficulty in [1_u32, 3] {
+            specs.push(format!("slow:anubis-cpu:{difficulty}").parse()?);
+        }
+        for difficulty in [1_u32, 2, 4, 8, 12, 16] {
+            specs.push(format!("hashx:anubis-hashx-jit:{difficulty}").parse()?);
+        }
+        for difficulty in [1_u32, 4, 8] {
+            specs.push(format!("sha256:anubis-sha256:{difficulty}").parse()?);
+        }
+        for difficulty in [1_u32, 2] {
+            specs.push(format!("argon2id:anubis-argon2id:{difficulty}").parse()?);
+        }
     }
     for difficulty in [2_u32, 4] {
         specs.push(format!("fast:anubis:{difficulty}").parse()?);
     }
     for difficulty in [1_u32, 3] {
-        specs.push(format!("slow:anubis-cpu:{difficulty}").parse()?);
         specs.push(format!("slow:anubis:{difficulty}").parse()?);
-    }
-    for difficulty in [1_u32, 2, 4, 8, 12, 16] {
-        specs.push(format!("hashx:anubis-hashx-jit:{difficulty}").parse()?);
     }
     for difficulty in [1_u32, 8, 16] {
         specs.push(format!("hashx:anubis-hashx-auto:{difficulty}").parse()?);
-    }
-    for difficulty in [1_u32, 4, 8] {
-        specs.push(format!("sha256:anubis-sha256:{difficulty}").parse()?);
-    }
-    for difficulty in [1_u32, 2] {
-        specs.push(format!("argon2id:anubis-argon2id:{difficulty}").parse()?);
     }
     if gpu {
         for difficulty in [1_u32, 2, 3, 4, 5] {
@@ -1537,13 +1553,25 @@ fn fuzz_matrix(gpu: bool, implementation: Option<&str>) -> anyhow::Result<Vec<Ca
     Ok(specs)
 }
 
-fn benchmark_matrix(gpu: bool, implementation: Option<&str>) -> anyhow::Result<Vec<CaseSpec>> {
-    let mut specs = vec![
-        "fast:anubis-cpu:5".parse()?,
-        "hashx:anubis-hashx-jit:18".parse()?,
-        "sha256:anubis-sha256:18".parse()?,
-        "argon2id:anubis-argon2id:4".parse()?,
-    ];
+fn benchmark_matrix(
+    gpu: bool,
+    implementation: Option<&str>,
+    gpu_only: bool,
+) -> anyhow::Result<Vec<CaseSpec>> {
+    ensure!(
+        !gpu_only || gpu,
+        "GPU-only benchmarking requires the GPU backend"
+    );
+    let mut specs = if gpu_only {
+        Vec::new()
+    } else {
+        vec![
+            "fast:anubis-cpu:5".parse()?,
+            "hashx:anubis-hashx-jit:18".parse()?,
+            "sha256:anubis-sha256:18".parse()?,
+            "argon2id:anubis-argon2id:4".parse()?,
+        ]
+    };
     if gpu {
         specs.push("fast:anubis-gpu:5".parse()?);
         let suffix = implementation.map_or_else(String::new, |value| format!(":{value}"));
@@ -1738,8 +1766,13 @@ fn run(
         cases.extend(fuzz_matrix(
             args.solver_gpu,
             args.expect_hashx_gpu_implementation.as_deref(),
+            args.gpu_only,
         )?);
-        cases.extend(wasm_implementation_fuzz_matrix(&solver_stats)?);
+        let mut wasm_cases = wasm_implementation_fuzz_matrix(&solver_stats)?;
+        if args.gpu_only {
+            wasm_cases.retain(|case| case.implementation.as_deref() == Some("wgpu"));
+        }
+        cases.extend(wasm_cases);
     }
     if !implementations.is_empty() {
         cases.extend(implementation_fuzz_matrix(&implementations)?);
@@ -1751,6 +1784,7 @@ fn run(
         benchmark_matrix(
             args.solver_gpu,
             args.expect_hashx_gpu_implementation.as_deref(),
+            args.gpu_only,
         )?
     } else {
         Vec::new()
@@ -1760,7 +1794,7 @@ fn run(
     } else {
         Vec::new()
     };
-    let browser_cases = if args.benchmark && args.browser_reference {
+    let browser_cases = if args.benchmark && args.browser_reference && !args.gpu_only {
         browser_benchmark_matrix()?
     } else {
         Vec::new()
@@ -1985,6 +2019,10 @@ fn run(
 
 fn main() -> anyhow::Result<()> {
     let mut args = Args::parse();
+    ensure!(
+        !args.gpu_only || args.solver_gpu,
+        "--gpu-only requires --solver-gpu"
+    );
     if args.calibration_output.is_some() {
         args.calibrate_routing = true;
     }
@@ -2044,7 +2082,7 @@ mod tests {
 
     #[test]
     fn fuzz_matrix_covers_anubis_router_algorithms() -> anyhow::Result<()> {
-        let matrix = fuzz_matrix(false, None)?;
+        let matrix = fuzz_matrix(false, None, false)?;
         assert!(
             matrix
                 .iter()
@@ -2061,7 +2099,7 @@ mod tests {
     #[test]
     fn fuzz_matrix_covers_hashx_auto_router() -> anyhow::Result<()> {
         for gpu in [false, true] {
-            let matrix = fuzz_matrix(gpu, None)?;
+            let matrix = fuzz_matrix(gpu, None, false)?;
             let difficulties = matrix
                 .iter()
                 .filter(|case| case.solver == "anubis-hashx-auto")
@@ -2073,10 +2111,38 @@ mod tests {
     }
 
     #[test]
+    fn gpu_only_matrices_exclude_cpu_only_work() -> anyhow::Result<()> {
+        let fuzz = fuzz_matrix(true, None, true)?;
+        assert!(fuzz.iter().any(|case| case.solver == "anubis"));
+        assert!(fuzz.iter().any(|case| case.solver == "anubis-gpu"));
+        assert!(fuzz.iter().any(|case| case.solver == "anubis-hashx-auto"));
+        assert!(fuzz.iter().any(|case| case.solver == "anubis-hashx"));
+        assert!(!fuzz.iter().any(|case| case.solver == "anubis-cpu"));
+        assert!(!fuzz.iter().any(|case| case.solver == "anubis-hashx-jit"));
+        assert!(!fuzz.iter().any(|case| case.solver == "anubis-argon2id"));
+
+        let benchmark = benchmark_matrix(true, None, true)?;
+        assert!(benchmark.iter().any(|case| case.solver == "anubis-gpu"));
+        assert!(benchmark.iter().any(|case| case.solver == "anubis-hashx"));
+        assert!(!benchmark.iter().any(|case| case.solver == "anubis-cpu"));
+        assert!(
+            !benchmark
+                .iter()
+                .any(|case| case.solver == "anubis-hashx-jit")
+        );
+        assert!(
+            !benchmark
+                .iter()
+                .any(|case| case.solver == "anubis-argon2id")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn gpu_matrices_propagate_required_implementation() -> anyhow::Result<()> {
         let expected = "vulkan-extmul-persistent";
-        let fuzz = fuzz_matrix(true, Some(expected))?;
-        let bench = benchmark_matrix(true, Some(expected))?;
+        let fuzz = fuzz_matrix(true, Some(expected), false)?;
+        let bench = benchmark_matrix(true, Some(expected), false)?;
         assert!(
             fuzz.iter()
                 .filter(|case| case.solver == "anubis-hashx")
