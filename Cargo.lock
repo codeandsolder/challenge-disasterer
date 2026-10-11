@@ -408,6 +408,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "challenge-disasterer-wasm-simd128-bench"
+version = "0.1.0"
+dependencies = [
+ "challenge-pow-core",
+ "serde_json",
+]
+
+[[package]]
 name = "challenge-pow-core"
 version = "0.1.0"
 dependencies = [
