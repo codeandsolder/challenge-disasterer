@@ -88,12 +88,16 @@ def main() -> int:
         anubis_benchmarks.extend({"host": host, **item} for item in benches)
         baseline_rows.extend({"host": host, **item} for item in baselines)
         for row in rows:
-            key = (row["phase"], row["protocol"], row["variant"], row["implementation"], row["accelerator"], host, row.get("gpu_adapter"))
+            work_budget = row["attempted_work"] if row["phase"] == "throughput" else None
+            key = (
+                row["phase"], row["protocol"], row["variant"], row["implementation"],
+                row["accelerator"], host, row.get("gpu_adapter"), work_budget,
+            )
             grouped[key].append(row)
 
     summary = []
     for key, rows in sorted(grouped.items()):
-        phase, protocol, variant, implementation, accelerator, host, gpu_adapter = key
+        phase, protocol, variant, implementation, accelerator, host, gpu_adapter, work_budget = key
         valid = all(row["target_condition_ok"] for row in rows)
         summary.append({
             "phase": phase,
@@ -103,6 +107,7 @@ def main() -> int:
             "accelerator": accelerator,
             "host": host,
             "gpu_adapter": gpu_adapter,
+            "work_budget": work_budget,
             "samples": len(rows),
             "all_target_conditions_valid": valid,
             "median_solve_ms": statistics.median(row["solve_ns"] for row in rows) / 1e6,
@@ -128,9 +133,17 @@ def main() -> int:
     current_auto = {(r["host"], r["protocol"], r["variant"]): r for r in baseline_summary if r["baseline"] == "current"}
     for key, legacy in sorted(legacy_by_key.items()):
         host, protocol, variant = key
-        candidates = [r for r in summary if r["host"] == host and r["phase"] == "throughput" and r["protocol"] == protocol and r["variant"] == variant and r["accelerator"] == "cpu"]
-        best = max(candidates, key=lambda r: r["median_work_per_second"], default=None)
         matched = current_auto.get(key)
+        candidates = [
+            r for r in summary
+            if r["host"] == host
+            and r["phase"] == "throughput"
+            and r["protocol"] == protocol
+            and r["variant"] == variant
+            and r["accelerator"] == "cpu"
+            and r["median_attempted_work"] == legacy["median_attempted_work"]
+        ]
+        best = max(candidates, key=lambda r: r["median_work_per_second"], default=None)
         if matched is not None and matched["median_attempted_work"] != legacy["median_attempted_work"]:
             raise ValueError(
                 f"historical exact-work mismatch for {host}/{protocol}/{variant}: "
@@ -141,8 +154,8 @@ def main() -> int:
             "legacy_baseline": legacy["baseline"],
             "legacy_median_work_per_second": legacy["median_work_per_second"],
             "matched_current_auto_exact_work_ratio": None if matched is None else matched["median_work_per_second"] / legacy["median_work_per_second"],
-            "best_current_implementation": None if best is None else best["implementation"],
-            "best_current_normalized_work_rate_ratio": None if best is None else best["median_work_per_second"] / legacy["median_work_per_second"],
+            "best_current_exact_work_implementation": None if best is None else best["implementation"],
+            "best_current_exact_work_ratio": None if best is None else best["median_work_per_second"] / legacy["median_work_per_second"],
         })
 
     print(json.dumps({

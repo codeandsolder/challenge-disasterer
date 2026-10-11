@@ -56,7 +56,9 @@ macro_rules! timed_current {
         let t = Instant::now();
         let found = solver.solve::<{ $ty }>(
             if $ty == current::solver::SOLVE_TYPE_GT {
-                u64::MAX
+                u64::MAX - 1
+            } else if $ty == current::solver::SOLVE_TYPE_LT {
+                1
             } else {
                 0
             },
@@ -88,7 +90,9 @@ macro_rules! timed_legacy {
         let t = Instant::now();
         let found = solver.solve::<{ $ty }>(
             if $ty == legacy::solver::SOLVE_TYPE_GT {
-                u64::MAX
+                u64::MAX - 1
+            } else if $ty == legacy::solver::SOLVE_TYPE_LT {
+                1
             } else {
                 0
             },

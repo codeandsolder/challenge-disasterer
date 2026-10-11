@@ -13,7 +13,7 @@ use pow_core::{
         AltchaMessage, BinaryMessage, CapJSEmitter, CerberusBinaryMessage, CerberusDecimalMessage,
         CerberusMessage, DecimalMessage, GoAwayMessage,
     },
-    solver::{SOLVE_TYPE_GT, SOLVE_TYPE_MASK, Solver, SolverDyn},
+    solver::{SOLVE_TYPE_GT, SOLVE_TYPE_LT, SOLVE_TYPE_MASK, Solver, SolverDyn},
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -44,7 +44,7 @@ struct Args {
     /// Print usable GPU adapter names as JSON and exit.
     #[arg(long, default_value_t = false)]
     list_gpu_adapters: bool,
-    /// Matrix phase. Throughput uses an effectively impossible 64-bit target and must exhaust exactly `limit` candidates.
+    /// Matrix phase. Throughput preserves each comparison type with a ~2^-64 hit condition and must exhaust exactly `limit` candidates.
     #[arg(long, value_enum, default_value_t = Mode::Correctness)]
     mode: Mode,
     /// Git commit reported in JSONL metadata.
@@ -158,9 +158,15 @@ fn phase_name(mode: Mode) -> &'static str {
 fn benchmark_condition(mode: Mode, target: u64, mask: u64, ty: u8) -> (u64, u64, u8) {
     match mode {
         Mode::Correctness => (target, mask, ty),
-        // 2^-64 hit probability per candidate. This is a fixed-work benchmark target,
-        // not a protocol difficulty; accidental hits are treated as benchmark failures.
-        Mode::Throughput => (0, u64::MAX, SOLVE_TYPE_MASK),
+        // Keep the protocol's comparison path while making a hit about 2^-64 likely per
+        // candidate. Using GT with u64::MAX is provably impossible and can let LTO erase
+        // hash work; changing every case to MASK benchmarks a different hot path.
+        Mode::Throughput => match ty {
+            SOLVE_TYPE_GT => (u64::MAX - 1, u64::MAX, SOLVE_TYPE_GT),
+            SOLVE_TYPE_LT => (1, u64::MAX, SOLVE_TYPE_LT),
+            SOLVE_TYPE_MASK => (0, u64::MAX, SOLVE_TYPE_MASK),
+            _ => (target, mask, ty),
+        },
     }
 }
 
@@ -1155,4 +1161,25 @@ async fn main() -> Result<()> {
         run_gpu_matrix(&meta, &args).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn throughput_condition_preserves_comparison_type() {
+        assert_eq!(
+            benchmark_condition(Mode::Throughput, 123, 456, SOLVE_TYPE_GT),
+            (u64::MAX - 1, u64::MAX, SOLVE_TYPE_GT)
+        );
+        assert_eq!(
+            benchmark_condition(Mode::Throughput, 123, 456, SOLVE_TYPE_LT),
+            (1, u64::MAX, SOLVE_TYPE_LT)
+        );
+        assert_eq!(
+            benchmark_condition(Mode::Throughput, 123, 456, SOLVE_TYPE_MASK),
+            (0, u64::MAX, SOLVE_TYPE_MASK)
+        );
+    }
 }
