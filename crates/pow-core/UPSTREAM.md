@@ -37,3 +37,13 @@ under `tools/preexisting-baseline` pins the original upstream ancestor
 `eternal-flame-AD/pow-buster@d359adb3a692ba6be27fc5c1d5efdbbd7439434d`.
 It is intentionally a separate Cargo workspace so the historical git dependency
 never becomes a runtime or workspace dependency of `challenge-disasterer`.
+
+Validation coverage after consolidation includes every retained solver backend. Native
+x86 implementations are exercised by the deterministic hardware matrix according to
+host capabilities (safe, AVX2, SHA-NI, AVX-512, plus runtime auto-dispatch), and GPU
+implementations are covered on real adapters. The WebAssembly SIMD128 backend is
+compiled and run separately under `wasm32-wasip1` with `+simd128`; its full unit-test
+suite is executed in WASI and `tools/wasm-simd128-bench` records fixed-work throughput
+for the single-block, double-block, decimal, go-away, and both Cerberus solver paths.
+This restores the SIMD128 validation intent that existed in the pre-consolidation
+`pow-buster-imp` CI without retaining its standalone server/client/browser packaging.

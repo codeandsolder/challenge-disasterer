@@ -91,7 +91,7 @@ impl SingleBlockSolver {
         let lane_id_1_word_idx = (self.message.digit_index + 1) / 4;
         let target = target & mask;
 
-        for i in (self.message.digit_index as usize..).take(9) {
+        for i in (self.message.digit_index..).take(9) {
             let message = decompose_blocks_mut(&mut self.message.message);
             message[SWAP_DWORD_BYTE_ORDER[i]] = b'0';
         }
@@ -347,8 +347,8 @@ impl crate::solver::Solver for DoubleBlockSolver {
         crate::sha256::sha2_arx::<0>(&mut partial_state, &self.message.message[..13]);
 
         let mut terminal_message_schedule = Align16([0; 64]);
-        terminal_message_schedule[14] = ((self.message.message_length as u64 * 8) >> 32) as u32;
-        terminal_message_schedule[15] = (self.message.message_length as u64 * 8) as u32;
+        terminal_message_schedule[14] = ((self.message.message_length * 8) >> 32) as u32;
+        terminal_message_schedule[15] = (self.message.message_length * 8) as u32;
         crate::sha256::do_message_schedule_k_w(&mut terminal_message_schedule);
 
         for prefix_set_index in 0..((100 - 10) / 4) {
@@ -465,9 +465,9 @@ impl crate::solver::Solver for DoubleBlockSolver {
 
                         let mut terminal_message_without_constants = [0; 16];
                         terminal_message_without_constants[14] =
-                            ((self.message.message_length as u64 * 8) >> 32) as u32;
+                            ((self.message.message_length * 8) >> 32) as u32;
                         terminal_message_without_constants[15] =
-                            (self.message.message_length as u64 * 8) as u32;
+                            (self.message.message_length * 8) as u32;
                         crate::sha256::digest_block(
                             &mut final_sha_state,
                             &terminal_message_without_constants,
@@ -914,7 +914,7 @@ impl crate::solver::Solver for CerberusSolver {
         if let Some(nonce) = self.solve_nonce_only::<TYPE>(target, mask) {
             match &self.message {
                 CerberusMessage::Decimal(message) => {
-                    let mut output_state = *message.prefix_state;
+                    let output_state = *message.prefix_state;
                     let mut msg = message.salt_residual;
 
                     let mut nonce_copy = nonce;
@@ -923,7 +923,7 @@ impl crate::solver::Solver for CerberusSolver {
                         nonce_copy /= 10;
                     }
 
-                    let mut msg = core::array::from_fn(|i| {
+                    let msg = core::array::from_fn(|i| {
                         u32::from_le_bytes([
                             msg[i * 4],
                             msg[i * 4 + 1],
@@ -933,8 +933,8 @@ impl crate::solver::Solver for CerberusSolver {
                     });
 
                     let hash = crate::blake3::compress8(
-                        &mut output_state,
-                        &mut msg,
+                        &output_state,
+                        &msg,
                         0,
                         message.salt_residual_len as u32 + 9,
                         message.flags,
