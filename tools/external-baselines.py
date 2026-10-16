@@ -61,9 +61,9 @@ def ensure_checkout(name: str) -> Path:
     dst = CACHE / "src" / name
     if not (dst / ".git").is_dir():
         dst.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dst)], check=True)
-    subprocess.run(["git", "-C", str(dst), "fetch", "--depth", "1", "origin", rev], check=True)
-    subprocess.run(["git", "-C", str(dst), "checkout", "--detach", "--force", rev], check=True)
+        subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dst)], check=True, stdout=sys.stderr)
+    subprocess.run(["git", "-C", str(dst), "fetch", "--depth", "1", "origin", rev], check=True, stdout=sys.stderr)
+    subprocess.run(["git", "-C", str(dst), "checkout", "--detach", "--force", rev], check=True, stdout=sys.stderr)
     actual = subprocess.check_output(["git", "-C", str(dst), "rev-parse", "HEAD"], text=True).strip()
     if actual != rev:
         raise RuntimeError(f"{name}: expected {rev}, got {actual}")
@@ -92,8 +92,8 @@ def emit(*, baseline: str, protocol: str, variant: str, implementation: str,
 def build_hashx(src: Path) -> Path:
     build = CACHE / "build" / "hashx"
     build.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["cmake", "-S", str(src), "-B", str(build), "-DCMAKE_BUILD_TYPE=Release"], check=True)
-    subprocess.run(["cmake", "--build", str(build), "--config", "Release", "-j"], check=True)
+    subprocess.run(["cmake", "-S", str(src), "-B", str(build), "-DCMAKE_BUILD_TYPE=Release"], check=True, stdout=sys.stderr)
+    subprocess.run(["cmake", "--build", str(build), "--config", "Release", "-j"], check=True, stdout=sys.stderr)
     return build / "hashx-bench"
 
 
@@ -172,18 +172,47 @@ int main(int argc, char **argv) {
 """
 
 
+def x86_64_microarch_level() -> str | None:
+    if os.uname().machine not in {"x86_64", "amd64"}:
+        return None
+    flags = set()
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("flags"):
+                flags.update(line.split(":", 1)[1].split())
+                break
+    except OSError:
+        pass
+    if "avx512f" in flags:
+        return "x86-64-v4"
+    if "avx2" in flags:
+        return "x86-64-v3"
+    return "x86-64-v2"
+
+
 def build_argon2(src: Path) -> Path:
     build = CACHE / "build" / "argon2"
     build.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["make", "-C", str(src), "-j", "libargon2.a"], check=True)
+    opttarget = x86_64_microarch_level()
+    make_env = os.environ.copy()
+    make_args = ["make", "-C", str(src)]
+    if opttarget is not None:
+        make_args.append(f"OPTTARGET={opttarget}")
+    # The source selection (ref.c vs opt.c) is decided at make parse time, so
+    # clean before rebuilding with a possibly different deterministic target.
+    subprocess.run(make_args + ["clean"], check=True, stdout=sys.stderr, env=make_env)
+    subprocess.run(make_args + ["-j", "libargon2.a"], check=True, stdout=sys.stderr, env=make_env)
     adapter = build / "argon2-fixed.c"
     adapter.write_text(ARGON2_ADAPTER)
     binary = build / "argon2-fixed"
-    subprocess.run([
-        os.environ.get("CC", "cc"), "-O3", "-march=native",
+    cc_args = [os.environ.get("CC", "cc"), "-O3"]
+    if opttarget is not None:
+        cc_args.append(f"-march={opttarget}")
+    cc_args.extend([
         "-I", str(src / "include"), str(adapter), str(src / "libargon2.a"),
         "-pthread", "-o", str(binary),
-    ], check=True)
+    ])
+    subprocess.run(cc_args, check=True, stdout=sys.stderr)
     return binary
 
 
