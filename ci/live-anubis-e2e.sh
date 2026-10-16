@@ -39,7 +39,7 @@ for arg in "$@"; do
     break
   fi
 done
-solver_build=(cargo build --locked --manifest-path "${root}/Cargo.toml")
+solver_build=(cargo build --locked --release --manifest-path "${root}/Cargo.toml")
 if [[ "$solver_gpu" != 1 ]]; then
   solver_build+=(--no-default-features)
 fi
@@ -48,6 +48,6 @@ cargo build --locked --manifest-path "${root}/tools/anubis-e2e/Cargo.toml"
 
 "${root}/target/debug/challenge-disasterer-anubis-e2e" \
   --anubis-bin "${anubis_bin}" \
-  --solver-bin "${root}/target/debug/challenge-disasterer" \
+  --solver-bin "${root}/target/release/challenge-disasterer" \
   --case fast:anubis:2 \
   "$@"
