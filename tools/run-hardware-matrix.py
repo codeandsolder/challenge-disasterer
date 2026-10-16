@@ -103,6 +103,7 @@ def main() -> int:
     parser.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--live", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--preexisting-baseline", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--external-baselines", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--preexisting-limit",
         type=int,
@@ -143,6 +144,7 @@ def main() -> int:
         "gpu": args.gpu,
         "live": args.live,
         "preexisting_baseline": args.preexisting_baseline,
+        "external_baselines": args.external_baselines,
         "preexisting_limit": args.preexisting_limit,
         "browser_reference": args.browser_reference,
         "haphash_debian_live": args.haphash_debian_live,
@@ -248,6 +250,22 @@ def main() -> int:
             with baseline_out.open("wb") as stdout, baseline_err.open("wb") as stderr:
                 result = run([str(baseline_bin), "--samples", str(args.samples), "--limit", str(args.preexisting_limit)], stdout=stdout, stderr=stderr)
             statuses["preexisting-baseline"] = result.returncode
+
+    if args.external_baselines:
+        external_out = out / "external-baselines.jsonl"
+        external_err = out / "external-baselines.stderr.log"
+        external_cmd = [
+            "uv", "run", str(ROOT / "tools" / "external-baselines.py"),
+            "--samples", str(args.samples),
+            "--hashx-limit", str(args.throughput_limit),
+            "--argon2-limit", str(args.argon2_limit),
+            "--opencl-limit", str(args.throughput_limit),
+            "--cpu" if args.cpu else "--no-cpu",
+            "--gpu" if args.gpu else "--no-gpu",
+        ]
+        with external_out.open("wb") as stdout, external_err.open("wb") as stderr:
+            result = run(external_cmd, stdout=stdout, stderr=stderr)
+        statuses["external-baselines"] = result.returncode
 
     if args.live:
         for name in LIVE:
