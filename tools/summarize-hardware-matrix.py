@@ -68,7 +68,11 @@ def load(run: Path):
     baseline_path = run / "preexisting-baseline.jsonl"
     if baseline_path.is_file():
         baselines = [json.loads(line) for line in baseline_path.read_text().splitlines() if line.strip()]
-    return meta, rows, paired, benches, baselines
+    external = []
+    external_path = run / "external-baselines.jsonl"
+    if external_path.is_file():
+        external = [json.loads(line) for line in external_path.read_text().splitlines() if line.strip()]
+    return meta, rows, paired, benches, baselines, external
 
 
 def main() -> int:
@@ -80,13 +84,15 @@ def main() -> int:
     paired_hashx = []
     anubis_benchmarks = []
     baseline_rows = []
+    external_rows = []
     for run in args.runs:
-        meta, rows, paired, benches, baselines = load(run)
+        meta, rows, paired, benches, baselines, external = load(run)
         host = meta["hostname"]
         metas[host] = meta
         paired_hashx.extend({"host": host, **item} for item in paired)
         anubis_benchmarks.extend({"host": host, **item} for item in benches)
         baseline_rows.extend({"host": host, **item} for item in baselines)
+        external_rows.extend({"host": host, **item} for item in external)
         for row in rows:
             work_budget = row["attempted_work"] if row["phase"] == "throughput" else None
             key = (
@@ -128,6 +134,21 @@ def main() -> int:
             "median_attempted_work": statistics.median(row["attempted_work"] for row in rows),
         })
 
+    external_grouped = defaultdict(list)
+    for row in external_rows:
+        external_grouped[(row["host"], row["baseline"], row["protocol"], row["variant"], row["implementation"], row["accelerator"], row.get("gpu_adapter"), row["comparison_scope"])].append(row)
+    external_summary = []
+    for key, rows in sorted(external_grouped.items(), key=lambda item: str(item[0])):
+        host, baseline, protocol, variant, implementation, accelerator, gpu_adapter, scope = key
+        external_summary.append({
+            "host": host, "baseline": baseline, "protocol": protocol, "variant": variant,
+            "implementation": implementation, "accelerator": accelerator, "gpu_adapter": gpu_adapter,
+            "comparison_scope": scope, "samples": len(rows),
+            "median_work_per_second": statistics.median(row["work_per_second"] for row in rows),
+            "median_solve_ms": statistics.median(row["solve_ns"] for row in rows) / 1e6,
+            "median_attempted_work": statistics.median(row["attempted_work"] for row in rows),
+        })
+
     comparisons = []
     legacy_by_key = {(r["host"], r["protocol"], r["variant"]): r for r in baseline_summary if r["baseline"] != "current"}
     current_auto = {(r["host"], r["protocol"], r["variant"]): r for r in baseline_summary if r["baseline"] == "current"}
@@ -163,6 +184,7 @@ def main() -> int:
         "results": summary,
         "preexisting_baselines": baseline_summary,
         "preexisting_comparison": comparisons,
+        "external_baselines": external_summary,
         "paired_hashx": paired_hashx,
         "anubis_benchmarks": anubis_benchmarks,
     }, indent=2))
