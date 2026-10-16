@@ -355,7 +355,13 @@ impl AppState {
         implementation: Option<String>,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
-        let permit = self.cpu_slots.clone().acquire_owned().await?;
+        let worker_count = if solver == "anubis-argon2id" {
+            self.config.cpu_workers
+        } else {
+            1
+        };
+        let permits = u32::try_from(worker_count).context("too many CPU workers")?;
+        let permit = self.cpu_slots.clone().acquire_many_owned(permits).await?;
         let started = Instant::now();
         let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
         let response_solver = solver.clone();
@@ -364,7 +370,7 @@ impl AppState {
             match solver.as_str() {
                 "anubis-sha256" => anubis_wasm::solve_sha256(&challenge, implementation.as_deref()),
                 "anubis-argon2id" => {
-                    anubis_wasm::solve_argon2id(&challenge, implementation.as_deref())
+                    anubis_wasm::solve_argon2id(&challenge, implementation.as_deref(), worker_count)
                 }
                 _ => anyhow::bail!("unsupported Anubis WASM solver: {solver}"),
             }

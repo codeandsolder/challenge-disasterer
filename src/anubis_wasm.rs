@@ -1,7 +1,15 @@
-use std::{num::NonZeroU8, time::Instant};
+use std::{
+    num::NonZeroU8,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    thread,
+    time::Instant,
+};
 
 use anyhow::{Context, ensure};
-use argon2::Argon2;
+use argon2::{Argon2, Block};
 use pow_buster::message::BinaryMessage;
 use pow_buster::solver::SOLVE_TYPE_MASK;
 use serde::{Deserialize, Serialize};
@@ -78,6 +86,25 @@ fn sha256_hash(data: &[u8], nonce: u32) -> [u8; 32] {
         nonce.to_be_bytes()
     });
     hasher.finalize().into()
+}
+
+fn argon2id_hash_with_memory(
+    data: &[u8],
+    nonce: u32,
+    argon2: &Argon2<'_>,
+    memory: &mut [Block],
+) -> anyhow::Result<[u8; 32]> {
+    let nonce = u64::from(nonce);
+    let salt = if use_little_endian_nonce(data) {
+        nonce.to_le_bytes()
+    } else {
+        nonce.to_be_bytes()
+    };
+    let mut result = [0_u8; 32];
+    argon2
+        .hash_password_into_with_memory(data, &salt, &mut result, memory)
+        .map_err(|err| anyhow::anyhow!("Argon2id hash failed: {err}"))?;
+    Ok(result)
 }
 
 fn argon2id_hash(data: &[u8], nonce: u32) -> anyhow::Result<[u8; 32]> {
@@ -196,35 +223,86 @@ pub async fn solve_sha256_gpu(
 pub fn solve_argon2id(
     challenge: &Challenge,
     implementation: Option<&str>,
+    worker_count: usize,
 ) -> anyhow::Result<Result> {
     challenge.validate()?;
+    ensure!(
+        worker_count > 0,
+        "Argon2id worker count must be greater than zero"
+    );
     ensure!(
         implementation.is_none() || implementation == Some("argon2-0.5.3"),
         "unsupported Argon2id implementation: {}",
         implementation.unwrap_or_default()
     );
     let data = challenge.bytes()?;
+    let stride = u64::try_from(worker_count).context("Argon2id worker count overflow")?;
+    let best_nonce = AtomicU64::new(SEARCH_SPACE);
+    let winner = Mutex::new(None::<(u32, [u8; 32])>);
     let started = Instant::now();
-    for nonce in 0_u32..=u32::MAX {
-        let hash = argon2id_hash(&data, nonce)?;
-        if has_leading_zero_bits(&hash, challenge.difficulty) {
-            let answer = Answer {
-                nonce: nonce.to_string(),
-                hash: hex::encode(hash),
-            };
-            ensure!(
-                verify_argon2id(challenge, &answer),
-                "Argon2id solver returned an invalid Anubis proof"
-            );
-            return Ok(Result {
-                answer,
-                solve_ms: started.elapsed().as_secs_f64() * 1000.0,
-                implementation: "argon2-0.5.3".to_owned(),
-            });
-        }
-    }
 
-    anyhow::bail!("Anubis Argon2id search exhausted u32 nonce space")
+    thread::scope(|scope| -> anyhow::Result<()> {
+        let mut handles = Vec::with_capacity(worker_count);
+        for worker in 0..worker_count {
+            let best_nonce = &best_nonce;
+            let winner = &winner;
+            let data = &data;
+            handles.push(scope.spawn(move || -> anyhow::Result<()> {
+                let argon2 = Argon2::default();
+                let mut memory = vec![Block::default(); argon2.params().block_count()];
+                let mut nonce = u64::try_from(worker).context("Argon2id worker index overflow")?;
+
+                while nonce < SEARCH_SPACE && nonce < best_nonce.load(Ordering::Acquire) {
+                    let protocol_nonce = u32::try_from(nonce).context("Argon2id nonce overflow")?;
+                    let hash =
+                        argon2id_hash_with_memory(data, protocol_nonce, &argon2, &mut memory)?;
+                    if has_leading_zero_bits(&hash, challenge.difficulty) {
+                        let previous = best_nonce.fetch_min(nonce, Ordering::AcqRel);
+                        if nonce < previous {
+                            let mut guard = winner
+                                .lock()
+                                .map_err(|_| anyhow::anyhow!("Argon2id winner lock poisoned"))?;
+                            let should_replace = match guard.as_ref() {
+                                Some((current, _)) => protocol_nonce < *current,
+                                None => true,
+                            };
+                            if should_replace {
+                                *guard = Some((protocol_nonce, hash));
+                            }
+                        }
+                        break;
+                    }
+                    nonce = nonce.checked_add(stride).unwrap_or(SEARCH_SPACE);
+                }
+                Ok(())
+            }));
+        }
+
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("Argon2id worker panicked"))??;
+        }
+        Ok(())
+    })?;
+
+    let (nonce, hash) = winner
+        .into_inner()
+        .map_err(|_| anyhow::anyhow!("Argon2id winner lock poisoned"))?
+        .context("Anubis Argon2id search exhausted u32 nonce space")?;
+    let answer = Answer {
+        nonce: nonce.to_string(),
+        hash: hex::encode(hash),
+    };
+    ensure!(
+        verify_argon2id(challenge, &answer),
+        "Argon2id solver returned an invalid Anubis proof"
+    );
+    Ok(Result {
+        answer,
+        solve_ms: started.elapsed().as_secs_f64() * 1000.0,
+        implementation: "argon2-0.5.3".to_owned(),
+    })
 }
 
 #[cfg(test)]
@@ -257,7 +335,33 @@ mod tests {
             data: "0011223344556677".to_owned(),
             difficulty: 1,
         };
-        let result = solve_argon2id(&challenge, None).unwrap();
+        let result = solve_argon2id(&challenge, None, 1).unwrap();
         assert!(verify_argon2id(&challenge, &result.answer));
+    }
+
+    #[test]
+    fn argon2id_reused_memory_matches_fresh_hashes() {
+        let data = hex::decode("0011223344556680").unwrap();
+        let argon2 = Argon2::default();
+        let mut memory = vec![Block::default(); argon2.params().block_count()];
+        for nonce in [0, 1, 2, 17] {
+            assert_eq!(
+                argon2id_hash_with_memory(&data, nonce, &argon2, &mut memory).unwrap(),
+                argon2id_hash(&data, nonce).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn argon2id_parallel_search_preserves_lowest_nonce() {
+        let challenge = Challenge {
+            data: "0011223344556677".to_owned(),
+            difficulty: 3,
+        };
+        let serial = solve_argon2id(&challenge, None, 1).unwrap();
+        let parallel = solve_argon2id(&challenge, None, 4).unwrap();
+        assert_eq!(parallel.answer.nonce, serial.answer.nonce);
+        assert_eq!(parallel.answer.hash, serial.answer.hash);
+        assert!(verify_argon2id(&challenge, &parallel.answer));
     }
 }
