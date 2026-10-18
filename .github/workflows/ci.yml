@@ -18,6 +18,7 @@ jobs:
       - name: Set up Rust
         run: |
           rustup toolchain install nightly-2026-10-08 --profile minimal --component clippy,rustfmt
+          rustup toolchain install 1.85.0 --profile minimal
           rustup target add wasm32-wasip1 --toolchain nightly-2026-10-08
 
       - name: Set up Node for WASI SIMD128 tests
@@ -27,6 +28,25 @@ jobs:
 
       - name: Format
         run: cargo fmt --check
+
+      - name: Validate vendored Argon2
+        run: |
+          cargo test --manifest-path crates/argon2-fast/Cargo.toml --all-features
+          cargo clippy --manifest-path crates/argon2-fast/Cargo.toml --lib --all-features -- -D warnings
+          cargo fmt --manifest-path crates/argon2-fast/Cargo.toml -- --check
+
+      - name: Validate vendored Argon2 soft fallback
+        env:
+          CARGO_TARGET_DIR: target/argon2-soft
+          RUSTFLAGS: --cfg argon2_backend="soft"
+        run: cargo test --manifest-path crates/argon2-fast/Cargo.toml --all-features
+
+      - name: Check vendored Argon2 MSRV
+        env:
+          CARGO_TARGET_DIR: target/argon2-msrv
+        run: |
+          rm -f crates/argon2-fast/Cargo.lock
+          cargo +1.85.0 check --manifest-path crates/argon2-fast/Cargo.toml --all-features
 
       - name: Test
         run: cargo test --locked --workspace --all-features
