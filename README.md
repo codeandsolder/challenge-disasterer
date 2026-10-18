@@ -43,7 +43,7 @@ Response:
 - Without a routing-calibration file, the historical SHA policy remains: a compatible operational GPU is preferred and CPU is the fallback. HashX auto similarly prefers its GPU family when available and otherwise uses the upstream CPU JIT.
 - With `--routing-calibration <report.json>`, the automatic `anubis` and `anubis-hashx-auto` endpoints choose the fastest compatible **concrete** calibrated route for the requested algorithm, difficulty, and nearest calibrated batch size. Local GPU rows are usable only on the adapter they were measured on; CPU and configured external providers remain eligible.
 - Explicit endpoints (`anubis-cpu`, `anubis-gpu`, `anubis-sha256`, `anubis-argon2id`, `anubis-hashx`, `anubis-hashx-jit`) retain force semantics and bypass the cross-family calibrated router.
-- CPU concurrency is bounded by `--cpu-workers`.
+- CPU concurrency is bounded by `--cpu-workers`. Argon2id search fanout can be overridden with `--argon2-workers`; by default it is capped at the smaller of the configured CPU budget, available logical CPUs, and detected physical cores so SMT does not oversubscribe the memory-hard search.
 - Both available backends are calibrated at startup. `/stats` bases the new-request ETA on the active backend; GPU ETA includes expected work already queued or executing.
 
 The Anubis GPU kernel uses a SHA-256 midstate, fixed-width octal-as-decimal nonces, fully unrolled rounds, 64×128 workgroups, and cooperative cancellation every 16 hashes.

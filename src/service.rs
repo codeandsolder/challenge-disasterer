@@ -32,6 +32,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct Config {
     pub cpu_workers: usize,
+    pub argon2_workers: usize,
     pub cpu_calibration_hashes: u64,
     #[cfg(feature = "gpu")]
     pub gpu_calibration_hashes: u64,
@@ -152,6 +153,10 @@ impl AppState {
         anyhow::ensure!(
             config.cpu_workers > 0,
             "cpu_workers must be greater than zero"
+        );
+        anyhow::ensure!(
+            config.argon2_workers > 0 && config.argon2_workers <= config.cpu_workers,
+            "argon2_workers must be in 1..=cpu_workers"
         );
 
         let cpu_hashes_per_second = tokio::task::spawn_blocking({
@@ -356,7 +361,7 @@ impl AppState {
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
         let worker_count = if solver == "anubis-argon2id" {
-            self.config.cpu_workers
+            self.config.argon2_workers
         } else {
             1
         };
@@ -1150,6 +1155,7 @@ pub struct StatsResponse {
 #[derive(Serialize)]
 pub struct StatsConfig {
     cpu_workers: usize,
+    argon2_workers: usize,
     gpu_compiled: bool,
     gpu_enabled: bool,
     gpu_operational: bool,
@@ -1311,6 +1317,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         calibration: state.calibration.clone(),
         config: StatsConfig {
             cpu_workers: state.config.cpu_workers,
+            argon2_workers: state.config.argon2_workers,
             gpu_compiled: cfg!(feature = "gpu"),
             gpu_enabled: state.config.gpu_enabled,
             gpu_operational: state.gpu_operational,

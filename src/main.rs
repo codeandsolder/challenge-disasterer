@@ -37,6 +37,10 @@ struct Args {
     listen: SocketAddr,
     #[arg(long, default_value_t = 4)]
     cpu_workers: usize,
+    /// Workers used by one Argon2id search. Defaults to the smaller of the
+    /// configured CPU worker budget and the machine's available physical cores.
+    #[arg(long)]
+    argon2_workers: Option<usize>,
     #[arg(long, default_value_t = 2_000_000)]
     cpu_calibration_hashes: u64,
     #[cfg(feature = "gpu")]
@@ -60,6 +64,17 @@ struct Args {
     routing_calibration: Option<std::path::PathBuf>,
 }
 
+fn default_argon2_workers(
+    cpu_workers: usize,
+    available_workers: usize,
+    physical_workers: usize,
+) -> usize {
+    cpu_workers
+        .min(available_workers)
+        .min(physical_workers)
+        .max(1)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -70,6 +85,26 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let args = Args::parse();
+    anyhow::ensure!(
+        args.cpu_workers > 0,
+        "cpu-workers must be greater than zero"
+    );
+    let available_workers = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let default_argon2_workers = default_argon2_workers(
+        args.cpu_workers,
+        available_workers,
+        num_cpus::get_physical(),
+    );
+    let argon2_workers = args.argon2_workers.unwrap_or(default_argon2_workers);
+    anyhow::ensure!(
+        argon2_workers > 0,
+        "argon2-workers must be greater than zero"
+    );
+    anyhow::ensure!(
+        argon2_workers <= args.cpu_workers,
+        "argon2-workers ({argon2_workers}) cannot exceed cpu-workers ({})",
+        args.cpu_workers
+    );
     #[cfg(feature = "gpu")]
     if args.list_hashx_gpu_adapters {
         println!(
@@ -111,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let config = Config {
         cpu_workers: args.cpu_workers,
+        argon2_workers,
         cpu_calibration_hashes: args.cpu_calibration_hashes,
         #[cfg(feature = "gpu")]
         gpu_calibration_hashes: args.gpu_calibration_hashes,
@@ -128,4 +164,24 @@ async fn main() -> anyhow::Result<()> {
     info!(listen = %args.listen, "challenge-disasterer ready");
     axum::serve(listener, app).await.context("serve")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_argon2_workers;
+
+    #[test]
+    fn argon2_defaults_to_physical_cores_on_smt_hosts() {
+        assert_eq!(default_argon2_workers(16, 16, 8), 8);
+    }
+
+    #[test]
+    fn argon2_respects_smaller_configured_cpu_budget() {
+        assert_eq!(default_argon2_workers(4, 16, 8), 4);
+    }
+
+    #[test]
+    fn argon2_respects_smaller_available_parallelism() {
+        assert_eq!(default_argon2_workers(16, 4, 8), 4);
+    }
 }
