@@ -2189,7 +2189,7 @@ mod tests {
                     "algorithms": ["argon2id"],
                     "difficulty_min": 1,
                     "difficulty_max": 64,
-                    "implementations": ["argon2-0.5.3"]
+                    "implementations": ["argon2-0.6.0"]
                 }
             ]
         }))?;
@@ -2246,7 +2246,7 @@ mod tests {
                 "difficulty_min": 1,
                 "difficulty_max": 64,
                 "router": false,
-                "implementations": ["argon2-0.5.3"]
+                "implementations": ["argon2-0.6.0"]
             }]
         }))?;
         let candidates = calibration_candidates("local", "http://127.0.0.1:1", &stats, true);
@@ -2254,7 +2254,7 @@ mod tests {
         assert_eq!(candidates[0].solver, "anubis-argon2id");
         assert_eq!(
             candidates[0].implementation.as_deref(),
-            Some("argon2-0.5.3")
+            Some("argon2-0.6.0")
         );
         assert!(!candidates[0].router);
         Ok(())

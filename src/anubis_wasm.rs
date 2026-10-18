@@ -231,7 +231,10 @@ pub fn solve_argon2id(
         "Argon2id worker count must be greater than zero"
     );
     ensure!(
-        implementation.is_none() || implementation == Some("argon2-0.5.3"),
+        matches!(
+            implementation,
+            None | Some("argon2-0.6.0") | Some("argon2-0.5.3")
+        ),
         "unsupported Argon2id implementation: {}",
         implementation.unwrap_or_default()
     );
@@ -301,7 +304,7 @@ pub fn solve_argon2id(
     Ok(Result {
         answer,
         solve_ms: started.elapsed().as_secs_f64() * 1000.0,
-        implementation: "argon2-0.5.3".to_owned(),
+        implementation: "argon2-0.6.0".to_owned(),
     })
 }
 
@@ -336,6 +339,17 @@ mod tests {
             difficulty: 1,
         };
         let result = solve_argon2id(&challenge, None, 1).unwrap();
+        assert!(verify_argon2id(&challenge, &result.answer));
+    }
+
+    #[test]
+    fn argon2id_legacy_implementation_name_remains_accepted() {
+        let challenge = Challenge {
+            data: "0011223344556677".to_owned(),
+            difficulty: 1,
+        };
+        let result = solve_argon2id(&challenge, Some("argon2-0.5.3"), 1).unwrap();
+        assert_eq!(result.implementation, "argon2-0.6.0");
         assert!(verify_argon2id(&challenge, &result.answer));
     }
 

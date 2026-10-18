@@ -354,7 +354,7 @@ fn run_argon2_case(meta: &Meta, sample: u32, data: &[u8], args: &Args) -> Result
         commit: meta.commit.clone(),
         protocol: "anubis",
         variant: "wasm-argon2id-1.28",
-        implementation: "argon2-0.5.3".to_owned(),
+        implementation: "argon2-0.6.0".to_owned(),
         accelerator: "cpu",
         sample,
         parameters: json!({"difficulty":difficulty,"data_len":data.len(),"candidate_limit":args.argon2_limit}),

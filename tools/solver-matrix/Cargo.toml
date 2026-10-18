@@ -9,7 +9,7 @@ default = ["gpu"]
 gpu = ["pow-core/gpu"]
 
 [dependencies]
-argon2 = "0.5.3"
+argon2 = { path = "../../crates/argon2-fast" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 pow-core = { package = "challenge-pow-core", path = "../../crates/pow-core", features = ["json", "compare-64bit"] }

@@ -1224,7 +1224,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: false,
-            implementations: vec!["argon2-0.5.3"],
+            implementations: vec!["argon2-0.6.0"],
         },
         SolverCapability {
             solver: "anubis-hashx-jit",

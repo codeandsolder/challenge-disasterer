@@ -78,7 +78,7 @@ The direct matrix deliberately separates two questions that must not be conflate
 
 HashX uses the live Anubis harness's paired benchmark rather than a duplicate synthetic verifier. CPU JIT, automatic routing, and every GPU implementation solve the **same freshly issued challenge** in rotating order; the harness requires identical nonce/hash across implementations before reporting timing. This covers `wgsl-specialized`, the adapter-specific persistent Vulkan backend, and `cuda-sm75-sass` when available.
 
-Current Anubis also ships WASM `sha256` and `argon2id` challenge algorithms. challenge-disasterer exposes both as native solver routes: `anubis-sha256` reuses the in-tree binary SHA-256 backends (`safe`, `auto`, AVX2, AVX-512 where available, and generalized WGPU), while `anubis-argon2id` uses the same Argon2 0.5.3 defaults and nonce-byte rules as upstream. The real-Anubis harness submits both proof types back to the current upstream verifier, and the stock-browser benchmark remains as an independent reference.
+Current Anubis also ships WASM `sha256` and `argon2id` challenge algorithms. challenge-disasterer exposes both as native solver routes: `anubis-sha256` reuses the in-tree binary SHA-256 backends (`safe`, `auto`, AVX2, AVX-512 where available, and generalized WGPU), while `anubis-argon2id` uses Argon2 0.6.0 with parameters and nonce-byte rules matching upstream. The real-Anubis harness submits both proof types back to the current upstream verifier, and the stock-browser benchmark remains as an independent reference.
 
 Example:
 
