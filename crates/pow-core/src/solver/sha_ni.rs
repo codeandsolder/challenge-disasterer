@@ -765,6 +765,49 @@ impl From<GoAwayMessage> for GoAwaySolver {
 
 impl GoAwaySolver {
     const MSG_LEN: u32 = 10 * 4 * 8;
+
+    #[cold]
+    #[inline(never)]
+    fn solve_scalar_tail<const TYPE: u8>(
+        &mut self,
+        mut low_word: u64,
+        search_end: u64,
+        target: u64,
+        mask: u64,
+    ) -> Option<(u64, [u32; 8])> {
+        let mut message_block = Align16([0; 16]);
+        message_block[0..8].copy_from_slice(&self.message.challenge);
+        message_block[8] = self.message.high_word;
+        message_block[10] = u32::from_be_bytes([0x80, 0, 0, 0]);
+        message_block[15] = Self::MSG_LEN as _;
+
+        while low_word < search_end {
+            let low_word_u32 = low_word as u32;
+            message_block[9] = low_word_u32;
+            let mut final_sha_state = crate::sha256::IV;
+            crate::sha256::digest_block(&mut final_sha_state, &message_block);
+            self.attempted_nonces += 1;
+
+            let state_ab = (u64::from(final_sha_state[0]) << 32) | u64::from(final_sha_state[1]);
+            let hit = if TYPE == crate::solver::SOLVE_TYPE_GT {
+                state_ab > target
+            } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                state_ab < target
+            } else {
+                state_ab & mask == target
+            };
+            if hit {
+                crate::unlikely();
+                return Some((
+                    (u64::from(self.message.high_word) << 32) | u64::from(low_word_u32),
+                    final_sha_state,
+                ));
+            }
+            low_word += 1;
+        }
+
+        None
+    }
 }
 
 impl crate::solver::Solver for GoAwaySolver {
@@ -801,23 +844,21 @@ impl GoAwaySolver {
                 _mm_shuffle_epi32(lows, 0b01001010)
             };
 
-            {
-                let search_end = self.limit.min(u64::from(u32::MAX) + 1);
-                let mut low_word = self.attempted_nonces.min(search_end);
-                while low_word < search_end {
-                    let valid_lanes = (search_end - low_word).min(4) as usize;
-                    let low_word_u32 = low_word as u32;
+            let mut message_block = Align16([0; 16]);
+            message_block[0..8].copy_from_slice(&self.message.challenge);
+            message_block[8] = self.message.high_word;
+            message_block[10] = u32::from_be_bytes([0x80, 0, 0, 0]);
+            message_block[15] = Self::MSG_LEN as _;
+
+            macro_rules! try_full_batch {
+                ($low_word_u32:expr) => {{
+                    let low_word_u32 = $low_word_u32;
                     let mut states0 = prepared_state;
                     let mut states1 = prepared_state;
                     let mut states2 = prepared_state;
                     let mut states3 = prepared_state;
 
-                    let mut msg0 = Align16([0; 16]);
-                    msg0[0..8].copy_from_slice(&self.message.challenge);
-                    msg0[8] = self.message.high_word;
-                    msg0[9] = low_word_u32;
-                    msg0[10] = u32::from_be_bytes([0x80, 0, 0, 0]);
-                    msg0[15] = Self::MSG_LEN as _;
+                    message_block[9] = low_word_u32;
 
                     struct LaneIdPlucker;
                     impl crate::sha256::sha_ni::Plucker for LaneIdPlucker {
@@ -829,7 +870,7 @@ impl GoAwaySolver {
 
                     crate::sha256::sha_ni::multiway_arx_abef_cdgh::<2, 4, _>(
                         [&mut states0, &mut states1, &mut states2, &mut states3],
-                        &msg0,
+                        &message_block,
                         LaneIdPlucker,
                     );
 
@@ -855,11 +896,9 @@ impl GoAwaySolver {
                         }
                     };
 
-                    let success_lane_idx = result_abs[..valid_lanes]
-                        .iter()
-                        .position(|x| cmp_fn(x, &target));
+                    let success_lane_idx = result_abs.iter().position(|x| cmp_fn(x, &target));
 
-                    self.attempted_nonces += valid_lanes as u64;
+                    self.attempted_nonces += 4;
 
                     if let Some(success_lane_idx) = success_lane_idx {
                         crate::unlikely();
@@ -881,9 +920,20 @@ impl GoAwaySolver {
                             final_sha_state,
                         ));
                     }
+                }};
+            }
 
-                    low_word += valid_lanes as u64;
-                }
+            let search_end = self.limit.min(u64::from(u32::MAX) + 1);
+            let mut low_word = self.attempted_nonces.min(search_end);
+            let full_end = low_word + (search_end - low_word) / 4 * 4;
+
+            while low_word < full_end {
+                try_full_batch!(low_word as u32);
+                low_word += 4;
+            }
+
+            if low_word < search_end {
+                return self.solve_scalar_tail::<TYPE>(low_word, search_end, target, mask);
             }
         }
 
@@ -917,6 +967,48 @@ mod tests {
                 .is_none()
         );
         assert_eq!(solver.get_attempted_nonces(), 5);
+
+        let mut fresh_solver = GoAwaySolver::from(GoAwayMessage::new_bytes(&challenge, 0));
+        fresh_solver.set_limit(6);
+        assert!(
+            fresh_solver
+                .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
+                .is_none()
+        );
+        assert_eq!(fresh_solver.get_attempted_nonces(), 6);
+
+        fresh_solver.set_limit(9);
+        assert!(
+            fresh_solver
+                .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
+                .is_none()
+        );
+        assert_eq!(fresh_solver.get_attempted_nonces(), 9);
+    }
+
+    #[test]
+    fn test_goaway_scalar_tail_returns_exact_digest() {
+        use sha2::{Digest, Sha256};
+
+        let challenge = core::array::from_fn(|i| i as u8);
+        let nonce = 5u64;
+        let mut hasher = Sha256::new();
+        hasher.update(challenge);
+        hasher.update(nonce.to_be_bytes());
+        let hash = hasher.finalize();
+        let target = u64::from_be_bytes(hash[..8].try_into().expect("SHA-256 prefix"));
+        let expected = core::array::from_fn(|i| {
+            u32::from_be_bytes(hash[i * 4..i * 4 + 4].try_into().expect("SHA-256 word"))
+        });
+
+        let mut solver = GoAwaySolver::from(GoAwayMessage::new_bytes(&challenge, 0));
+        solver.set_limit(nonce + 1);
+        let (found_nonce, found_hash) = solver
+            .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(target, u64::MAX)
+            .expect("tail candidate should match exact target");
+        assert_eq!(found_nonce, nonce);
+        assert_eq!(found_hash, expected);
+        assert_eq!(solver.get_attempted_nonces(), nonce + 1);
     }
 
     #[test]
