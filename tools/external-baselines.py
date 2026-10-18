@@ -6,7 +6,7 @@
 #   "pyopencl>=2025.2",
 # ]
 # ///
-"""Benchmark pinned independent PoW implementations as external performance ceilings."""
+"""Benchmark pinned independent PoW implementations as external references and ceilings."""
 
 from __future__ import annotations
 
@@ -42,6 +42,7 @@ SOURCES = {
 }
 
 STEPS_PER_TASK = 0x100
+OPENCL_WARMUP_RUNS = 3
 
 
 def run(argv: list[str], *, cwd: Path | None = None, capture: bool = False) -> subprocess.CompletedProcess:
@@ -288,8 +289,9 @@ def bench_anubis_offload(samples: int, limit: int) -> None:
             found_buf, nonce_buf, result_buf, initial_buf,
             np.uint64(0), np.uint32(len(challenge)), np.uint32(0xFFFFFFFF), np.uint32(0xFFFFFFFF),
         )
-        cl.enqueue_nd_range_kernel(queue, kernel, (global_size,), None)
-        queue.finish()
+        for _ in range(OPENCL_WARMUP_RUNS):
+            cl.enqueue_nd_range_kernel(queue, kernel, (global_size,), None)
+            queue.finish()
         for sample in range(samples):
             start = time.perf_counter_ns()
             cl.enqueue_nd_range_kernel(queue, kernel, (global_size,), None)
@@ -305,7 +307,7 @@ def bench_anubis_offload(samples: int, limit: int) -> None:
                 sample=sample,
                 attempted=limit,
                 ns=ns,
-                comparison_scope="protocol-kernel-ceiling",
+                comparison_scope="protocol-kernel-reference",
             )
 
 
@@ -314,7 +316,7 @@ def main() -> int:
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--hashx-limit", type=int, default=1_048_576)
     parser.add_argument("--argon2-limit", type=int, default=64)
-    parser.add_argument("--opencl-limit", type=int, default=1_048_576)
+    parser.add_argument("--opencl-limit", type=int, default=67_108_864)
     parser.add_argument("--cpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
