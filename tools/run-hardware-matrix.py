@@ -240,10 +240,15 @@ def main() -> int:
         baseline_manifest = ROOT / "tools" / "preexisting-baseline" / "Cargo.toml"
         baseline_out = out / "preexisting-baseline.jsonl"
         baseline_err = out / "preexisting-baseline.stderr.log"
+        baseline_env = os.environ.copy()
+        # The historical comparator is a nested Cargo workspace but path-depends on
+        # the in-tree solver. Canonical-path sccache needs their common source root
+        # declared explicitly so both workspaces stay inside one canonical build root.
+        baseline_env["SCCACHE_CANONICAL_BUILD_ROOT"] = str(ROOT)
         build = run([
             "cargo", "build", "--locked", "--release",
             "--manifest-path", str(baseline_manifest),
-        ])
+        ], env=baseline_env)
         statuses["build-preexisting-baseline"] = build.returncode
         if build.returncode == 0:
             baseline_bin = ROOT / "tools" / "preexisting-baseline" / "target" / "release" / "challenge-disasterer-preexisting-baseline"
