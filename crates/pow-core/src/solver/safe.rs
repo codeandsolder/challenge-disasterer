@@ -278,7 +278,10 @@ impl crate::solver::Solver for GoAwaySolver {
         buffer[0][40] = 0x80;
         buffer[0][60..64].copy_from_slice(&(Self::MSG_LEN).to_be_bytes());
 
-        for key in 0u32.. {
+        let search_end = self.limit.min(u64::from(u32::MAX) + 1);
+        let mut low_word = self.attempted_nonces.min(search_end);
+        while low_word < search_end {
+            let key = low_word as u32;
             buffer[0][36..40].copy_from_slice(&key.to_be_bytes());
 
             let mut state = crate::sha256::IV;
@@ -299,15 +302,15 @@ impl crate::solver::Solver for GoAwaySolver {
             if cmp_fn(&state_ab, &target) {
                 crate::unlikely();
 
-                return Some(((self.message.high_word as u64) << 32 | key as u64, state));
+                return Some((
+                    (self.message.high_word as u64) << 32 | u64::from(key),
+                    state,
+                ));
             }
 
-            if self.attempted_nonces >= self.limit {
-                return None;
-            }
+            low_word += 1;
         }
         crate::unlikely();
-
         None
     }
 }
@@ -653,6 +656,7 @@ impl crate::solver::Solver for AltchaSha256Solver {
 #[cfg(test)]
 mod tests {
     use crate::message::{CerberusBinaryMessage, CerberusDecimalMessage};
+    use crate::solver::Solver as _;
 
     use super::*;
 
@@ -724,6 +728,40 @@ mod tests {
                 0,
             ))
         });
+    }
+
+    #[test]
+    fn test_goaway_resumes_after_limit_increase() {
+        use sha2::{Digest, Sha256};
+
+        let challenge = [b'a'; 32];
+        let target_nonce = 4u64;
+        let mut hasher = Sha256::new();
+        hasher.update(challenge);
+        hasher.update(target_nonce.to_be_bytes());
+        let hash = hasher.finalize();
+        let target = u64::from_be_bytes(hash[..8].try_into().expect("SHA-256 prefix"));
+
+        let mut solver = GoAwaySolver::from(GoAwayMessage::new_bytes(&challenge, 0));
+
+        solver.set_limit(1);
+        assert!(
+            solver
+                .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(target, u64::MAX)
+                .is_none()
+        );
+        assert_eq!(solver.get_attempted_nonces(), 1);
+
+        solver.set_limit(5);
+        let (found_nonce, found_hash) = solver
+            .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(target, u64::MAX)
+            .expect("resumed search should reach nonce 4");
+        let expected = core::array::from_fn(|i| {
+            u32::from_be_bytes(hash[i * 4..i * 4 + 4].try_into().expect("SHA-256 word"))
+        });
+        assert_eq!(found_nonce, target_nonce);
+        assert_eq!(found_hash, expected);
+        assert_eq!(solver.get_attempted_nonces(), 5);
     }
 
     #[test]
