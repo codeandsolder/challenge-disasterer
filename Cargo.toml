@@ -10,7 +10,7 @@ gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "pow-buster/gpu", "pow-buster/c
 
 [dependencies]
 anyhow = "1"
-argon2 = "0.5.3"
+argon2 = "0.6.0"
 axum = "0.8"
 bytemuck = { version = "1", features = ["derive"], optional = true }
 clap = { version = "4", features = ["derive"] }
