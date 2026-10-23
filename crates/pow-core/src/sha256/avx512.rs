@@ -35,16 +35,14 @@ pub(crate) fn bcst_multiway_arx<const LEADING_ZEROES: usize>(
 #[cfg(target_feature = "avx512f")]
 #[cfg(test)]
 mod tests {
-    use rand::{Rng, SeedableRng};
-
     use super::*;
-    use crate::sha256::{IV, digest_block, do_message_schedule_k_w};
+    use crate::sha256::{IV, deterministic_test_word, digest_block, do_message_schedule_k_w};
 
     #[test]
     fn test_digest_block_equivalence() {
-        let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
-        let mut states: [[u32; 8]; 16] =
-            core::array::from_fn(|_| core::array::from_fn(|_| rng.random()));
+        let mut states: [[u32; 8]; 16] = core::array::from_fn(|row| {
+            core::array::from_fn(|column| deterministic_test_word(row, column, 0x5354_4154))
+        });
         let mut state_avx512: [__m512i; 8] = core::array::from_fn(|i| unsafe {
             _mm512_setr_epi32(
                 states[0][i] as _,
@@ -65,9 +63,10 @@ mod tests {
                 states[15][i] as _,
             )
         });
-        let states_avx512_save = state_avx512.clone();
-        let blocks: [[u32; 16]; 16] =
-            core::array::from_fn(|_| core::array::from_fn(|_| rng.random()));
+        let states_avx512_save = state_avx512;
+        let blocks: [[u32; 16]; 16] = core::array::from_fn(|row| {
+            core::array::from_fn(|column| deterministic_test_word(row, column, 0x424c_4f43))
+        });
         let mut block_avx512: [__m512i; 16] = core::array::from_fn(|i| unsafe {
             _mm512_setr_epi32(
                 blocks[0][i] as _,
@@ -223,9 +222,9 @@ mod tests {
             }
         }
 
-        for i in 0..8 {
-            for j in 0..16 {
-                assert_eq!(results[i][j], expected[i]);
+        for (lanes, expected_word) in results.iter().zip(expected) {
+            for actual in lanes {
+                assert_eq!(*actual, expected_word);
             }
         }
     }

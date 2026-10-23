@@ -58,6 +58,16 @@ pub(crate) const fn do_message_schedule_k_w(w: &mut [u32; 64]) {
     }
 }
 
+#[cfg(all(test, any(target_feature = "avx2", target_feature = "avx512f")))]
+pub(crate) fn deterministic_test_word(row: usize, column: usize, domain: u32) -> u32 {
+    let row = row as u32;
+    let column = column as u32;
+    domain
+        .wrapping_add(row.wrapping_mul(0x9e37_79b9))
+        .rotate_left(column & 31)
+        ^ column.wrapping_mul(0x85eb_ca6b)
+}
+
 /// A reference software implementation of SHA-256 compression function from sha2 crate
 #[inline(always)]
 pub(crate) fn digest_block(state: &mut [u32; 8], block: &[u32; 16]) {
