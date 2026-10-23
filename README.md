@@ -60,7 +60,7 @@ CPU-only build:
 cargo run --release --no-default-features -- --listen 127.0.0.1:17417
 ```
 
-The repository currently pins `nightly-2026-10-08`; Anubis assets are built with Rust 1.99 in the live-compatibility workflow.
+The repository pins its development toolchain in `rust-toolchain.toml`; Anubis assets are built with Rust 1.99 in the live-compatibility workflow.
 
 ## Reproducible hardware matrix
 

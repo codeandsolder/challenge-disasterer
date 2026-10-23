@@ -267,8 +267,7 @@ impl crate::solver::Solver for GoAwaySolver {
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
         let target = target & mask;
 
-        let mut buffer =
-            Align16([[0u8; 64]; 16]);
+        let mut buffer = Align16([[0u8; 64]; 16]);
         for i in 0..8 {
             buffer[0][i * 4..i * 4 + 4].copy_from_slice(&self.message.challenge[i].to_be_bytes());
         }

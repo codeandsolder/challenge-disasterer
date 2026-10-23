@@ -46,9 +46,9 @@ jobs:
 
       - name: Set up Rust
         run: |
+          cargo --version
           rustup toolchain install 1.99.0 --profile minimal
           rustup target add wasm32-unknown-unknown --toolchain 1.99.0
-          rustup toolchain install nightly-2026-10-08 --profile minimal --component clippy,rustfmt
 
       - name: Install Anubis asset compressors
         run: sudo apt-get update -qq && sudo apt-get install -y brotli zstd
