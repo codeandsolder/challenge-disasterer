@@ -71,11 +71,11 @@ pub(crate) fn deterministic_test_word(row: usize, column: usize, domain: u32) ->
 /// A reference software implementation of SHA-256 compression function from sha2 crate
 #[inline(always)]
 pub(crate) fn digest_block(state: &mut [u32; 8], block: &[u32; 16]) {
-    let mut tmp = sha2::digest::generic_array::GenericArray::<u8, _>::default();
+    let mut tmp = [0u8; 64];
     for i in 0..16 {
         tmp[i * 4..][..4].copy_from_slice(&block[i].to_be_bytes());
     }
-    sha2::compress256(state, &[tmp]);
+    sha2::block_api::compress256(state, &[tmp]);
 }
 
 /// ingest a message prefix into the state

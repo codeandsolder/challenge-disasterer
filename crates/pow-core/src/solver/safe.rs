@@ -1,5 +1,3 @@
-use sha2::digest::generic_array::GenericArray;
-
 use crate::{
     Align16, Align64, decompose_blocks_mut,
     message::{
@@ -36,7 +34,7 @@ impl SingleBlockSolver {
         target: u64,
         mask: u64,
     ) -> Option<(u64, [u32; 8])> {
-        let mut message_be = Align64(sha2::digest::generic_array::GenericArray::default());
+        let mut message_be = Align64([0u8; 64]);
         for i in 0..16 {
             message_be.0[i * 4..i * 4 + 4].copy_from_slice(&self.message.message[i].to_be_bytes());
         }
@@ -60,7 +58,7 @@ impl SingleBlockSolver {
                 }
 
                 let mut state = self.message.prefix_state;
-                sha2::compress256(&mut state, core::array::from_ref(&*message_be));
+                sha2::block_api::compress256(&mut state, core::array::from_ref(&*message_be));
                 self.attempted_nonces += 1;
 
                 let pass = if TYPE == crate::solver::SOLVE_TYPE_GT {
@@ -151,12 +149,12 @@ impl crate::solver::Solver for DoubleBlockSolver {
         }
         let target = target & mask;
 
-        let mut buffer: sha2::digest::crypto_common::Block<sha2::Sha256> = Default::default();
+        let mut buffer = [0u8; 64];
         for i in 0..16 {
             buffer[i * 4..i * 4 + 4].copy_from_slice(&self.message.message[i].to_be_bytes());
         }
 
-        let mut buffer2: sha2::digest::crypto_common::Block<sha2::Sha256> = Default::default();
+        let mut buffer2 = [0u8; 64];
         buffer2[56..].copy_from_slice(&(self.message.message_length * 8).to_be_bytes());
 
         let mut terminal_message_schedule = [0; 64];
@@ -177,7 +175,7 @@ impl crate::solver::Solver for DoubleBlockSolver {
 
         for key in first_key..1_000_000_000 {
             let mut state = self.message.prefix_state;
-            sha2::compress256(&mut state, &[buffer]);
+            sha2::block_api::compress256(&mut state, &[buffer]);
 
             let save_a = state[0];
             let save_b = state[1];
@@ -207,7 +205,7 @@ impl crate::solver::Solver for DoubleBlockSolver {
                 crate::unlikely();
 
                 let mut state = self.message.prefix_state;
-                sha2::compress256(&mut state, &[buffer, buffer2]);
+                sha2::block_api::compress256(&mut state, &[buffer, buffer2]);
                 return Some((key as u64 + self.message.nonce_addend, *state));
             }
 
@@ -270,7 +268,7 @@ impl crate::solver::Solver for GoAwaySolver {
         let target = target & mask;
 
         let mut buffer =
-            Align16([sha2::digest::crypto_common::Block::<sha2::Sha256>::default(); 16]);
+            Align16([[0u8; 64]; 16]);
         for i in 0..8 {
             buffer[0][i * 4..i * 4 + 4].copy_from_slice(&self.message.challenge[i].to_be_bytes());
         }
@@ -285,7 +283,7 @@ impl crate::solver::Solver for GoAwaySolver {
             buffer[0][36..40].copy_from_slice(&key.to_be_bytes());
 
             let mut state = crate::sha256::IV;
-            sha2::compress256(&mut state, core::array::from_ref(&buffer[0]));
+            sha2::block_api::compress256(&mut state, core::array::from_ref(&buffer[0]));
 
             let state_ab = (state[0] as u64) << 32 | (state[1] as u64);
             self.attempted_nonces += 1;
@@ -348,7 +346,7 @@ impl crate::solver::Solver for BinarySolver {
 
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
         let salt = &self.message.salt_residual[..self.message.salt_residual_len];
-        let mut blocks = [GenericArray::default(); 2];
+        let mut blocks = [[0u8; 64]; 2];
         blocks[0][..salt.len()].copy_from_slice(salt);
         let mut ptr = salt.len();
         let mut cur_block = 0;
@@ -388,7 +386,7 @@ impl crate::solver::Solver for BinarySolver {
                 }
             }
 
-            sha2::compress256(&mut state, used_blocks);
+            sha2::block_api::compress256(&mut state, used_blocks);
             self.attempted_nonces += 1;
 
             let cmp_fn = |x: u64, y: u64| {
@@ -542,8 +540,8 @@ impl AltchaSha256Solver {
         target: u64,
         mask: u64,
     ) -> Option<(u64, [u32; 8])> {
-        let mut blocks = GenericArray::default();
-        let mut subblocks = GenericArray::default();
+        let mut blocks = [0u8; 64];
+        let mut subblocks = [0u8; 64];
         blocks[0..16].copy_from_slice(&self.message.salt);
         blocks[16..32].copy_from_slice(&self.message.nonce);
         blocks[32 + 4] = 0x80;
@@ -556,7 +554,7 @@ impl AltchaSha256Solver {
             }
             let mut state = crate::sha256::IV;
             blocks[32..(32 + 4)].copy_from_slice(&counter.to_be_bytes());
-            sha2::compress256(&mut state, core::array::from_ref(&blocks));
+            sha2::block_api::compress256(&mut state, core::array::from_ref(&blocks));
 
             for _ in 1..self.message.cost.get() {
                 for i in 0..8 {
@@ -566,7 +564,7 @@ impl AltchaSha256Solver {
                 subblocks[(key_length as usize + 1)..40].fill(0);
                 subblocks[60..].copy_from_slice(&(key_length * 8).to_be_bytes());
                 state = crate::sha256::IV;
-                sha2::compress256(&mut state, core::array::from_ref(&subblocks));
+                sha2::block_api::compress256(&mut state, core::array::from_ref(&subblocks));
             }
             self.attempted_nonces += 1;
             let cmp64_fn = |x: u64, y: u64| {
@@ -598,13 +596,12 @@ impl AltchaSha256Solver {
                 return None;
             }
             password[16..16 + 4].copy_from_slice(&counter.to_be_bytes());
-            pbkdf2::pbkdf2::<pbkdf2::hmac::Hmac<sha2::Sha256>>(
+            pbkdf2::pbkdf2_hmac::<sha2::Sha256>(
                 &password,
                 &self.message.salt,
                 self.message.cost.get(),
                 &mut buffer,
-            )
-            .unwrap();
+            );
             self.attempted_nonces += 1;
             let cmp64_fn = |x: u64, y: u64| {
                 if TYPE == crate::solver::SOLVE_TYPE_GT {
