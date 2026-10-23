@@ -1061,9 +1061,9 @@ dependencies = [
 
 [[package]]
 name = "hashx"
-version = "0.8.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "251f57cd29f763c476d7b027f69d9d2298496ca48f68e488a7ca0a8015461004"
+checksum = "9c65d9ee1962b53009278d24d72355bed6e1dda293c29e2ef3888a587eae029b"
 dependencies = [
  "arrayvec",
  "blake2 0.10.6",
