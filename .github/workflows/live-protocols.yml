@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
       - name: Set up Rust
         run: rustup toolchain install nightly-2026-10-08 --profile minimal
       - name: Verify against current ALTCHA (${{ matrix.implementation }})
@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
       - name: Set up Rust
         run: rustup toolchain install nightly-2026-10-08 --profile minimal
       - name: Verify against current Cap.js (${{ matrix.implementation }})
@@ -61,7 +61,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
       - uses: actions/setup-go@v7
         with:
           go-version: "1.27.x"
@@ -103,7 +103,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
       - name: Set up Rust
         run: rustup toolchain install nightly-2026-10-08 --profile minimal
       - name: Install HAProxy 3.2
