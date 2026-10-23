@@ -98,6 +98,6 @@ mod tests {
     #[test]
     fn upstream_jit_is_shareable_for_validation() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<hashx08::HashX>();
+        assert_send_sync::<hashx::HashX>();
     }
 }

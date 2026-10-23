@@ -1,7 +1,7 @@
 use std::{borrow::Cow, sync::mpsc, time::Instant};
 
 use anyhow::{Context, anyhow};
-use hashx08::HashX;
+use hashx::HashX;
 
 use crate::{
     anubis::Answer,
