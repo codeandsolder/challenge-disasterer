@@ -66,6 +66,7 @@ pub fn solve(kind: &str, challenge: Value, implementation: Option<&str>) -> anyh
         "mcaptcha" => solve_mcaptcha(challenge, implementation),
         "haphash" => solve_haphash(challenge, implementation),
         "altcha" => solve_altcha(challenge, implementation),
+        "linear" => crate::linear_pow::solve(challenge, implementation),
         _ => bail!("unsupported classic solver: {kind}"),
     }
 }

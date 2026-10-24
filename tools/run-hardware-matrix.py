@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LIVE = ("altcha", "capjs", "cerberus", "goaway", "haphash", "mcaptcha", "anubis")
+LIVE = ("altcha", "capjs", "cerberus", "goaway", "haphash", "linear", "mcaptcha", "anubis")
 ANUBIS_GPU_QUANTUM = 8192
 PREEXISTING_BASELINE_QUANTUM = 160_000
 
@@ -73,6 +73,8 @@ def cpu_flags() -> set[str]:
 
 def classic_implementations(protocol: str, all_implementations: bool, gpu: bool) -> list[str]:
     if not all_implementations:
+        return ["auto"]
+    if protocol == "linear":
         return ["auto"]
     flags = cpu_flags()
     implementations = ["auto", "safe"]

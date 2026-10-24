@@ -1062,7 +1062,20 @@ pub async fn solve(
             };
             (difficulty, result)
         }
-        "cerberus" | "goaway" | "capjs" | "mcaptcha" | "haphash" | "altcha" => {
+        "cerberus" | "goaway" | "capjs" | "mcaptcha" | "haphash" | "altcha" | "linear" => {
+            if request.solver == "linear"
+                && matches!(
+                    request.implementation.as_deref(),
+                    Some(implementation) if implementation != "auto"
+                )
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Linear.pub exposes only the auto implementation".to_owned(),
+                    }),
+                ));
+            }
             if request.algorithm.is_some() {
                 return Err((
                     StatusCode::BAD_REQUEST,
@@ -1289,6 +1302,15 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             implementations,
         });
     }
+    available_solvers.push("linear");
+    solver_capabilities.push(SolverCapability {
+        solver: "linear",
+        algorithms: &["sha1"],
+        difficulty_min: 16,
+        difficulty_max: 16,
+        router: false,
+        implementations: vec!["auto"],
+    });
     if state.gpu_operational {
         available_solvers.push("anubis-gpu");
         solver_capabilities.push(SolverCapability {

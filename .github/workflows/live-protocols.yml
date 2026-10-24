@@ -123,6 +123,16 @@ jobs:
           CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-haphash-e2e.sh
 
+  linear:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Rust
+        run: cargo --version
+      - name: Verify against live Linear.pub gate
+        run: ./ci/live-linear-e2e.sh
+
   mcaptcha:
     runs-on: ubuntu-latest
     timeout-minutes: 20

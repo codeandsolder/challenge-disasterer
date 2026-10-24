@@ -15,6 +15,7 @@ mod hashx_gpu_native;
 mod hashx_sm75;
 #[cfg(feature = "gpu")]
 mod hashx_sm75_cuda;
+mod linear_pow;
 mod routing;
 mod service;
 mod stats;
