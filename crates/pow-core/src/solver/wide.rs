@@ -936,8 +936,14 @@ fn first_zero_mask_lane<const LANES: usize>(
 ) -> Option<usize> {
     let hits = (word & Simd::splat(mask))
         .simd_eq(Simd::splat(0))
-        .to_array();
-    (0..valid_lanes).find(|&lane| hits[lane])
+        .to_bitmask();
+    let valid_mask = if valid_lanes == 64 {
+        u64::MAX
+    } else {
+        (1u64 << valid_lanes) - 1
+    };
+    let hits = hits & valid_mask;
+    (hits != 0).then(|| hits.trailing_zeros() as usize)
 }
 
 fn solve_cerberus_decimal_impl<
@@ -1092,13 +1098,13 @@ fn solve_cerberus_binary_impl<const LANES: usize, B: CerberusCompression<LANES>>
     let search_end = limit.min(u64::from(u32::MAX) + 1);
     let lanes_u64 = LANES as u64;
     let mut cursor = (*attempted_nonces).min(search_end);
+    let mut nonce =
+        Simd::<u32, LANES>::from_array(core::array::from_fn(|lane| (cursor + lane as u64) as u32));
+    let nonce_increment = Simd::splat(LANES as u32);
 
     while cursor < search_end {
         let batch_start = cursor;
         let valid_lanes = (search_end - cursor).min(lanes_u64) as usize;
-        let nonce = Simd::<u32, LANES>::from_array(core::array::from_fn(|lane| {
-            (batch_start + lane as u64) as u32
-        }));
         let mut state = state_base;
         B::compress::<1, 1>(&mut state, &msg, nonce);
         cursor += valid_lanes as u64;
@@ -1110,6 +1116,7 @@ fn solve_cerberus_binary_impl<const LANES: usize, B: CerberusCompression<LANES>>
                 (batch_start + success_lane as u64) | (u64::from(message.first_word) << 32),
             );
         }
+        nonce += nonce_increment;
     }
 
     None
