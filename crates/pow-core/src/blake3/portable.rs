@@ -3,7 +3,9 @@ use super::MESSAGE_SCHEDULE;
 use core::simd::Simd;
 #[inline(always)]
 fn ror<const N: usize>(x: Simd<u32, N>, s: u32) -> Simd<u32, N> {
-    (x >> s) | (x << (32 - s))
+    // The shifted halves are disjoint, so XOR is equivalent to OR and gives
+    // LLVM the same straight-line operation used by the former AVX2 kernel.
+    (x >> s) ^ (x << (32 - s))
 }
 #[inline(always)]
 pub(super) fn g<const N: usize>(
@@ -44,10 +46,18 @@ pub(crate) fn compress<const N: usize, const CONSTANT_WORD_COUNT: usize, const P
                 } else {
                     Simd::splat(tpl[iy])
                 };
-                let [a, b, c, d] = v
-                    .get_disjoint_mut([$a, $b, $c, $d])
-                    .expect("BLAKE3 G indices are disjoint");
-                g(a, b, c, d, x, y);
+                // Copying the four words into locals is both safe and easier for LLVM
+                // than `get_disjoint_mut`: the previous formulation produced materially
+                // larger/slower Cerberus specializations despite these literal indices.
+                let mut a = v[$a];
+                let mut b = v[$b];
+                let mut c = v[$c];
+                let mut d = v[$d];
+                g(&mut a, &mut b, &mut c, &mut d, x, y);
+                v[$a] = a;
+                v[$b] = b;
+                v[$c] = c;
+                v[$d] = d;
             }};
         }
         if round > 0 || CONSTANT_WORD_COUNT < 2 {

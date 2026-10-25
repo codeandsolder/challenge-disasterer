@@ -3,9 +3,6 @@ mod loop_macros;
 
 pub(crate) mod portable;
 
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-pub mod avx2;
-
 #[cfg(target_arch = "wasm32")]
 pub mod simd128;
 

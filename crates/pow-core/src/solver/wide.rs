@@ -900,21 +900,6 @@ impl<const LANES: usize> CerberusCompression<LANES> for PortableCerberusCompress
     }
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-struct Avx2CerberusCompression;
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-impl CerberusCompression<8> for Avx2CerberusCompression {
-    #[inline(always)]
-    fn compress<const CONSTANT_WORD_COUNT: usize, const PATCH: usize>(
-        state: &mut [Simd<u32, 8>; 16],
-        template: &[u32; 16],
-        patch: Simd<u32, 8>,
-    ) {
-        crate::blake3::avx2::compress_simd8::<CONSTANT_WORD_COUNT, PATCH>(state, template, patch);
-    }
-}
-
 #[inline(always)]
 fn cerberus_lane_words<const LANES: usize>(base: usize) -> Simd<u32, LANES> {
     Simd::from_array(core::array::from_fn(|lane| {
@@ -1141,7 +1126,7 @@ pub(crate) fn solve_cerberus_decimal_avx2<
         CENTER_WORD_IDX,
         LANE_ID_WORD_IDX,
         CONSTANT_WORD_COUNT,
-        Avx2CerberusCompression,
+        PortableCerberusCompression,
     >(message, msg_tpl, attempted_nonces, limit, target, mask)
 }
 
@@ -1176,7 +1161,7 @@ pub(crate) fn solve_cerberus_binary_avx2(
     target: u64,
     mask: u64,
 ) -> Option<u64> {
-    solve_cerberus_binary_impl::<8, Avx2CerberusCompression>(
+    solve_cerberus_binary_impl::<8, PortableCerberusCompression>(
         message,
         attempted_nonces,
         limit,
