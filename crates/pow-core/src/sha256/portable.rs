@@ -32,7 +32,8 @@ fn ch<const N: usize>(x: Simd<u32, N>, y: Simd<u32, N>, z: Simd<u32, N>) -> Simd
 fn maj<const N: usize>(x: Simd<u32, N>, y: Simd<u32, N>, z: Simd<u32, N>) -> Simd<u32, N> {
     (x & y) ^ (x & z) ^ (y & z)
 }
-#[inline(always)]
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+#[cfg_attr(not(target_arch = "wasm32"), inline(always))]
 pub(crate) fn multiway_arx<const N: usize, const BEGIN: usize>(
     state: &mut [Simd<u32, N>; 8],
     block: &mut [Simd<u32, N>; 16],
@@ -63,7 +64,8 @@ pub(crate) fn multiway_arx<const N: usize, const BEGIN: usize>(
         }
     });
 }
-#[inline(always)]
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+#[cfg_attr(not(target_arch = "wasm32"), inline(always))]
 pub(crate) fn bcst_multiway_arx<const N: usize, const LEAD: usize>(
     state: &mut [Simd<u32, N>; 8],
     wk: &[u32; 64],
