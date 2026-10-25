@@ -1,33 +1,11 @@
 use crate::{
-    Align16, Align64, SWAP_DWORD_BYTE_ORDER, decompose_blocks_mut,
+    Align64,
     message::{
         AltchaMessage, BinaryMessage, CerberusMessage, DecimalMessage, DoubleBlockMessage,
         GoAwayMessage, SingleBlockMessage,
     },
 };
 use core::arch::x86_64::*;
-
-static LANE_ID_MSB_STR: Align64<[u32; 11 * 8]> = Align64({
-    let bytes = * b"1111111111222222222233333333334444444444555555555566666666667777777777888888888899999999";
-    let mut out = [0; 11 * 8];
-    let mut i = 0;
-    while i < 11 * 8 {
-        out[i] = bytes[i] as u32;
-        i += 1;
-    }
-    out
-});
-
-static LANE_ID_LSB_STR: Align64<[u32; 11 * 8]> = Align64({
-    let bytes = * b"0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567";
-    let mut out = [0; 11 * 8];
-    let mut i = 0;
-    while i < 11 * 8 {
-        out[i] = bytes[i] as u32;
-        i += 1;
-    }
-    out
-});
 
 static LANE_ID_STR_COMBINED_LE_HI: Align64<[u32; 1000 / 8 * 8]> = {
     let mut out = [0; 1000 / 8 * 8];
@@ -208,294 +186,19 @@ impl SingleBlockSolver {
         target: u64,
         mask: u64,
     ) -> Option<u64> {
-        let mut partial_state = self.message.prefix_state;
-        crate::sha256::ingest_message_prefix::<DIGIT_WORD_IDX0>(
-            &mut partial_state,
-            core::array::from_fn(|i| self.message.message[i]),
-        );
-
-        // zero out the nonce portion to prevent incorrect results if solvers are reused
-        for (ix, i) in (self.message.digit_index..).take(9).enumerate() {
-            let message = decompose_blocks_mut(&mut self.message.message);
-            message[SWAP_DWORD_BYTE_ORDER[i]] =
-                if ix >= 2 && MUTATION_TYPE & MUTATION_TYPE_OCTAL != 0 {
-                    b'1'
-                } else {
-                    b'0'
-                };
-        }
-
-        let lane_id_0_byte_idx = self.message.digit_index % 4;
-        let lane_id_1_byte_idx = (self.message.digit_index + 1) % 4;
-
-        for prefix_set_index in 0..11 {
-            if self.attempted_nonces >= self.limit {
-                return None;
-            }
-
-            let mut inner_key_buf = if MUTATION_TYPE & MUTATION_TYPE_OCTAL != 0 {
-                Align16(*b"1111\x80111")
-            } else {
-                Align16(*b"0000\x80000")
-            };
-
-            unsafe {
-                let lane_id_0_or_value = _mm256_sll_epi32(
-                    _mm256_load_si256(LANE_ID_MSB_STR.as_ptr().add(prefix_set_index * 8).cast()),
-                    _mm_cvtsi64x_si128(((3 - lane_id_0_byte_idx) * 8) as _),
-                );
-                let lane_id_1_or_value = _mm256_sll_epi32(
-                    _mm256_load_si256(LANE_ID_LSB_STR.as_ptr().add(prefix_set_index * 8).cast()),
-                    _mm_cvtsi64x_si128(((3 - lane_id_1_byte_idx) * 8) as _),
-                );
-
-                let lane_id_0_or_value_v = if !DIGIT_WORD_IDX1_INCREMENT {
-                    _mm256_or_si256(lane_id_0_or_value, lane_id_1_or_value)
-                } else {
-                    lane_id_0_or_value
-                };
-
-                let mut inner_iteration_end = if MUTATION_TYPE & MUTATION_TYPE_OCTAL != 0 {
-                    0o10_000_000
-                } else {
-                    10_000_000
-                };
-
-                // clamp it to the number of remaining iterations
-                inner_iteration_end = self
-                    .limit
-                    .saturating_sub(self.attempted_nonces)
-                    .div_ceil(8)
-                    .min(inner_iteration_end as u64) as u32;
-
-                // soft pipeline this to compute the new message after the hash
-                // LLVM seems to handle cases where high register pressure work happens first better
-                // so this prevents some needless register spills
-                // doesn't seem to affect performance on my Zen4 but dirty so avoid
-                // on the last iteration simd_itoa(10_000_000) is unit-tested to convert to 0000\x80000
-                // so no fixup is needed-saves a branch on LLVM codegen
-                for next_inner_key in 1..=inner_iteration_end {
-                    macro_rules! fetch_msg {
-                        ($idx:expr) => {
-                            if $idx == DIGIT_WORD_IDX0 {
-                                _mm256_or_si256(
-                                    _mm256_set1_epi32(self.message.message[$idx] as _),
-                                    lane_id_0_or_value_v,
-                                )
-                            } else if DIGIT_WORD_IDX1_INCREMENT && $idx == DIGIT_WORD_IDX0 + 1 {
-                                _mm256_or_si256(
-                                    _mm256_set1_epi32(self.message.message[$idx] as _),
-                                    lane_id_1_or_value,
-                                )
-                            } else if (MUTATION_TYPE_ALIGNED & MUTATION_TYPE != 0)
-                                && $idx == DIGIT_WORD_IDX0 + 1
-                            {
-                                _mm256_set1_epi32(
-                                    (inner_key_buf.as_ptr().cast::<u32>().read()) as _,
-                                )
-                            } else if (MUTATION_TYPE_ALIGNED & MUTATION_TYPE != 0)
-                                && $idx == DIGIT_WORD_IDX0 + 2
-                            {
-                                _mm256_set1_epi32(
-                                    (inner_key_buf.as_ptr().add(4).cast::<u32>().read()) as _,
-                                )
-                            } else {
-                                _mm256_set1_epi32(self.message.message[$idx] as _)
-                            }
-                        };
-                    }
-                    let mut blocks = [
-                        fetch_msg!(0),
-                        fetch_msg!(1),
-                        fetch_msg!(2),
-                        fetch_msg!(3),
-                        fetch_msg!(4),
-                        fetch_msg!(5),
-                        fetch_msg!(6),
-                        fetch_msg!(7),
-                        fetch_msg!(8),
-                        fetch_msg!(9),
-                        fetch_msg!(10),
-                        fetch_msg!(11),
-                        fetch_msg!(12),
-                        fetch_msg!(13),
-                        fetch_msg!(14),
-                        fetch_msg!(15),
-                    ];
-
-                    let mut state =
-                        core::array::from_fn(|i| _mm256_set1_epi32(partial_state[i] as _));
-
-                    // do 8-way SHA-256 without feedback so as not to force the compiler to save 8 registers
-                    // we already have them in scalar form, this allows more registers to be reused in the next iteration
-                    crate::sha256::avx2::multiway_arx::<DIGIT_WORD_IDX0>(&mut state, &mut blocks);
-
-                    state[0] = _mm256_add_epi32(
-                        state[0],
-                        _mm256_set1_epi32(self.message.prefix_state[0] as _),
-                    );
-
-                    #[cfg(feature = "compare-64bit")]
-                    {
-                        state[1] = _mm256_add_epi32(
-                            state[1],
-                            _mm256_set1_epi32(self.message.prefix_state[1] as _),
-                        );
-                    }
-
-                    #[cfg(not(feature = "compare-64bit"))]
-                    let cmp_fn = |x: __m256i, y: __m256i| {
-                        let bias = _mm256_set1_epi32(i32::MIN);
-                        if TYPE == crate::solver::SOLVE_TYPE_GT {
-                            _mm256_cmpgt_epi32(_mm256_add_epi32(x, bias), _mm256_add_epi32(y, bias))
-                        } else if TYPE == crate::solver::SOLVE_TYPE_LT {
-                            _mm256_cmpgt_epi32(_mm256_add_epi32(y, bias), _mm256_add_epi32(x, bias))
-                        } else {
-                            _mm256_cmpeq_epi32(
-                                _mm256_and_si256(x, _mm256_set1_epi32((mask >> 32) as _)),
-                                y,
-                            )
-                        }
-                    };
-
-                    #[cfg(feature = "compare-64bit")]
-                    let cmp64_fn = |x: __m256i, y: __m256i| {
-                        let bias = _mm256_set1_epi64x(i64::MIN);
-                        if TYPE == crate::solver::SOLVE_TYPE_GT {
-                            _mm256_cmpgt_epi64(_mm256_add_epi64(x, bias), _mm256_add_epi64(y, bias))
-                        } else if TYPE == crate::solver::SOLVE_TYPE_LT {
-                            _mm256_cmpgt_epi64(_mm256_add_epi64(y, bias), _mm256_add_epi64(x, bias))
-                        } else {
-                            _mm256_cmpeq_epi64(
-                                _mm256_and_si256(x, _mm256_set1_epi64x(mask as _)),
-                                y,
-                            )
-                        }
-                    };
-
-                    #[cfg(not(feature = "compare-64bit"))]
-                    let met_target = cmp_fn(state[0], _mm256_set1_epi32((target >> 32) as _));
-
-                    #[cfg(feature = "compare-64bit")]
-                    let result_ab_lo = _mm256_unpacklo_epi32(state[1], state[0]);
-                    #[cfg(feature = "compare-64bit")]
-                    let result_ab_hi = _mm256_unpackhi_epi32(state[1], state[0]);
-                    #[cfg(feature = "compare-64bit")]
-                    let (met_target_hi, met_target_lo) = {
-                        let ab_met_target_lo =
-                            cmp64_fn(result_ab_lo, _mm256_set1_epi64x(target as _));
-                        let ab_met_target_high =
-                            cmp64_fn(result_ab_hi, _mm256_set1_epi64x(target as _));
-                        (ab_met_target_high, ab_met_target_lo)
-                    };
-
-                    #[cfg(feature = "compare-64bit")]
-                    let nothit = _mm256_testz_si256(met_target_hi, met_target_hi)
-                        & _mm256_testz_si256(met_target_lo, met_target_lo);
-                    #[cfg(not(feature = "compare-64bit"))]
-                    let nothit = _mm256_testz_si256(met_target, met_target);
-
-                    self.attempted_nonces += 8;
-
-                    if nothit == 0 {
-                        crate::unlikely();
-
-                        #[cfg(not(feature = "compare-64bit"))]
-                        let success_lane_idx = {
-                            let mut dump = Align64([0u32; 8]);
-                            _mm256_store_si256(dump.as_mut_ptr().cast(), met_target);
-                            dump.0.iter().position(|x| *x != 0).unwrap()
-                        };
-
-                        #[cfg(feature = "compare-64bit")]
-                        let success_lane_idx = INDEX_REMAP_PUNPCKLDQ[{
-                            let mut dump = Align64([0u64; 8]);
-                            _mm256_store_si256(dump.as_mut_ptr().cast(), met_target_lo);
-                            _mm256_store_si256(dump.as_mut_ptr().add(4).cast(), met_target_hi);
-                            dump.0.iter().position(|x| *x != 0).unwrap()
-                        }];
-
-                        let nonce_prefix = 8 * prefix_set_index + success_lane_idx + 10;
-
-                        if MUTATION_TYPE & MUTATION_TYPE_ALIGNED != 0 {
-                            self.message.message[DIGIT_WORD_IDX0 + 1] =
-                                inner_key_buf.as_ptr().cast::<u32>().read();
-                            self.message.message[DIGIT_WORD_IDX0 + 2] =
-                                inner_key_buf.as_ptr().add(4).cast::<u32>().read();
-                        }
-
-                        // stamp the lane ID back onto the message
-                        {
-                            let message_bytes = decompose_blocks_mut(&mut self.message.message);
-                            *message_bytes.get_unchecked_mut(
-                                *SWAP_DWORD_BYTE_ORDER.get_unchecked(self.message.digit_index),
-                            ) = (nonce_prefix / 10) as u8 + b'0';
-                            *message_bytes.get_unchecked_mut(
-                                *SWAP_DWORD_BYTE_ORDER.get_unchecked(self.message.digit_index + 1),
-                            ) = (nonce_prefix % 10) as u8 + b'0';
-                        }
-
-                        let mut decimal_inner_key = next_inner_key as u64 - 1;
-                        if MUTATION_TYPE & MUTATION_TYPE_OCTAL != 0 {
-                            decimal_inner_key = 0;
-                            let mut key_octal = next_inner_key - 1;
-                            for m in (0..7u32).map(|i| 10u64.pow(i)) {
-                                let output = (key_octal % 8) + 1;
-                                key_octal /= 8;
-                                decimal_inner_key += output as u64 * m;
-                            }
-                            let mut message_be = [0u8; 64];
-                            for i in 0..16 {
-                                message_be[i * 4..][..4]
-                                    .copy_from_slice(&self.message.message[i].to_be_bytes());
-                            }
-                        }
-
-                        // the nonce is the 7 digits in the message, plus the first two digits recomputed from the lane index
-                        return Some(nonce_prefix as u64 * 10u64.pow(7) + decimal_inner_key);
-                    }
-
-                    if MUTATION_TYPE == MUTATION_TYPE_ALIGNED_OCTAL {
-                        crate::strings::to_octal_7::<true, 0x80, 1>(
-                            &mut inner_key_buf,
-                            next_inner_key,
-                        )
-                    } else if MUTATION_TYPE == MUTATION_TYPE_ALIGNED {
-                        crate::strings::format_decimal_8::<7, true, 0x80>(
-                            &mut inner_key_buf,
-                            next_inner_key,
-                        );
-                    } else if MUTATION_TYPE == MUTATION_TYPE_UNALIGNED_OCTAL {
-                        let message_bytes = decompose_blocks_mut(&mut self.message.message);
-                        let mut key_copy = next_inner_key;
-
-                        for i in (0..7).rev() {
-                            let output = key_copy % 8;
-                            key_copy /= 8;
-                            *message_bytes.get_unchecked_mut(
-                                *SWAP_DWORD_BYTE_ORDER
-                                    .get_unchecked(self.message.digit_index + i + 2),
-                            ) = output as u8 + b'1';
-                        }
-                    } else {
-                        let message_bytes = decompose_blocks_mut(&mut self.message.message);
-                        let mut key_copy = next_inner_key;
-
-                        for i in (0..7).rev() {
-                            let output = key_copy % 10;
-                            key_copy /= 10;
-                            *message_bytes.get_unchecked_mut(
-                                *SWAP_DWORD_BYTE_ORDER
-                                    .get_unchecked(self.message.digit_index + i + 2),
-                            ) = output as u8 + b'0';
-                        }
-                    }
-                }
-            }
-        }
-
-        crate::unlikely();
-        None
+        crate::solver::wide::solve_single_block_impl::<
+            8,
+            DIGIT_WORD_IDX0,
+            DIGIT_WORD_IDX1_INCREMENT,
+            TYPE,
+            MUTATION_TYPE,
+        >(
+            &mut self.message,
+            &mut self.attempted_nonces,
+            self.limit,
+            target,
+            mask,
+        )
     }
 }
 
@@ -1723,32 +1426,18 @@ mod tests {
     }
 
     #[test]
-    fn test_decimal_lane_prefix_mapping() {
-        for prefix_set_index in 0..11 {
-            for lane in 0..8 {
-                let table_index = prefix_set_index * 8 + lane;
-                let expected = u64::from(LANE_ID_MSB_STR[table_index] - u32::from(b'0')) * 10
-                    + u64::from(LANE_ID_LSB_STR[table_index] - u32::from(b'0'));
-                assert_eq!(
-                    (10 + 8 * prefix_set_index + lane) as u64,
-                    expected,
-                    "prefix set {prefix_set_index}, lane {lane}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn test_single_block_attempt_accounting() {
-        let message = SingleBlockMessage::new(&[b'a'; 64], 0).expect("single block");
-        let mut solver = SingleBlockSolver::from(message);
-        solver.set_limit(8);
-        assert!(
-            solver
-                .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
-                .is_none()
-        );
-        assert_eq!(solver.get_attempted_nonces(), 8);
+        for limit in [1, 8, 9, 17] {
+            let message = SingleBlockMessage::new(&[b'a'; 64], 0).expect("single block");
+            let mut solver = SingleBlockSolver::from(message);
+            solver.set_limit(limit);
+            assert!(
+                solver
+                    .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
+                    .is_none()
+            );
+            assert_eq!(solver.get_attempted_nonces(), limit);
+        }
     }
 
     #[test]
@@ -1819,6 +1508,22 @@ mod tests {
                 DoubleBlockMessage::new(prefix, search_space).map(Into::into)
             }
         });
+    }
+
+    #[test]
+    fn test_solve_decimal_f64() {
+        crate::solver::tests::test_decimal_validator_f64_safe::<DecimalSolver, _>(
+            |prefix, search_space| {
+                if let Some((solver, p)) =
+                    SingleBlockMessage::new_f64(prefix, search_space).map(|(x, p)| (x.into(), p))
+                {
+                    Some((DecimalSolver::SingleBlock(solver), p))
+                } else {
+                    DoubleBlockMessage::new(prefix, search_space)
+                        .map(|x| (DecimalSolver::DoubleBlock(x.into()), None))
+                }
+            },
+        );
     }
 
     #[test]

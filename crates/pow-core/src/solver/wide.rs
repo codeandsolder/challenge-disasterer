@@ -351,3 +351,192 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
     crate::unlikely();
     None
 }
+
+#[inline(always)]
+pub(crate) fn solve_single_block_impl<
+    const LANES: usize,
+    const DIGIT_WORD_IDX0: usize,
+    const DIGIT_WORD_IDX1_INCREMENT: bool,
+    const TYPE: u8,
+    const MUTATION_TYPE: u8,
+>(
+    message: &mut crate::message::SingleBlockMessage,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<u64> {
+    const MUTATION_TYPE_ALIGNED: u8 = 1;
+    const MUTATION_TYPE_OCTAL: u8 = 2;
+
+    let aligned = MUTATION_TYPE & MUTATION_TYPE_ALIGNED != 0;
+    let octal = MUTATION_TYPE & MUTATION_TYPE_OCTAL != 0;
+
+    let mut partial_state = message.prefix_state;
+    crate::sha256::ingest_message_prefix::<DIGIT_WORD_IDX0>(
+        &mut partial_state,
+        core::array::from_fn(|i| message.message[i]),
+    );
+
+    // Reset the nine nonce bytes so a reused solver cannot inherit a previous hit.
+    {
+        let message_bytes = crate::decompose_blocks_mut(&mut message.message);
+        for (ix, i) in (message.digit_index..).take(9).enumerate() {
+            message_bytes[crate::SWAP_DWORD_BYTE_ORDER[i]] =
+                if ix >= 2 && octal { b'1' } else { b'0' };
+        }
+    }
+
+    let lane_id_0_byte_idx = message.digit_index % 4;
+    let lane_id_1_byte_idx = (message.digit_index + 1) % 4;
+    let lane_id_0_shift = (3 - lane_id_0_byte_idx) * 8;
+    let lane_id_1_shift = (3 - lane_id_1_byte_idx) * 8;
+
+    // Preserve the historical backend search ranges exactly. AVX2 searched
+    // decimal-like prefixes 10..=97 for both mutation alphabets; AVX-512
+    // searched 10..=89 for decimal and 00..=95 for octal.
+    let (prefix_start, prefix_set_count) = if LANES == 16 {
+        if octal { (0usize, 6usize) } else { (10, 5) }
+    } else {
+        (10, 11)
+    };
+
+    for prefix_set_index in 0..prefix_set_count {
+        if *attempted_nonces >= limit {
+            return None;
+        }
+
+        let prefix_base = prefix_start + prefix_set_index * LANES;
+        let lane_id_0_or_value = Simd::<u32, LANES>::from_array(core::array::from_fn(|lane| {
+            let prefix = prefix_base + lane;
+            ((prefix / 10) as u32 + u32::from(b'0')) << lane_id_0_shift
+        }));
+        let lane_id_1_or_value = Simd::<u32, LANES>::from_array(core::array::from_fn(|lane| {
+            let prefix = prefix_base + lane;
+            ((prefix % 10) as u32 + u32::from(b'0')) << lane_id_1_shift
+        }));
+        let lane_id_0_or_value_v = if DIGIT_WORD_IDX1_INCREMENT {
+            lane_id_0_or_value
+        } else {
+            lane_id_0_or_value | lane_id_1_or_value
+        };
+
+        let mut inner_key_buf = if octal {
+            Align16(*b"1111\x80111")
+        } else {
+            Align16(*b"0000\x80000")
+        };
+        let max_inner_iterations = if octal {
+            0o10_000_000u64
+        } else {
+            10_000_000u64
+        };
+        let inner_iteration_end = limit
+            .saturating_sub(*attempted_nonces)
+            .div_ceil(LANES as u64)
+            .min(max_inner_iterations) as u32;
+
+        for next_inner_key in 1..=inner_iteration_end {
+            let inner_word_0 = u32::from_ne_bytes([
+                inner_key_buf[0],
+                inner_key_buf[1],
+                inner_key_buf[2],
+                inner_key_buf[3],
+            ]);
+            let inner_word_1 = u32::from_ne_bytes([
+                inner_key_buf[4],
+                inner_key_buf[5],
+                inner_key_buf[6],
+                inner_key_buf[7],
+            ]);
+
+            let mut blocks: [Simd<u32, LANES>; 16] = core::array::from_fn(|idx| {
+                if idx == DIGIT_WORD_IDX0 {
+                    Simd::splat(message.message[idx]) | lane_id_0_or_value_v
+                } else if DIGIT_WORD_IDX1_INCREMENT && idx == DIGIT_WORD_IDX0 + 1 {
+                    Simd::splat(message.message[idx]) | lane_id_1_or_value
+                } else if aligned && idx == DIGIT_WORD_IDX0 + 1 {
+                    Simd::splat(inner_word_0)
+                } else if aligned && idx == DIGIT_WORD_IDX0 + 2 {
+                    Simd::splat(inner_word_1)
+                } else {
+                    Simd::splat(message.message[idx])
+                }
+            });
+            let mut state = core::array::from_fn(|i| Simd::splat(partial_state[i]));
+            crate::sha256::portable::multiway_arx::<LANES, DIGIT_WORD_IDX0>(
+                &mut state,
+                &mut blocks,
+            );
+            state[0] += Simd::splat(message.prefix_state[0]);
+            #[cfg(feature = "compare-64bit")]
+            {
+                state[1] += Simd::splat(message.prefix_state[1]);
+            }
+
+            let met_target = target_match::<LANES, TYPE>(state[0], state[1], target, mask);
+            let valid_lanes = limit.saturating_sub(*attempted_nonces).min(LANES as u64) as usize;
+            *attempted_nonces += valid_lanes as u64;
+
+            if met_target.any() {
+                let lanes = met_target.to_array();
+                if let Some(success_lane_idx) = (0..valid_lanes).find(|&lane| lanes[lane]) {
+                    crate::unlikely();
+                    let nonce_prefix = prefix_base + success_lane_idx;
+
+                    if aligned {
+                        message.message[DIGIT_WORD_IDX0 + 1] = inner_word_0;
+                        message.message[DIGIT_WORD_IDX0 + 2] = inner_word_1;
+                    }
+                    {
+                        let message_bytes = crate::decompose_blocks_mut(&mut message.message);
+                        message_bytes[crate::SWAP_DWORD_BYTE_ORDER[message.digit_index]] =
+                            (nonce_prefix / 10) as u8 + b'0';
+                        message_bytes[crate::SWAP_DWORD_BYTE_ORDER[message.digit_index + 1]] =
+                            (nonce_prefix % 10) as u8 + b'0';
+                    }
+
+                    let decimal_inner_key = if octal {
+                        let mut decimal = 0u64;
+                        let mut key_octal = next_inner_key - 1;
+                        for place in (0..7u32).map(|i| 10u64.pow(i)) {
+                            let output = (key_octal % 8) + 1;
+                            key_octal /= 8;
+                            decimal += u64::from(output) * place;
+                        }
+                        decimal
+                    } else {
+                        u64::from(next_inner_key - 1)
+                    };
+                    return Some(nonce_prefix as u64 * 10u64.pow(7) + decimal_inner_key);
+                }
+            }
+
+            if *attempted_nonces >= limit {
+                return None;
+            }
+
+            if aligned && octal {
+                crate::strings::to_octal_7::<true, 0x80, 1>(&mut inner_key_buf, next_inner_key);
+            } else if aligned {
+                crate::strings::format_decimal_8::<7, true, 0x80>(
+                    &mut inner_key_buf,
+                    next_inner_key,
+                );
+            } else {
+                let message_bytes = crate::decompose_blocks_mut(&mut message.message);
+                let mut key_copy = next_inner_key;
+                for i in (0..7).rev() {
+                    let radix = if octal { 8 } else { 10 };
+                    let output = key_copy % radix;
+                    key_copy /= radix;
+                    message_bytes[crate::SWAP_DWORD_BYTE_ORDER[message.digit_index + i + 2]] =
+                        output as u8 + if octal { b'1' } else { b'0' };
+                }
+            }
+        }
+    }
+
+    crate::unlikely();
+    None
+}
