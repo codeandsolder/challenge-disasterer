@@ -46,6 +46,7 @@ fn target_match<const LANES: usize, const TYPE: u8>(
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 pub(crate) struct BinaryWork<'a> {
     pub(crate) attempted_nonces: &'a mut u64,
     pub(crate) limit: u64,
@@ -57,6 +58,7 @@ pub(crate) struct BinaryWork<'a> {
 }
 
 #[inline(always)]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn solve_binary_impl<
     const LANES: usize,
     const TYPE: u8,
@@ -398,7 +400,7 @@ pub(crate) fn solve_single_block_impl<
     let (prefix_start, prefix_set_count) = if LANES == 16 {
         if octal { (0usize, 6usize) } else { (10, 5) }
     } else {
-        (10, 11)
+        (10, 90 / LANES)
     };
 
     for prefix_set_index in 0..prefix_set_count {
@@ -542,6 +544,7 @@ pub(crate) fn solve_single_block_impl<
 }
 
 #[inline(always)]
+#[cfg(target_arch = "x86_64")]
 fn altcha_be_word(bytes: &[u8; 16], word: usize) -> u32 {
     let offset = word * 4;
     u32::from_be_bytes([
@@ -553,6 +556,7 @@ fn altcha_be_word(bytes: &[u8; 16], word: usize) -> u32 {
 }
 
 #[inline(always)]
+#[cfg(target_arch = "x86_64")]
 fn altcha_compare_mask<const TYPE: u8>(mask: u64) -> u64 {
     if TYPE == crate::solver::SOLVE_TYPE_MASK {
         mask
@@ -562,6 +566,7 @@ fn altcha_compare_mask<const TYPE: u8>(mask: u64) -> u64 {
 }
 
 #[inline(always)]
+#[cfg(target_arch = "x86_64")]
 fn solve_altcha_nested_impl<const LANES: usize, const TYPE: u8, const KEY_WORDS: usize>(
     message: &crate::message::AltchaMessage,
     attempted_nonces: &mut u64,
@@ -652,6 +657,7 @@ fn solve_altcha_nested_impl<const LANES: usize, const TYPE: u8, const KEY_WORDS:
 }
 
 #[inline(always)]
+#[cfg(target_arch = "x86_64")]
 fn solve_altcha_pbkdf2_impl<const LANES: usize, const TYPE: u8>(
     message: &crate::message::AltchaMessage,
     attempted_nonces: &mut u64,
@@ -787,6 +793,7 @@ fn solve_altcha_pbkdf2_impl<const LANES: usize, const TYPE: u8>(
 }
 
 #[inline]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn solve_altcha_fallback<const TYPE: u8>(
     message: &crate::message::AltchaMessage,
     attempted_nonces: &mut u64,
@@ -805,6 +812,7 @@ pub(crate) fn solve_altcha_fallback<const TYPE: u8>(
 }
 
 #[inline(always)]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn solve_altcha_impl<const LANES: usize, const TYPE: u8>(
     message: &crate::message::AltchaMessage,
     attempted_nonces: &mut u64,
@@ -1131,6 +1139,7 @@ pub(crate) fn solve_cerberus_decimal_avx2<
 }
 
 #[inline(always)]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn solve_cerberus_decimal_wide16<
     const CENTER_WORD_IDX: usize,
     const LANE_ID_WORD_IDX: usize,
@@ -1171,6 +1180,7 @@ pub(crate) fn solve_cerberus_binary_avx2(
 }
 
 #[inline(always)]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn solve_cerberus_binary_wide16(
     message: &crate::message::CerberusMessage,
     attempted_nonces: &mut u64,
@@ -1179,6 +1189,47 @@ pub(crate) fn solve_cerberus_binary_wide16(
     mask: u64,
 ) -> Option<u64> {
     solve_cerberus_binary_impl::<16, PortableCerberusCompression>(
+        message,
+        attempted_nonces,
+        limit,
+        target,
+        mask,
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+pub(crate) fn solve_cerberus_decimal_wide4<
+    const CENTER_WORD_IDX: usize,
+    const LANE_ID_WORD_IDX: usize,
+    const CONSTANT_WORD_COUNT: usize,
+>(
+    message: &crate::message::CerberusMessage,
+    msg_tpl: crate::Align64<[u32; 16]>,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<(u64, u64)> {
+    solve_cerberus_decimal_impl::<
+        4,
+        CENTER_WORD_IDX,
+        LANE_ID_WORD_IDX,
+        CONSTANT_WORD_COUNT,
+        PortableCerberusCompression,
+    >(message, msg_tpl, attempted_nonces, limit, target, mask)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+pub(crate) fn solve_cerberus_binary_wide4(
+    message: &crate::message::CerberusMessage,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<u64> {
+    solve_cerberus_binary_impl::<4, PortableCerberusCompression>(
         message,
         attempted_nonces,
         limit,
