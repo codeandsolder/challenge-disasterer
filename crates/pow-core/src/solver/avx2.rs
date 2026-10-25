@@ -461,7 +461,7 @@ impl SingleBlockSolver {
                             next_inner_key,
                         )
                     } else if MUTATION_TYPE == MUTATION_TYPE_ALIGNED {
-                        crate::strings::simd_itoa8::<7, true, 0x80>(
+                        crate::strings::format_decimal_8::<7, true, 0x80>(
                             &mut inner_key_buf,
                             next_inner_key,
                         );

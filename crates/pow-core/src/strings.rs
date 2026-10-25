@@ -42,7 +42,7 @@ mod static_asserts {
 /// intentionally keep their least-significant `N` digits, matching the historical
 /// SIMD formatter.
 #[inline(always)]
-pub fn simd_itoa8<const N: usize, const REGISTER_BSWAP: bool, const PLACEHOLDER: u8>(
+pub fn format_decimal_8<const N: usize, const REGISTER_BSWAP: bool, const PLACEHOLDER: u8>(
     out: &mut Align16<[u8; 8]>,
     mut input: u32,
 ) {
@@ -141,24 +141,24 @@ mod tests {
     }
 
     #[test]
-    fn test_itoa() {
+    fn test_format_decimal_8() {
         let mut buf = Align16([0u8; 8]);
-        simd_itoa8::<8, false, 0x80>(&mut buf, 12345678);
+        format_decimal_8::<8, false, 0x80>(&mut buf, 12345678);
         assert_eq!(buf, Align16(*b"12345678"));
 
-        simd_itoa8::<8, false, 0x80>(&mut buf, 1_0000_0000);
+        format_decimal_8::<8, false, 0x80>(&mut buf, 1_0000_0000);
         assert_eq!(buf, Align16(*b"00000000"));
 
-        simd_itoa8::<7, false, 0x80>(&mut buf, 1234567);
+        format_decimal_8::<7, false, 0x80>(&mut buf, 1234567);
         assert_eq!(buf, Align16(*b"1234567\x80"));
 
-        simd_itoa8::<7, false, 0x80>(&mut buf, 1000_0000);
+        format_decimal_8::<7, false, 0x80>(&mut buf, 1000_0000);
         assert_eq!(buf, Align16(*b"0000000\x80"));
 
-        simd_itoa8::<8, true, 0x80>(&mut buf, 12345678);
+        format_decimal_8::<8, true, 0x80>(&mut buf, 12345678);
         assert_eq!(buf, Align16(*b"43218765"));
 
-        simd_itoa8::<7, true, 0x80>(&mut buf, 1234567);
+        format_decimal_8::<7, true, 0x80>(&mut buf, 1234567);
         assert_eq!(buf, Align16(*b"4321\x80765"));
     }
 }
