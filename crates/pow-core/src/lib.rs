@@ -92,15 +92,33 @@ impl<T> core::ops::DerefMut for Align64<T> {
 #[cold]
 fn unlikely() {}
 
-const SWAP_DWORD_BYTE_ORDER: [usize; 64] = {
-    let mut data = [0; 64];
-    let mut i = 0;
-    while i < 64 {
-        data[i] = i / 4 * 4 + 3 - i % 4;
-        i += 1;
-    }
-    data
-};
+#[inline(always)]
+pub(crate) fn read_be_word_byte(words: &[u32; 16], byte_index: usize) -> u8 {
+    let shift = (3 - byte_index % 4) * 8;
+    (words[byte_index / 4] >> shift) as u8
+}
+
+#[inline(always)]
+pub(crate) fn write_be_word_byte(words: &mut [u32; 16], byte_index: usize, byte: u8) {
+    let shift = (3 - byte_index % 4) * 8;
+    let mask = 0xffu32 << shift;
+    let word = &mut words[byte_index / 4];
+    *word = (*word & !mask) | (u32::from(byte) << shift);
+}
+
+#[inline(always)]
+pub(crate) fn read_le_word_byte(words: &[u32; 16], byte_index: usize) -> u8 {
+    let shift = (byte_index % 4) * 8;
+    (words[byte_index / 4] >> shift) as u8
+}
+
+#[inline(always)]
+pub(crate) fn write_le_word_byte(words: &mut [u32; 16], byte_index: usize, byte: u8) {
+    let shift = (byte_index % 4) * 8;
+    let mask = 0xffu32 << shift;
+    let word = &mut words[byte_index / 4];
+    *word = (*word & !mask) | (u32::from(byte) << shift);
+}
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 cfg_if::cfg_if! {
@@ -384,10 +402,6 @@ pub fn build_mcaptcha_prefix<E: Extend<u8>>(out: &mut E, string: &str, salt: &st
     out.extend(string.as_bytes().iter().copied());
 }
 
-pub(crate) const fn decompose_blocks_mut(inp: &mut [u32; 16]) -> &mut [u8; 64] {
-    unsafe { core::mem::transmute(inp) }
-}
-
 /// Compute a plausible time for a SHA-256 PoW to prevent tainting metrics
 ///
 /// # Arguments
@@ -508,8 +522,8 @@ mod tests {
             ],
         );
         assert_eq!(
-            unsafe { std::str::from_utf8_unchecked(&out) },
-            "123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"
+            &out,
+            b"123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"
         );
     }
 

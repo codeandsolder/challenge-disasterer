@@ -1,5 +1,5 @@
 use crate::{
-    Align16, Align64, decompose_blocks_mut,
+    Align16, Align64,
     message::{
         AltchaMessage, BinaryMessage, CerberusMessage, DecimalMessage, DoubleBlockMessage,
         GoAwayMessage, SingleBlockMessage,
@@ -454,9 +454,8 @@ impl crate::solver::Solver for CerberusSolver {
                     message.salt_residual_len + 8 < message.salt_residual.len(),
                     "there must be at least 9 bytes of headroom for the nonce"
                 );
-                {
-                    let bytes = decompose_blocks_mut(&mut msg);
-                    bytes[message.salt_residual_len..message.salt_residual_len + 9].fill(b'0');
+                for byte_index in message.salt_residual_len..message.salt_residual_len + 9 {
+                    crate::write_le_word_byte(&mut msg, byte_index, b'0');
                 }
                 let search_limit = remaining_limit.min(1_000_000_000);
                 for nonce in 0u64..search_limit {
@@ -475,10 +474,18 @@ impl crate::solver::Solver for CerberusSolver {
                     }
 
                     if nonce + 1 < search_limit {
-                        let bytes = decompose_blocks_mut(&mut msg);
-                        let wrapped = crate::solver::increment_ascii_decimal(
-                            &mut bytes[message.salt_residual_len..message.salt_residual_len + 9],
-                        );
+                        let start = message.salt_residual_len;
+                        let end = start + 9;
+                        let mut wrapped = true;
+                        for byte_index in (start..end).rev() {
+                            let byte = crate::read_le_word_byte(&msg, byte_index);
+                            if byte != b'9' {
+                                crate::write_le_word_byte(&mut msg, byte_index, byte + 1);
+                                wrapped = false;
+                                break;
+                            }
+                            crate::write_le_word_byte(&mut msg, byte_index, b'0');
+                        }
                         debug_assert!(!wrapped);
                     }
                 }
