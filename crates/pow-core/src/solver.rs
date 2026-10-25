@@ -75,6 +75,10 @@ pub mod sha_ni;
 #[cfg(target_arch = "wasm32")]
 pub mod simd128;
 
+/// Shared portable-SIMD implementation used by the wide x86 backends.
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod wide;
+
 /// Safe solver
 pub mod safe;
 

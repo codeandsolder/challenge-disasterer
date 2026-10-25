@@ -1,0 +1,153 @@
+use core::simd::{
+    Simd,
+    cmp::{SimdPartialEq as _, SimdPartialOrd as _},
+};
+
+use crate::Align64;
+
+pub(crate) struct BinaryWork<'a> {
+    pub(crate) attempted_nonces: &'a mut u64,
+    pub(crate) limit: u64,
+    pub(crate) prefix_state: [u32; 8],
+    pub(crate) first_block: &'a Align64<[u32; 16]>,
+    pub(crate) second_block_schedule: &'a [u32; 64],
+    pub(crate) nonce_byte_offset: usize,
+    pub(crate) nonce_byte_count: core::num::NonZeroU8,
+}
+
+#[inline(always)]
+pub(crate) fn solve_binary_impl<
+    const LANES: usize,
+    const TYPE: u8,
+    const FIRST_NONCE_WORD_IDX: usize,
+    const NEED_SECOND_BLOCK: bool,
+>(
+    work: BinaryWork<'_>,
+    target: u64,
+    mask: u64,
+) -> Option<u64> {
+    let BinaryWork {
+        attempted_nonces,
+        limit,
+        prefix_state,
+        first_block,
+        second_block_schedule,
+        nonce_byte_offset,
+        nonce_byte_count,
+    } = work;
+    let target = target & mask;
+    let lane_shift = (3 - nonce_byte_offset % 4) * 8;
+    let lane_ids =
+        Simd::<u32, LANES>::from_array(core::array::from_fn(|lane| (lane as u32) << lane_shift));
+
+    let mut memo_state = prefix_state;
+    crate::sha256::ingest_message_prefix::<FIRST_NONCE_WORD_IDX>(
+        &mut memo_state,
+        core::array::from_fn(|i| first_block[i]),
+    );
+
+    let candidate_space = 256u64.saturating_pow(nonce_byte_count.get() as u32);
+    let search_end = limit.min(candidate_space);
+    let mut cursor = (*attempted_nonces).min(search_end);
+    while cursor < search_end {
+        let x = cursor >> 8;
+        let mut block_template = **first_block;
+        let x_bytes = x.to_le_bytes();
+        for (i, byte) in x_bytes
+            .iter()
+            .take(nonce_byte_count.get() as usize - 1)
+            .enumerate()
+        {
+            let byte_index = nonce_byte_offset + 1 + i;
+            let shift = (3 - byte_index % 4) * 8;
+            block_template[byte_index / 4] |= u32::from(*byte) << shift;
+        }
+
+        let mut lane_base = (cursor & 0xff) as usize;
+        while lane_base < 256 && cursor < search_end {
+            let valid_lanes = (search_end - cursor)
+                .min(LANES as u64)
+                .min((256 - lane_base) as u64) as usize;
+            let lane_values = lane_ids + Simd::splat((lane_base as u32) << lane_shift);
+
+            let mut state = core::array::from_fn(|i| Simd::splat(memo_state[i]));
+            let mut message: [Simd<u32, LANES>; 16] =
+                core::array::from_fn(|i| Simd::splat(block_template[i]));
+            message[FIRST_NONCE_WORD_IDX] |= lane_values;
+
+            crate::sha256::portable::multiway_arx::<LANES, FIRST_NONCE_WORD_IDX>(
+                &mut state,
+                &mut message,
+            );
+
+            if NEED_SECOND_BLOCK {
+                for i in 0..8 {
+                    state[i] += Simd::splat(prefix_state[i]);
+                }
+                let save_a = state[0];
+                #[cfg(feature = "compare-64bit")]
+                let save_b = state[1];
+
+                crate::sha256::portable::bcst_multiway_arx::<LANES, 0>(
+                    &mut state,
+                    second_block_schedule,
+                );
+                state[0] += save_a;
+                #[cfg(feature = "compare-64bit")]
+                {
+                    state[1] += save_b;
+                }
+            } else {
+                state[0] += Simd::splat(prefix_state[0]);
+                #[cfg(feature = "compare-64bit")]
+                {
+                    state[1] += Simd::splat(prefix_state[1]);
+                }
+            }
+
+            let target_hi = (target >> 32) as u32;
+            let mask_hi = (mask >> 32) as u32;
+            #[cfg(not(feature = "compare-64bit"))]
+            let met_target = if TYPE == crate::solver::SOLVE_TYPE_GT {
+                state[0].simd_gt(Simd::splat(target_hi))
+            } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                state[0].simd_lt(Simd::splat(target_hi))
+            } else {
+                (state[0] & Simd::splat(mask_hi)).simd_eq(Simd::splat(target_hi & mask_hi))
+            };
+
+            #[cfg(feature = "compare-64bit")]
+            let met_target = {
+                let target_lo = target as u32;
+                let mask_lo = mask as u32;
+                let hi_eq = state[0].simd_eq(Simd::splat(target_hi));
+                if TYPE == crate::solver::SOLVE_TYPE_GT {
+                    state[0].simd_gt(Simd::splat(target_hi))
+                        | (hi_eq & state[1].simd_gt(Simd::splat(target_lo)))
+                } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                    state[0].simd_lt(Simd::splat(target_hi))
+                        | (hi_eq & state[1].simd_lt(Simd::splat(target_lo)))
+                } else {
+                    (state[0] & Simd::splat(mask_hi)).simd_eq(Simd::splat(target_hi & mask_hi))
+                        & (state[1] & Simd::splat(mask_lo))
+                            .simd_eq(Simd::splat(target_lo & mask_lo))
+                }
+            };
+
+            cursor += valid_lanes as u64;
+            *attempted_nonces = cursor;
+
+            if met_target.any() {
+                crate::unlikely();
+                let lanes = met_target.to_array();
+                if let Some(success_lane) = (0..valid_lanes).find(|&lane| lanes[lane]) {
+                    return Some((x << 8) | (lane_base + success_lane) as u64);
+                }
+            }
+
+            lane_base += valid_lanes;
+        }
+    }
+
+    None
+}

@@ -33,7 +33,7 @@ fn maj<const N: usize>(x: Simd<u32, N>, y: Simd<u32, N>, z: Simd<u32, N>) -> Sim
     (x & y) ^ (x & z) ^ (y & z)
 }
 #[inline(always)]
-pub(super) fn multiway_arx<const N: usize, const BEGIN: usize>(
+pub(crate) fn multiway_arx<const N: usize, const BEGIN: usize>(
     state: &mut [Simd<u32, N>; 8],
     block: &mut [Simd<u32, N>; 16],
 ) {
@@ -64,7 +64,7 @@ pub(super) fn multiway_arx<const N: usize, const BEGIN: usize>(
     });
 }
 #[inline(always)]
-pub(super) fn bcst_multiway_arx<const N: usize, const LEAD: usize>(
+pub(crate) fn bcst_multiway_arx<const N: usize, const LEAD: usize>(
     state: &mut [Simd<u32, N>; 8],
     wk: &[u32; 64],
 ) {
