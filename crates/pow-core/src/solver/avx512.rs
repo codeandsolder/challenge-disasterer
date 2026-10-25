@@ -168,7 +168,7 @@ impl crate::solver::Solver for SingleBlockSolver {
             11 => dispatch!(11),
             12 => dispatch!(12),
             13 => dispatch!(13),
-            _ => unsafe { core::hint::unreachable_unchecked() },
+            _ => return None,
         }?;
 
         Some(nonce + self.message.nonce_addend)

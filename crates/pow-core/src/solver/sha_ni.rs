@@ -154,7 +154,7 @@ impl SingleBlockSolver {
             11 => dispatch!(8, 2, 3),
             12 => dispatch!(12, 3, 0),
             13 => dispatch!(12, 3, 1),
-            _ => unsafe { core::hint::unreachable_unchecked() },
+            _ => return None,
         }?;
 
         let mut final_sha_state = self.message.prefix_state;

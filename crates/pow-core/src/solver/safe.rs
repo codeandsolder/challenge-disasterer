@@ -376,13 +376,8 @@ impl crate::solver::Solver for BinarySolver {
             let mut state = self.message.prefix_state;
             let nonce_bytes = &x.to_le_bytes()[..self.message.nonce_byte_count.get() as usize];
             for (i, byte) in nonce_bytes.iter().enumerate() {
-                unsafe {
-                    used_blocks
-                        .as_mut_ptr()
-                        .cast::<u8>()
-                        .add(self.message.salt_residual_len + i)
-                        .write(*byte);
-                }
+                let byte_index = self.message.salt_residual_len + i;
+                used_blocks[byte_index / 64][byte_index % 64] = *byte;
             }
 
             sha2::block_api::compress256(&mut state, used_blocks);
