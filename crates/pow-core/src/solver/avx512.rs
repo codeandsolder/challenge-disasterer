@@ -937,3 +937,28 @@ mod tests {
         });
     }
 }
+
+#[cfg(test)]
+mod feature_guard_tests {
+    use super::*;
+    use crate::solver::Solver as _;
+
+    #[test]
+    fn direct_backend_fails_closed_without_avx512() {
+        if <RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return;
+        }
+
+        let message = SingleBlockMessage::new(b"avx512-feature-guard", 0)
+            .expect("single-block feature-guard fixture");
+        let mut solver = SingleBlockSolver::from(message);
+        solver.set_limit(16);
+
+        assert!(
+            solver
+                .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
+                .is_none()
+        );
+        assert_eq!(solver.get_attempted_nonces(), 0);
+    }
+}
