@@ -1110,140 +1110,14 @@ impl GoAwaySolver {
         target: u64,
         mask: u64,
     ) -> Option<u64> {
-        let lane_id_v = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
-
-        let target = target & mask;
-
-        let mut prefix_state = crate::sha256::IV;
-        crate::sha256::ingest_message_prefix(&mut prefix_state, self.message.challenge);
-
-        let search_end = self.limit.min(u64::from(u32::MAX) + 1);
-
-        unsafe {
-            let mut partial_state = prefix_state;
-            crate::sha256::sha2_arx::<8>(&mut partial_state, &[self.message.high_word]);
-
-            let mut low_word = self.attempted_nonces.min(search_end);
-            while low_word < search_end {
-                let valid_lanes = (search_end - low_word).min(8) as usize;
-                let low_word_u32 = low_word as u32;
-                let mut state = core::array::from_fn(|i| _mm256_set1_epi32(partial_state[i] as _));
-
-                let mut msg = [
-                    _mm256_set1_epi32(self.message.challenge[0] as _),
-                    _mm256_set1_epi32(self.message.challenge[1] as _),
-                    _mm256_set1_epi32(self.message.challenge[2] as _),
-                    _mm256_set1_epi32(self.message.challenge[3] as _),
-                    _mm256_set1_epi32(self.message.challenge[4] as _),
-                    _mm256_set1_epi32(self.message.challenge[5] as _),
-                    _mm256_set1_epi32(self.message.challenge[6] as _),
-                    _mm256_set1_epi32(self.message.challenge[7] as _),
-                    _mm256_set1_epi32(self.message.high_word as _),
-                    _mm256_add_epi32(_mm256_set1_epi32(low_word_u32 as _), lane_id_v),
-                    _mm256_set1_epi32(u32::from_be_bytes([0x80, 0, 0, 0]) as _),
-                    _mm256_setzero_si256(),
-                    _mm256_setzero_si256(),
-                    _mm256_setzero_si256(),
-                    _mm256_setzero_si256(),
-                    _mm256_set1_epi32(Self::MSG_LEN as _),
-                ];
-                crate::sha256::avx2::multiway_arx::<9>(&mut state, &mut msg);
-
-                state[0] = _mm256_add_epi32(state[0], _mm256_set1_epi32(crate::sha256::IV[0] as _));
-
-                #[cfg(feature = "compare-64bit")]
-                {
-                    state[1] =
-                        _mm256_add_epi32(state[1], _mm256_set1_epi32(crate::sha256::IV[1] as _));
-                }
-
-                #[cfg(not(feature = "compare-64bit"))]
-                let cmp_fn = |x: __m256i, y: __m256i| {
-                    let bias = _mm256_set1_epi32(i32::MIN);
-                    if TYPE == crate::solver::SOLVE_TYPE_GT {
-                        _mm256_cmpgt_epi32(_mm256_add_epi32(x, bias), _mm256_add_epi32(y, bias))
-                    } else if TYPE == crate::solver::SOLVE_TYPE_LT {
-                        _mm256_cmpgt_epi32(_mm256_add_epi32(y, bias), _mm256_add_epi32(x, bias))
-                    } else {
-                        _mm256_cmpeq_epi32(
-                            _mm256_and_si256(x, _mm256_set1_epi32((mask >> 32) as _)),
-                            y,
-                        )
-                    }
-                };
-
-                #[cfg(feature = "compare-64bit")]
-                let cmp64_fn = |x: __m256i, y: __m256i| {
-                    let bias = _mm256_set1_epi64x(i64::MIN);
-                    if TYPE == crate::solver::SOLVE_TYPE_GT {
-                        _mm256_cmpgt_epi64(_mm256_add_epi64(x, bias), _mm256_add_epi64(y, bias))
-                    } else if TYPE == crate::solver::SOLVE_TYPE_LT {
-                        _mm256_cmpgt_epi64(_mm256_add_epi64(y, bias), _mm256_add_epi64(x, bias))
-                    } else {
-                        _mm256_cmpeq_epi64(_mm256_and_si256(x, _mm256_set1_epi64x(mask as _)), y)
-                    }
-                };
-
-                #[cfg(not(feature = "compare-64bit"))]
-                let met_target = cmp_fn(state[0], _mm256_set1_epi32((target >> 32) as _));
-
-                #[cfg(feature = "compare-64bit")]
-                let result_ab_lo = _mm256_unpacklo_epi32(state[1], state[0]);
-                #[cfg(feature = "compare-64bit")]
-                let result_ab_hi = _mm256_unpackhi_epi32(state[1], state[0]);
-                #[cfg(feature = "compare-64bit")]
-                let (met_target_hi, met_target_lo) = {
-                    let ab_met_target_lo = cmp64_fn(result_ab_lo, _mm256_set1_epi64x(target as _));
-                    let ab_met_target_high =
-                        cmp64_fn(result_ab_hi, _mm256_set1_epi64x(target as _));
-                    (ab_met_target_high, ab_met_target_lo)
-                };
-
-                #[cfg(feature = "compare-64bit")]
-                let nothit = _mm256_testz_si256(met_target_hi, met_target_hi)
-                    & _mm256_testz_si256(met_target_lo, met_target_lo);
-                #[cfg(not(feature = "compare-64bit"))]
-                let nothit = _mm256_testz_si256(met_target, met_target);
-
-                self.attempted_nonces += valid_lanes as u64;
-
-                if nothit == 0 {
-                    crate::unlikely();
-                    let mut a = Align64([0u32; 8]);
-                    _mm256_store_si256(a.as_mut_ptr().cast(), state[0]);
-                    #[cfg(feature = "compare-64bit")]
-                    let mut b = Align64([0u32; 8]);
-                    #[cfg(feature = "compare-64bit")]
-                    _mm256_store_si256(b.as_mut_ptr().cast(), state[1]);
-
-                    let success_lane_idx = (0..valid_lanes).find(|&lane| {
-                        #[cfg(feature = "compare-64bit")]
-                        let value = (u64::from(a[lane]) << 32) | u64::from(b[lane]);
-                        #[cfg(not(feature = "compare-64bit"))]
-                        let value = a[lane];
-                        #[cfg(not(feature = "compare-64bit"))]
-                        let target = (target >> 32) as u32;
-                        #[cfg(not(feature = "compare-64bit"))]
-                        let mask = (mask >> 32) as u32;
-                        if TYPE == crate::solver::SOLVE_TYPE_GT {
-                            value > target
-                        } else if TYPE == crate::solver::SOLVE_TYPE_LT {
-                            value < target
-                        } else {
-                            value & mask == target & mask
-                        }
-                    });
-
-                    if let Some(success_lane_idx) = success_lane_idx {
-                        let final_low_word = low_word_u32.wrapping_add(success_lane_idx as u32);
-                        return Some((self.message.high_word as u64) << 32 | final_low_word as u64);
-                    }
-                }
-
-                low_word += valid_lanes as u64;
-            }
-        }
-        None
+        crate::solver::wide::solve_goaway_impl::<8, TYPE>(
+            &mut self.attempted_nonces,
+            self.limit,
+            self.message.challenge,
+            self.message.high_word,
+            target,
+            mask,
+        )
     }
 }
 
