@@ -42,18 +42,10 @@ macro_rules! schedule {
 
 #[inline(always)]
 pub(crate) fn prepare_state(state: &Align16<[u32; 8]>) -> [__m128i; 2] {
-    unsafe {
-        let state_ptr = state.as_ptr().cast::<__m128i>();
-        let dcba = _mm_load_si128(state_ptr.add(0));
-        let efgh = _mm_load_si128(state_ptr.add(1));
-
-        let cdab = _mm_shuffle_epi32(dcba, 0xB1);
-        let efgh = _mm_shuffle_epi32(efgh, 0x1B);
-        let abef = _mm_alignr_epi8(cdab, efgh, 8);
-        let cdgh = _mm_blend_epi16(efgh, cdab, 0xF0);
-
-        [abef, cdgh]
-    }
+    [
+        u32x4::from_array([state[5], state[4], state[1], state[0]]).into(),
+        u32x4::from_array([state[7], state[6], state[3], state[2]]).into(),
+    ]
 }
 
 #[inline(always)]
@@ -133,10 +125,34 @@ pub(crate) fn multiway_arx_abef_cdgh<
         let mut abef: [_; LANES] = core::array::from_fn(|i| state[i][0]);
         let mut cdgh: [_; LANES] = core::array::from_fn(|i| state[i][1]);
 
-        let w0_t = _mm_load_si128(block_template.as_ptr().cast::<u32>().add(0).cast());
-        let w1_t = _mm_load_si128(block_template.as_ptr().cast::<u32>().add(4).cast());
-        let w2_t = _mm_load_si128(block_template.as_ptr().cast::<u32>().add(8).cast());
-        let w3_t = _mm_load_si128(block_template.as_ptr().cast::<u32>().add(12).cast());
+        let w0_t: __m128i = u32x4::from_array([
+            block_template[0],
+            block_template[1],
+            block_template[2],
+            block_template[3],
+        ])
+        .into();
+        let w1_t: __m128i = u32x4::from_array([
+            block_template[4],
+            block_template[5],
+            block_template[6],
+            block_template[7],
+        ])
+        .into();
+        let w2_t: __m128i = u32x4::from_array([
+            block_template[8],
+            block_template[9],
+            block_template[10],
+            block_template[11],
+        ])
+        .into();
+        let w3_t: __m128i = u32x4::from_array([
+            block_template[12],
+            block_template[13],
+            block_template[14],
+            block_template[15],
+        ])
+        .into();
 
         let mut w0: [_; LANES] = [w0_t; LANES];
         let mut w1: [_; LANES] = [w1_t; LANES];
@@ -207,29 +223,10 @@ pub(crate) fn multiway_arx_abef_cdgh<
             schedule_rounds4!(abef, cdgh, w1, w2, w3, w4, w0, 15);
         });
 
-        state.iter_mut().zip(abef).for_each(|(state, abef)| {
-            _mm_store_si128(
-                state
-                    .as_mut_slice()
-                    .as_mut_ptr()
-                    .cast::<u32>()
-                    .add(0)
-                    .cast(),
-                abef,
-            );
-        });
-
-        state.iter_mut().zip(cdgh).for_each(|(state, cdgh)| {
-            _mm_store_si128(
-                state
-                    .as_mut_slice()
-                    .as_mut_ptr()
-                    .cast::<u32>()
-                    .add(4)
-                    .cast(),
-                cdgh,
-            );
-        });
+        for i in 0..LANES {
+            state[i][0] = abef[i];
+            state[i][1] = cdgh[i];
+        }
     }
 }
 
@@ -239,6 +236,12 @@ mod layout_tests {
 
     #[test]
     fn portable_state_helpers_preserve_sha_ni_layout() {
+        let prepared = prepare_state(&Align16([0, 1, 2, 3, 4, 5, 6, 7]));
+        let prepared_abef: u32x4 = prepared[0].into();
+        let prepared_cdgh: u32x4 = prepared[1].into();
+        assert_eq!(prepared_abef.to_array(), [5, 4, 1, 0]);
+        assert_eq!(prepared_cdgh.to_array(), [7, 6, 3, 2]);
+
         let feedback: u32x4 = feedback_ab(0x1122_3344, 0x5566_7788).into();
         assert_eq!(feedback.to_array(), [0, 0, 0x5566_7788, 0x1122_3344]);
 
@@ -277,10 +280,10 @@ mod tests {
             (),
         );
 
-        let a = unsafe { _mm_extract_epi32(prepared_state_0[0], 3) as u32 };
-        let b = unsafe { _mm_extract_epi32(prepared_state_0[0], 2) as u32 };
+        let prepared_abef: u32x4 = prepared_state_0[0].into();
+        let [_, _, b, a] = prepared_abef.to_array();
 
-        let ab = unsafe { _mm_extract_epi64(prepared_state_0[0], 1) };
+        let ab = extract_ab(prepared_state_0[0]);
         let ab_b = ab as u32;
         let ab_a = (ab >> 32) as u32;
 
