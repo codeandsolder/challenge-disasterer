@@ -102,6 +102,9 @@ impl crate::solver::Solver for SingleBlockSolver {
     }
 
     fn solve_nonce_only<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return None;
+        }
         if self.attempted_nonces >= self.limit {
             return None;
         }
@@ -229,6 +232,10 @@ impl crate::solver::Solver for DoubleBlockSolver {
 
     #[inline]
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return None;
+        }
+        // SAFETY: the feature check above proves AVX-512F is available.
         unsafe { self.solve_impl::<TYPE>(target, mask) }
     }
 }
@@ -327,6 +334,9 @@ impl crate::solver::Solver for BinarySolver {
     }
 
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return None;
+        }
         // A one-byte search has only 256 candidates, and a nonce crossing a SHA block boundary
         // needs a distinct shuffle layout. Keep those rare cases on the scalar fallback instead of
         // burdening the hot SIMD path with extra setup and branches.
@@ -482,11 +492,7 @@ impl GoAwaySolver {
 
     #[inline(never)]
     #[target_feature(enable = "avx512f")]
-    unsafe fn solve_nonce_only_impl<const TYPE: u8>(
-        &mut self,
-        target: u64,
-        mask: u64,
-    ) -> Option<u64> {
+    fn solve_nonce_only_impl<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
         crate::solver::wide::solve_goaway_impl::<16, TYPE>(
             &mut self.attempted_nonces,
             self.limit,
@@ -510,6 +516,10 @@ impl crate::solver::Solver for GoAwaySolver {
 
     #[inline(always)]
     fn solve_nonce_only<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return None;
+        }
+        // SAFETY: the feature check above proves AVX-512F is available.
         unsafe { self.solve_nonce_only_impl::<TYPE>(target, mask) }
     }
 
@@ -599,6 +609,9 @@ impl crate::solver::Solver for CerberusSolver {
     }
 
     fn solve_nonce_only<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return None;
+        }
         match &self.message {
             CerberusMessage::Binary(_) => unsafe { self.solve_binary_impl(target, mask) },
             CerberusMessage::Decimal(message) => {

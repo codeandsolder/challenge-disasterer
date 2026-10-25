@@ -65,6 +65,9 @@ impl crate::solver::Solver for SingleBlockSolver {
         self.attempted_nonces
     }
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return None;
+        }
         if self.message.no_trailing_zeros {
             self.solve_impl::<TYPE, true>(target, mask)
         } else {
@@ -495,6 +498,10 @@ impl crate::solver::Solver for DoubleBlockSolver {
         self.attempted_nonces
     }
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return None;
+        }
+        // SAFETY: the feature check above proves SSE4.1 and SHA-NI are available.
         unsafe { self.solve_impl::<TYPE>(target, mask) }
     }
 }
@@ -749,6 +756,10 @@ impl crate::solver::Solver for GoAwaySolver {
     }
 
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return None;
+        }
+        // SAFETY: the feature check above proves SSE4.1 and SHA-NI are available.
         unsafe { self.solve_impl::<TYPE>(target, mask) }
     }
 }
