@@ -93,6 +93,7 @@ impl<T> core::ops::DerefMut for Align64<T> {
 #[cold]
 fn unlikely() {}
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline(always)]
 pub(crate) fn read_be_word_byte(words: &[u32; 16], byte_index: usize) -> u8 {
     let shift = (3 - byte_index % 4) * 8;
