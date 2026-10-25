@@ -77,6 +77,10 @@ impl crate::solver::Solver for SingleBlockSolver {
 }
 
 impl SingleBlockSolver {
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve_impl<const TYPE: u8, const NO_TRAILING_ZEROS: bool>(
         &mut self,
         target: u64,
@@ -497,6 +501,10 @@ impl crate::solver::Solver for DoubleBlockSolver {
     fn get_attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
         if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
             return None;
@@ -755,6 +763,10 @@ impl crate::solver::Solver for GoAwaySolver {
         self.attempted_nonces
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
         if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
             return None;

@@ -90,6 +90,10 @@ pub trait Plucker: Sized {
 impl Plucker for () {}
 
 // ARX network using altered data layout
+#[expect(
+    unsafe_code,
+    reason = "isolated SHA-NI instruction kernel; callers require SHA and SSE4.1"
+)]
 #[inline(always)]
 pub(crate) fn multiway_arx_abef_cdgh<
     const BEGIN_ROUND_BY_4: usize,

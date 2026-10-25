@@ -101,6 +101,10 @@ impl crate::solver::Solver for SingleBlockSolver {
         self.attempted_nonces
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve_nonce_only<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
         if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
             return None;
@@ -231,6 +235,10 @@ impl crate::solver::Solver for DoubleBlockSolver {
     }
 
     #[inline]
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
         if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
             return None;
@@ -333,6 +341,10 @@ impl crate::solver::Solver for BinarySolver {
         self.attempted_nonces
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
         if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
             return None;
@@ -515,6 +527,10 @@ impl crate::solver::Solver for GoAwaySolver {
     }
 
     #[inline(always)]
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve_nonce_only<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
         if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
             return None;
@@ -620,6 +636,10 @@ impl crate::solver::Solver for CerberusSolver {
         self.attempted_nonces
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve_nonce_only<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
         if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
             return None;
@@ -857,6 +877,10 @@ impl crate::solver::Solver for AltchaSha256Solver {
         self.attempted_nonces
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
         if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
             return self.solve_fallback::<TYPE>(target, mask);

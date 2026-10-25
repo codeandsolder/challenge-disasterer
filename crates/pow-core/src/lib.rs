@@ -2,6 +2,7 @@
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 #![doc = "Internal protocol PoW solver core for challenge-disasterer."]
 #![warn(missing_docs)]
+#![deny(unsafe_code)]
 
 use core::num::NonZeroU8;
 
