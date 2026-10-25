@@ -3,9 +3,6 @@ pub(crate) mod portable;
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub mod sha_ni;
 
-#[cfg(target_arch = "wasm32")]
-pub mod simd128;
-
 // Initial hash values for SHA-256
 pub(crate) const IV: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,

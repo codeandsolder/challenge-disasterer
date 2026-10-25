@@ -20,7 +20,7 @@ use serde_json as _;
 /// GPU solver backend using native `wgpu` or browser WebGPU.
 pub mod gpu;
 
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[cfg(any(target_arch = "x86_64", target_arch = "x86", target_arch = "wasm32"))]
 cfg_if::cfg_if! {
     if #[cfg(feature = "internals")] {
         /// String manipulation functions

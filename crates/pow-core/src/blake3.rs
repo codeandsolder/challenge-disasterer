@@ -3,9 +3,6 @@ mod loop_macros;
 
 pub(crate) mod portable;
 
-#[cfg(target_arch = "wasm32")]
-pub mod simd128;
-
 /// Initial hash values for BLAKE3
 pub(crate) const IV: [u32; 8] = crate::sha256::IV;
 
