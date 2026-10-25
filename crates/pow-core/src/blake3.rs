@@ -1,10 +1,7 @@
 #[macro_use]
 mod loop_macros;
 
-mod portable;
-
-#[cfg(target_arch = "x86_64")]
-pub mod avx512;
+pub(crate) mod portable;
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub mod avx2;

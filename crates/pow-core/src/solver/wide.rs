@@ -876,3 +876,321 @@ pub(crate) fn solve_altcha_impl<const LANES: usize, const TYPE: u8>(
         }
     }
 }
+
+trait CerberusCompression<const LANES: usize> {
+    fn compress<const CONSTANT_WORD_COUNT: usize, const PATCH: usize>(
+        state: &mut [Simd<u32, LANES>; 16],
+        template: &[u32; 16],
+        patch: Simd<u32, LANES>,
+    );
+}
+
+struct PortableCerberusCompression;
+
+impl<const LANES: usize> CerberusCompression<LANES> for PortableCerberusCompression {
+    #[inline(always)]
+    fn compress<const CONSTANT_WORD_COUNT: usize, const PATCH: usize>(
+        state: &mut [Simd<u32, LANES>; 16],
+        template: &[u32; 16],
+        patch: Simd<u32, LANES>,
+    ) {
+        crate::blake3::portable::compress::<LANES, CONSTANT_WORD_COUNT, PATCH>(
+            state, template, patch,
+        );
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+struct Avx2CerberusCompression;
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+impl CerberusCompression<8> for Avx2CerberusCompression {
+    #[inline(always)]
+    fn compress<const CONSTANT_WORD_COUNT: usize, const PATCH: usize>(
+        state: &mut [Simd<u32, 8>; 16],
+        template: &[u32; 16],
+        patch: Simd<u32, 8>,
+    ) {
+        crate::blake3::avx2::compress_simd8::<CONSTANT_WORD_COUNT, PATCH>(state, template, patch);
+    }
+}
+
+#[inline(always)]
+fn cerberus_lane_words<const LANES: usize>(base: usize) -> Simd<u32, LANES> {
+    Simd::from_array(core::array::from_fn(|lane| {
+        let mut value = base + lane;
+        let ones = (value % 10) as u8 + b'0';
+        value /= 10;
+        let tens = (value % 10) as u8 + b'0';
+        value /= 10;
+        let hundreds = (value % 10) as u8 + b'0';
+        u32::from_be_bytes([ones, tens, hundreds, 0])
+    }))
+}
+
+#[inline(always)]
+fn first_zero_mask_lane<const LANES: usize>(
+    word: Simd<u32, LANES>,
+    mask: u32,
+    valid_lanes: usize,
+) -> Option<usize> {
+    let hits = (word & Simd::splat(mask))
+        .simd_eq(Simd::splat(0))
+        .to_array();
+    (0..valid_lanes).find(|&lane| hits[lane])
+}
+
+fn solve_cerberus_decimal_impl<
+    const LANES: usize,
+    const CENTER_WORD_IDX: usize,
+    const LANE_ID_WORD_IDX: usize,
+    const CONSTANT_WORD_COUNT: usize,
+    B: CerberusCompression<LANES>,
+>(
+    message: &crate::message::CerberusMessage,
+    msg_tpl: Align64<[u32; 16]>,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<(u64, u64)> {
+    debug_assert_eq!(target, 0);
+
+    let crate::message::CerberusMessage::Decimal(message) = message else {
+        return None;
+    };
+
+    let mut msg = Align64([0u32; 16]);
+    msg.0[..=CENTER_WORD_IDX + 1].copy_from_slice(&msg_tpl.0[..=CENTER_WORD_IDX + 1]);
+    let prepared_state = crate::blake3::ingest_message_prefix(
+        *message.prefix_state,
+        &msg[..CONSTANT_WORD_COUNT],
+        0,
+        message.salt_residual_len as u32 + 9,
+        message.flags,
+    );
+    let state_base: [Simd<u32, LANES>; 16] =
+        core::array::from_fn(|i| Simd::splat(prepared_state[i]));
+    let mask_hi = (mask >> 32) as u32;
+    let lane_group_count = 1000 / LANES;
+    let lanes_u64 = LANES as u64;
+    let pair_width = lanes_u64 * 2;
+
+    for lane_id_idx in 0..lane_group_count {
+        if *attempted_nonces >= limit {
+            return None;
+        }
+
+        let mut lane_id_value = cerberus_lane_words::<LANES>(lane_id_idx * LANES);
+        if CENTER_WORD_IDX < LANE_ID_WORD_IDX {
+            lane_id_value >>= Simd::splat(8);
+        }
+        let patch = Simd::splat(msg[LANE_ID_WORD_IDX]) | lane_id_value;
+
+        let lut = &crate::strings::DIGIT_LUT_10000_LE_EVEN;
+        let remaining = limit - *attempted_nonces;
+        let full_pairs = ((remaining / pair_width) as usize).min(lut.len());
+
+        for (i, word) in lut.iter().take(full_pairs).enumerate() {
+            msg[CENTER_WORD_IDX] = *word;
+            let mut state0 = state_base;
+            B::compress::<CONSTANT_WORD_COUNT, LANE_ID_WORD_IDX>(&mut state0, &msg, patch);
+
+            msg[CENTER_WORD_IDX] = *word | u32::from_be_bytes([1, 0, 0, 0]);
+            let mut state1 = state_base;
+            B::compress::<CONSTANT_WORD_COUNT, LANE_ID_WORD_IDX>(&mut state1, &msg, patch);
+
+            *attempted_nonces += lanes_u64;
+            if let Some(success_lane) = first_zero_mask_lane(state0[0], mask_hi, LANES) {
+                crate::unlikely();
+                return Some((
+                    i as u64 * 2,
+                    lane_id_idx as u64 * lanes_u64 + success_lane as u64,
+                ));
+            }
+
+            *attempted_nonces += lanes_u64;
+            if let Some(success_lane) = first_zero_mask_lane(state1[0], mask_hi, LANES) {
+                crate::unlikely();
+                return Some((
+                    i as u64 * 2 + 1,
+                    lane_id_idx as u64 * lanes_u64 + success_lane as u64,
+                ));
+            }
+        }
+
+        if full_pairs < lut.len() {
+            let tail = (limit - *attempted_nonces) as usize;
+            if tail == 0 {
+                return None;
+            }
+            debug_assert!(tail < LANES * 2);
+            let i = full_pairs;
+            let word = lut[i];
+
+            msg[CENTER_WORD_IDX] = word;
+            let mut state0 = state_base;
+            B::compress::<CONSTANT_WORD_COUNT, LANE_ID_WORD_IDX>(&mut state0, &msg, patch);
+            let valid0 = tail.min(LANES);
+            *attempted_nonces += valid0 as u64;
+            if let Some(success_lane) = first_zero_mask_lane(state0[0], mask_hi, valid0) {
+                return Some((
+                    i as u64 * 2,
+                    lane_id_idx as u64 * lanes_u64 + success_lane as u64,
+                ));
+            }
+            if valid0 < LANES {
+                return None;
+            }
+
+            let valid1 = tail - LANES;
+            if valid1 == 0 {
+                return None;
+            }
+            msg[CENTER_WORD_IDX] = word | u32::from_be_bytes([1, 0, 0, 0]);
+            let mut state1 = state_base;
+            B::compress::<CONSTANT_WORD_COUNT, LANE_ID_WORD_IDX>(&mut state1, &msg, patch);
+            *attempted_nonces += valid1 as u64;
+            if let Some(success_lane) = first_zero_mask_lane(state1[0], mask_hi, valid1) {
+                return Some((
+                    i as u64 * 2 + 1,
+                    lane_id_idx as u64 * lanes_u64 + success_lane as u64,
+                ));
+            }
+            return None;
+        }
+    }
+
+    None
+}
+
+fn solve_cerberus_binary_impl<const LANES: usize, B: CerberusCompression<LANES>>(
+    message: &crate::message::CerberusMessage,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<u64> {
+    debug_assert_eq!(target, 0);
+
+    let crate::message::CerberusMessage::Binary(message) = message else {
+        return None;
+    };
+
+    let mut msg = [0; 16];
+    msg[0] = message.first_word;
+    let prepared_state = crate::blake3::ingest_message_prefix(
+        *message.midstate,
+        &msg[..1],
+        0,
+        8,
+        crate::blake3::FLAG_CHUNK_END | crate::blake3::FLAG_ROOT,
+    );
+    let state_base: [Simd<u32, LANES>; 16] =
+        core::array::from_fn(|i| Simd::splat(prepared_state[i]));
+    let mask_hi = (mask >> 32) as u32;
+    let search_end = limit.min(u64::from(u32::MAX) + 1);
+    let lanes_u64 = LANES as u64;
+    let mut cursor = (*attempted_nonces).min(search_end);
+
+    while cursor < search_end {
+        let batch_start = cursor;
+        let valid_lanes = (search_end - cursor).min(lanes_u64) as usize;
+        let nonce = Simd::<u32, LANES>::from_array(core::array::from_fn(|lane| {
+            (batch_start + lane as u64) as u32
+        }));
+        let mut state = state_base;
+        B::compress::<1, 1>(&mut state, &msg, nonce);
+        cursor += valid_lanes as u64;
+        *attempted_nonces = cursor;
+
+        if let Some(success_lane) = first_zero_mask_lane(state[0], mask_hi, valid_lanes) {
+            crate::unlikely();
+            return Some(
+                (batch_start + success_lane as u64) | (u64::from(message.first_word) << 32),
+            );
+        }
+    }
+
+    None
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[inline(always)]
+pub(crate) fn solve_cerberus_decimal_avx2<
+    const CENTER_WORD_IDX: usize,
+    const LANE_ID_WORD_IDX: usize,
+    const CONSTANT_WORD_COUNT: usize,
+>(
+    message: &crate::message::CerberusMessage,
+    msg_tpl: Align64<[u32; 16]>,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<(u64, u64)> {
+    solve_cerberus_decimal_impl::<
+        8,
+        CENTER_WORD_IDX,
+        LANE_ID_WORD_IDX,
+        CONSTANT_WORD_COUNT,
+        Avx2CerberusCompression,
+    >(message, msg_tpl, attempted_nonces, limit, target, mask)
+}
+
+#[inline(always)]
+pub(crate) fn solve_cerberus_decimal_wide16<
+    const CENTER_WORD_IDX: usize,
+    const LANE_ID_WORD_IDX: usize,
+    const CONSTANT_WORD_COUNT: usize,
+>(
+    message: &crate::message::CerberusMessage,
+    msg_tpl: Align64<[u32; 16]>,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<(u64, u64)> {
+    solve_cerberus_decimal_impl::<
+        16,
+        CENTER_WORD_IDX,
+        LANE_ID_WORD_IDX,
+        CONSTANT_WORD_COUNT,
+        PortableCerberusCompression,
+    >(message, msg_tpl, attempted_nonces, limit, target, mask)
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[inline(always)]
+pub(crate) fn solve_cerberus_binary_avx2(
+    message: &crate::message::CerberusMessage,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<u64> {
+    solve_cerberus_binary_impl::<8, Avx2CerberusCompression>(
+        message,
+        attempted_nonces,
+        limit,
+        target,
+        mask,
+    )
+}
+
+#[inline(always)]
+pub(crate) fn solve_cerberus_binary_wide16(
+    message: &crate::message::CerberusMessage,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<u64> {
+    solve_cerberus_binary_impl::<16, PortableCerberusCompression>(
+        message,
+        attempted_nonces,
+        limit,
+        target,
+        mask,
+    )
+}

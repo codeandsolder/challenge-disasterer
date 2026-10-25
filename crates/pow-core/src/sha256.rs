@@ -52,7 +52,7 @@ pub(crate) const fn do_message_schedule_k_w(w: &mut [u32; 64]) {
     }
 }
 
-#[cfg(all(test, any(target_feature = "avx2", target_feature = "avx512f")))]
+#[cfg(test)]
 pub(crate) fn deterministic_test_word(row: usize, column: usize, domain: u32) -> u32 {
     let row = row as u32;
     let column = column as u32;

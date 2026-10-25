@@ -5,7 +5,6 @@ use crate::{
         GoAwayMessage, SingleBlockMessage,
     },
 };
-use core::arch::x86_64::*;
 
 cpufeatures::new!(avx512f, "avx512f");
 
@@ -23,38 +22,6 @@ impl crate::solver::CpuIDToken for RequiredFeatures {
     fn get() -> bool {
         avx512f::get()
     }
-}
-
-static LANE_ID_STR_COMBINED_LE_HI: Align64<[u32; 1000 / 16 * 16]> = {
-    let mut out = [0; 1000 / 16 * 16];
-    let mut i = 0;
-    while i < 1000 / 16 * 16 {
-        let mut copy = i;
-        let mut ds = [0; 4];
-        let mut j = 0;
-        while j < 3 {
-            ds[j] = (copy % 10) as u8 + b'0';
-            copy /= 10;
-            j += 1;
-        }
-        out[i] = u32::from_be_bytes(ds);
-        i += 1;
-    }
-    Align64(out)
-};
-
-#[expect(dead_code)]
-mod static_asserts {
-    use super::*;
-
-    const ASSERT_LANE_ID_STR_COMBINED_LE_HI_0: [(); 1] =
-        [(); (LANE_ID_STR_COMBINED_LE_HI.0[0] == u32::from_be_bytes(*b"000\x00")) as usize];
-
-    const ASSERT_LANE_ID_STR_COMBINED_LE_HI_1: [(); 1] =
-        [(); (LANE_ID_STR_COMBINED_LE_HI.0[1] == u32::from_be_bytes(*b"100\x00")) as usize];
-
-    const ASSERT_LANE_ID_STR_COMBINED_LE_HI_123: [(); 1] =
-        [(); (LANE_ID_STR_COMBINED_LE_HI.0[123] == u32::from_be_bytes(*b"321\x00")) as usize];
 }
 
 /// AVX-512 decimal nonce single block solver.
@@ -594,193 +561,30 @@ impl CerberusSolver {
         target: u64,
         mask: u64,
     ) -> Option<(u64, u64)> {
-        debug_assert_eq!(target, 0);
-
-        let CerberusMessage::Decimal(message) = &self.message else {
-            return None;
-        };
-
-        // inform LLVM that padding is guaranteed to be zero
-        let mut msg = Align64([0u32; 16]);
-        msg.0[..=CENTER_WORD_IDX + 1].copy_from_slice(&msg_tpl.0[..=CENTER_WORD_IDX + 1]);
-        let prepared_state = crate::blake3::ingest_message_prefix(
-            *message.prefix_state,
-            &msg[..CONSTANT_WORD_COUNT],
-            0,
-            message.salt_residual_len as u32 + 9,
-            message.flags,
-        );
-
-        for lane_id_idx in 0..(LANE_ID_STR_COMBINED_LE_HI.len() / 16) {
-            if self.attempted_nonces >= self.limit {
-                return None;
-            }
-            unsafe {
-                let mut lane_id_value = _mm512_load_si512(
-                    LANE_ID_STR_COMBINED_LE_HI
-                        .as_ptr()
-                        .add(lane_id_idx * 16)
-                        .cast(),
-                );
-                if CENTER_WORD_IDX < LANE_ID_WORD_IDX {
-                    lane_id_value = _mm512_srli_epi32(lane_id_value, 8);
-                }
-
-                let state_base =
-                    core::array::from_fn(|i| _mm512_set1_epi32(prepared_state[i] as _));
-                let patch =
-                    _mm512_or_epi32(_mm512_set1_epi32(msg[LANE_ID_WORD_IDX] as _), lane_id_value);
-                let maskv = _mm512_set1_epi32((mask >> 32) as _);
-
-                let lut = &crate::strings::DIGIT_LUT_10000_LE_EVEN;
-                let remaining = self.limit - self.attempted_nonces;
-                let full_pairs = ((remaining / 32) as usize).min(lut.len());
-
-                for (i, word) in lut.iter().take(full_pairs).enumerate() {
-                    msg[CENTER_WORD_IDX] = *word;
-
-                    let mut state = state_base;
-
-                    crate::blake3::avx512::compress_mb16::<CONSTANT_WORD_COUNT, LANE_ID_WORD_IDX>(
-                        &mut state, &msg, patch,
-                    );
-
-                    let s0 = state[0];
-
-                    msg[CENTER_WORD_IDX] |= u32::from_be_bytes([1, 0, 0, 0]);
-
-                    state = state_base;
-                    crate::blake3::avx512::compress_mb16::<CONSTANT_WORD_COUNT, LANE_ID_WORD_IDX>(
-                        &mut state, &msg, patch,
-                    );
-                    let s1 = state[0];
-
-                    let hit0 = _mm512_testn_epi32_mask(s0, maskv);
-                    let hit1 = _mm512_testn_epi32_mask(s1, maskv);
-
-                    self.attempted_nonces += 32;
-
-                    if hit0 != 0 || hit1 != 0 {
-                        crate::unlikely();
-
-                        let success_lane_idx0 = hit0.trailing_zeros();
-                        let success_lane_idx1 = hit1.trailing_zeros();
-
-                        if success_lane_idx0 < success_lane_idx1 {
-                            return Some((
-                                i as u64 * 2,
-                                lane_id_idx as u64 * 16 + success_lane_idx0 as u64,
-                            ));
-                        } else {
-                            return Some((
-                                i as u64 * 2 + 1,
-                                lane_id_idx as u64 * 16 + success_lane_idx1 as u64,
-                            ));
-                        }
-                    }
-                }
-
-                if full_pairs < lut.len() {
-                    let tail = (self.limit - self.attempted_nonces) as usize;
-                    if tail == 0 {
-                        return None;
-                    }
-                    debug_assert!(tail < 32);
-                    let i = full_pairs;
-                    let word = lut[i];
-                    msg[CENTER_WORD_IDX] = word;
-                    let mut state = state_base;
-                    crate::blake3::avx512::compress_mb16::<CONSTANT_WORD_COUNT, LANE_ID_WORD_IDX>(
-                        &mut state, &msg, patch,
-                    );
-                    let mut hit0 = _mm512_testn_epi32_mask(state[0], maskv);
-                    let valid0 = tail.min(16);
-                    let valid_mask0 = if valid0 == 16 {
-                        u16::MAX
-                    } else {
-                        (1u16 << valid0) - 1
-                    };
-                    hit0 &= valid_mask0;
-                    self.attempted_nonces += valid0 as u64;
-                    if hit0 != 0 {
-                        return Some((
-                            i as u64 * 2,
-                            lane_id_idx as u64 * 16 + hit0.trailing_zeros() as u64,
-                        ));
-                    }
-                    if valid0 < 16 {
-                        return None;
-                    }
-                    let valid1 = tail - 16;
-                    if valid1 == 0 {
-                        return None;
-                    }
-                    msg[CENTER_WORD_IDX] = word | u32::from_be_bytes([1, 0, 0, 0]);
-                    state = state_base;
-                    crate::blake3::avx512::compress_mb16::<CONSTANT_WORD_COUNT, LANE_ID_WORD_IDX>(
-                        &mut state, &msg, patch,
-                    );
-                    let mut hit1 = _mm512_testn_epi32_mask(state[0], maskv);
-                    let valid_mask1 = if valid1 == 16 {
-                        u16::MAX
-                    } else {
-                        (1u16 << valid1) - 1
-                    };
-                    hit1 &= valid_mask1;
-                    self.attempted_nonces += valid1 as u64;
-                    if hit1 != 0 {
-                        return Some((
-                            i as u64 * 2 + 1,
-                            lane_id_idx as u64 * 16 + hit1.trailing_zeros() as u64,
-                        ));
-                    }
-                    return None;
-                }
-            }
-        }
-        None
+        crate::solver::wide::solve_cerberus_decimal_wide16::<
+            CENTER_WORD_IDX,
+            LANE_ID_WORD_IDX,
+            CONSTANT_WORD_COUNT,
+        >(
+            &self.message,
+            msg_tpl,
+            &mut self.attempted_nonces,
+            self.limit,
+            target,
+            mask,
+        )
     }
 
     #[inline(never)]
     #[target_feature(enable = "avx512f")]
-    unsafe fn solve_binary_impl(&mut self, _target: u64, mask: u64) -> Option<u64> {
-        let CerberusMessage::Binary(message) = &self.message else {
-            return None;
-        };
-        let mut msg = [0; 16];
-        msg[0] = message.first_word;
-        let prepared_state = crate::blake3::ingest_message_prefix(
-            *message.midstate,
-            &msg[..1],
-            0,
-            8,
-            crate::blake3::FLAG_CHUNK_END | crate::blake3::FLAG_ROOT,
-        );
-        let state_base = core::array::from_fn(|i| _mm512_set1_epi32(prepared_state[i] as _));
-        let mut nonce = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
-        let increment_nonce = _mm512_set1_epi32(16);
-        let maskv = _mm512_set1_epi32((mask >> 32) as _);
-        for rep in 0..=(u32::MAX / 16) {
-            let mut state = state_base;
-            crate::blake3::avx512::compress_mb16::<1, 1>(&mut state, &msg, nonce);
-            self.attempted_nonces += 16;
-
-            let hit = _mm512_testn_epi32_mask(state[0], maskv);
-            if hit != 0 {
-                crate::unlikely();
-
-                let success_lane_idx = hit.trailing_zeros();
-
-                return Some(
-                    (rep * 16 + success_lane_idx) as u64 | (message.first_word as u64) << 32,
-                );
-            }
-            nonce = _mm512_add_epi32(nonce, increment_nonce);
-            if self.attempted_nonces >= self.limit {
-                return None;
-            }
-        }
-        None
+    fn solve_binary_impl(&mut self, target: u64, mask: u64) -> Option<u64> {
+        crate::solver::wide::solve_cerberus_binary_wide16(
+            &self.message,
+            &mut self.attempted_nonces,
+            self.limit,
+            target,
+            mask,
+        )
     }
 }
 
