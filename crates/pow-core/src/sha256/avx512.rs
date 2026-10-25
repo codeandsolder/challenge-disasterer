@@ -20,23 +20,11 @@ pub(crate) fn multiway_arx<const BEGIN_ROUND: usize>(
     }
 }
 
-#[cfg_attr(not(debug_assertions), inline(always))]
-pub(crate) fn bcst_multiway_arx<const LEADING_ZEROES: usize>(
-    state: &mut [__m512i; 8],
-    w_k: &[u32; 64],
-) {
-    let mut state_simd: [u32x16; 8] = core::array::from_fn(|i| state[i].into());
-    portable::bcst_multiway_arx::<16, LEADING_ZEROES>(&mut state_simd, w_k);
-    for i in 0..8 {
-        state[i] = state_simd[i].into();
-    }
-}
-
 #[cfg(target_feature = "avx512f")]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sha256::{IV, deterministic_test_word, digest_block, do_message_schedule_k_w};
+    use crate::sha256::{IV, deterministic_test_word, digest_block};
 
     #[test]
     fn test_digest_block_equivalence() {
@@ -192,40 +180,6 @@ mod tests {
                 "SHA-256 AVX-512 hash mismatch at index {}",
                 i
             );
-        }
-    }
-
-    #[test]
-    fn test_sha256_avx512_bcst_without_feedback() {
-        let mut block = [0; 64];
-        block[0] = u32::from_be_bytes([0x61, 0x62, 0x63, 0x80]);
-        block[15] = u32::from_be_bytes([0x00, 0x00, 0x00, 3 * 8]);
-        do_message_schedule_k_w(&mut block);
-        let mut state_avx512: [__m512i; 8] =
-            core::array::from_fn(|i| unsafe { _mm512_set1_epi32(IV[i] as _) });
-
-        bcst_multiway_arx::<0>(&mut state_avx512, &block);
-        for i in 0..8 {
-            state_avx512[i] =
-                unsafe { _mm512_add_epi32(state_avx512[i], _mm512_set1_epi32(IV[i] as _)) };
-        }
-
-        let expected = [
-            0xba7816bf, 0x8f01cfea, 0x414140de, 0x5dae2223, 0xb00361a3, 0x96177a9c, 0xb410ff61,
-            0xf20015ad,
-        ];
-
-        let mut results: [[u32; 16]; 8] = unsafe { core::mem::zeroed() };
-        for i in 0..8 {
-            unsafe {
-                _mm512_storeu_si512(results[i].as_mut_ptr() as *mut _, state_avx512[i]);
-            }
-        }
-
-        for (lanes, expected_word) in results.iter().zip(expected) {
-            for actual in lanes {
-                assert_eq!(*actual, expected_word);
-            }
         }
     }
 }

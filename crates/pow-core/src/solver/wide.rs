@@ -3,7 +3,7 @@ use core::simd::{
     cmp::{SimdPartialEq as _, SimdPartialOrd as _},
 };
 
-use crate::Align64;
+use crate::{Align16, Align64};
 
 #[inline(always)]
 fn target_match<const LANES: usize, const TYPE: u8>(
@@ -226,5 +226,128 @@ pub(crate) fn solve_goaway_impl<const LANES: usize, const TYPE: u8>(
             }
         }
     }
+    None
+}
+
+#[inline(always)]
+pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
+    message: &mut crate::message::DoubleBlockMessage,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<(u64, [u32; 8])> {
+    if *attempted_nonces >= limit {
+        return None;
+    }
+
+    for (ix, i) in (crate::message::DoubleBlockMessage::DIGIT_IDX as usize..)
+        .take(9)
+        .enumerate()
+    {
+        let bytes = crate::decompose_blocks_mut(&mut message.message);
+        bytes[crate::SWAP_DWORD_BYTE_ORDER[i]] = if ix >= 2 { b'1' } else { b'0' };
+    }
+
+    let mut partial_state = message.prefix_state;
+    crate::sha256::sha2_arx::<0>(&mut partial_state, &message.message[..13]);
+
+    let mut terminal_message_schedule = Align16([0; 64]);
+    terminal_message_schedule[14] = ((message.message_length * 8) >> 32) as u32;
+    terminal_message_schedule[15] = (message.message_length * 8) as u32;
+    crate::sha256::do_message_schedule_k_w(&mut terminal_message_schedule);
+
+    let mut itoa_buf = Align16(*b"1111\x80111");
+    // Preserve the historical wide-backend search bounds exactly: the AVX2
+    // path covers 11x8 prefixes and AVX-512 covers 5x16 prefixes.
+    let prefix_set_count = 90 / LANES;
+    for prefix_set_index in 0..prefix_set_count {
+        let lane_index_value = Simd::<u32, LANES>::from_array(core::array::from_fn(|lane| {
+            let prefix = 10 + prefix_set_index * LANES + lane;
+            let tens = (prefix / 10) as u32 + u32::from(b'0');
+            let ones = (prefix % 10) as u32 + u32::from(b'0');
+            message.message[13] | (tens << 8) | ones
+        }));
+
+        for next_inner_key in 1..=0o10_000_000u32 {
+            let cum0 = u32::from_ne_bytes([itoa_buf[0], itoa_buf[1], itoa_buf[2], itoa_buf[3]]);
+            let cum1 = u32::from_ne_bytes([itoa_buf[4], itoa_buf[5], itoa_buf[6], itoa_buf[7]]);
+
+            let mut state = core::array::from_fn(|i| Simd::splat(partial_state[i]));
+            let mut blocks: [Simd<u32, LANES>; 16] = core::array::from_fn(|i| {
+                if i == 13 {
+                    lane_index_value
+                } else if i == 14 {
+                    Simd::splat(cum0)
+                } else if i == 15 {
+                    Simd::splat(cum1)
+                } else {
+                    Simd::splat(message.message[i])
+                }
+            });
+
+            crate::sha256::portable::multiway_arx::<LANES, 13>(&mut state, &mut blocks);
+            for i in 0..8 {
+                state[i] += Simd::splat(message.prefix_state[i]);
+            }
+
+            let save_a = state[0];
+            #[cfg(feature = "compare-64bit")]
+            let save_b = state[1];
+            crate::sha256::portable::bcst_multiway_arx::<LANES, 14>(
+                &mut state,
+                &terminal_message_schedule,
+            );
+            state[0] += save_a;
+            #[cfg(feature = "compare-64bit")]
+            {
+                state[1] += save_b;
+            }
+
+            let met_target = target_match::<LANES, TYPE>(state[0], state[1], target, mask);
+            if met_target.any() {
+                crate::unlikely();
+                let lanes = met_target.to_array();
+                if let Some(success_lane_idx) = lanes.iter().position(|&hit| hit) {
+                    let nonce_prefix = 10 + LANES * prefix_set_index + success_lane_idx;
+                    message.message[14] = cum0;
+                    message.message[15] = cum1;
+                    let bytes = crate::decompose_blocks_mut(&mut message.message);
+                    let digit_idx = crate::message::DoubleBlockMessage::DIGIT_IDX as usize;
+                    bytes[crate::SWAP_DWORD_BYTE_ORDER[digit_idx]] =
+                        (nonce_prefix / 10) as u8 + b'0';
+                    bytes[crate::SWAP_DWORD_BYTE_ORDER[digit_idx + 1]] =
+                        (nonce_prefix % 10) as u8 + b'0';
+
+                    let mut final_sha_state = message.prefix_state;
+                    crate::sha256::digest_block(&mut final_sha_state, &message.message);
+                    let mut terminal_message = [0; 16];
+                    terminal_message[14] = ((message.message_length * 8) >> 32) as u32;
+                    terminal_message[15] = (message.message_length * 8) as u32;
+                    crate::sha256::digest_block(&mut final_sha_state, &terminal_message);
+
+                    let mut decimal_inner_key = 0u64;
+                    let mut key_octal = next_inner_key - 1;
+                    for place in (0..7u32).map(|i| 10u64.pow(i)) {
+                        let output = (key_octal % 8) + 1;
+                        key_octal /= 8;
+                        decimal_inner_key += u64::from(output) * place;
+                    }
+                    let computed_nonce = nonce_prefix as u64 * 10u64.pow(7)
+                        + decimal_inner_key
+                        + message.nonce_addend;
+                    return Some((computed_nonce, *final_sha_state));
+                }
+            }
+
+            *attempted_nonces += LANES as u64;
+            if *attempted_nonces >= limit {
+                return None;
+            }
+            crate::strings::to_octal_7::<true, 0x80, 1>(&mut itoa_buf, next_inner_key);
+        }
+    }
+
+    crate::unlikely();
     None
 }
