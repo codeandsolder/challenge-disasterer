@@ -106,26 +106,26 @@ impl SingleBlockSolver {
                             self.solve_inner::<
                                                 { $idx0_0 }, { $idx0_1 }, { $idx0_2 },
                                                 { $lane_id_1_word_idx_inc }, TYPE,
-                                                NO_TRAILING_ZEROS, true, true,
+                                                NO_TRAILING_ZEROS, true,
                                             >(target, mask)
                         } else {
                             self.solve_inner::<
                                                 { $idx0_0 }, { $idx0_1 }, { $idx0_2 },
                                                 { $lane_id_1_word_idx_inc }, TYPE,
-                                                NO_TRAILING_ZEROS, true, false,
+                                                NO_TRAILING_ZEROS, false,
                                             >(target, mask)
                         }
                     } else if use_reduced_radix {
                         self.solve_inner::<
                                             { $idx0_0 }, { $idx0_1 }, { $idx0_2 },
                                             { $lane_id_1_word_idx_inc }, TYPE,
-                                            NO_TRAILING_ZEROS, false, true,
+                                            NO_TRAILING_ZEROS, true,
                                         >(target, mask)
                     } else {
                         self.solve_inner::<
                                             { $idx0_0 }, { $idx0_1 }, { $idx0_2 },
                                             { $lane_id_1_word_idx_inc }, TYPE,
-                                            NO_TRAILING_ZEROS, false, false,
+                                            NO_TRAILING_ZEROS, false,
                                         >(target, mask)
                     }
                 }
@@ -172,7 +172,6 @@ impl SingleBlockSolver {
         const DIGIT_WORD_IDX1_INC: bool,
         const TYPE: u8,
         const NO_TRAILING_ZEROS: bool,
-        const ON_REGISTER_BOUNDARY: bool,
         const REDUCED_RADIX: bool,
     >(
         &mut self,
@@ -312,13 +311,7 @@ impl SingleBlockSolver {
                 }
 
                 #[cfg(target_feature = "avx2")]
-                let mut itoa_buf = if REDUCED_RADIX {
-                    Align16(*b"1111\x80111")
-                } else if NO_TRAILING_ZEROS && ON_REGISTER_BOUNDARY {
-                    Align16(*b"0000\x80100")
-                } else {
-                    Align16(*b"0000\x80000")
-                };
+                let mut itoa_buf = Align16(*b"0000\x80000");
 
                 let mut next_inner_key = if NO_TRAILING_ZEROS { 2 } else { 1 };
                 let inner_iteration_end = if REDUCED_RADIX { 1 << 21 } else { 10_000_000 };
@@ -330,7 +323,7 @@ impl SingleBlockSolver {
 
                     crate::sha256::sha_ni::multiway_arx_abef_cdgh::<{ DIGIT_WORD_IDX0_DIV_4 }, 4, _>(
                         [&mut state0, &mut state1, &mut state2, &mut state3],
-                        (&self.message.message).into(),
+                        &self.message.message,
                         LaneIdPlucker::<
                             DIGIT_WORD_IDX0_DIV_4,
                             DIGIT_WORD_IDX0_MOD_4,
@@ -418,24 +411,26 @@ impl SingleBlockSolver {
                         }
                         #[cfg(target_feature = "avx2")]
                         {
-                            if ON_REGISTER_BOUNDARY {
-                                let out = self
-                                    .message
-                                    .message
-                                    .as_mut_ptr()
-                                    .add(DIGIT_WORD_IDX0_DIV_4 * 4 + DIGIT_WORD_IDX0_MOD_4 + 1)
-                                    .cast::<Align16<[u8; 8]>>()
-                                    .as_mut()
-                                    .unwrap();
-                                crate::strings::format_decimal_8::<7, true, 0x80>(
-                                    out,
-                                    next_inner_key as u32,
-                                );
+                            crate::strings::format_decimal_8::<7, false, 0x80>(
+                                &mut itoa_buf,
+                                next_inner_key as u32,
+                            );
+                            if DIGIT_WORD_IDX0_MOD_4 == 2 {
+                                self.message.message[DIGIT_WORD_IDX0_DIV_4 + 1] =
+                                    u32::from_be_bytes([
+                                        itoa_buf[0],
+                                        itoa_buf[1],
+                                        itoa_buf[2],
+                                        itoa_buf[3],
+                                    ]);
+                                self.message.message[DIGIT_WORD_IDX0_DIV_4 + 2] =
+                                    u32::from_be_bytes([
+                                        itoa_buf[4],
+                                        itoa_buf[5],
+                                        itoa_buf[6],
+                                        itoa_buf[7],
+                                    ]);
                             } else {
-                                crate::strings::format_decimal_8::<7, false, 0x80>(
-                                    &mut itoa_buf,
-                                    next_inner_key as u32,
-                                );
                                 for i in 0..7 {
                                     let message_bytes =
                                         decompose_blocks_mut(&mut self.message.message);
@@ -968,6 +963,55 @@ mod tests {
                 DoubleBlockMessage::new(prefix, search_space).map(Into::into)
             }
         });
+    }
+
+    #[test]
+    fn test_word_aligned_decimal_mutation() -> Result<(), &'static str> {
+        use sha2::{Digest as _, Sha256};
+
+        // A 38-byte prefix puts the nine decimal nonce bytes at offset 38. The
+        // seven inner digits therefore start exactly on a u32 word boundary,
+        // exercising the specialized two-word update path.
+        let prefix = [b'a'; 38];
+        let message = SingleBlockMessage::new(&prefix, 0).ok_or("single-block message")?;
+        assert_eq!(message.digit_index % 4, 2);
+        assert!(message.approx_working_set_count.get() < 100);
+
+        // Inner key 1 is the second four-lane batch. Target it exactly so the
+        // test cannot pass unless the first failed batch mutates the message
+        // bytes to the next decimal value correctly.
+        let expected_nonce = 100_000_001u64;
+        let mut input = prefix.to_vec();
+        input.extend_from_slice(expected_nonce.to_string().as_bytes());
+        let expected_digest = Sha256::digest(&input);
+        let target = u64::from_be_bytes([
+            expected_digest[0],
+            expected_digest[1],
+            expected_digest[2],
+            expected_digest[3],
+            expected_digest[4],
+            expected_digest[5],
+            expected_digest[6],
+            expected_digest[7],
+        ]);
+
+        let mut solver = SingleBlockSolver::from(message);
+        solver.set_limit(8);
+        let (nonce, digest) = solver
+            .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(target, u64::MAX)
+            .ok_or("word-aligned decimal target not found")?;
+
+        assert_eq!(nonce, expected_nonce);
+        let expected_words: [u32; 8] = core::array::from_fn(|word| {
+            u32::from_be_bytes([
+                expected_digest[word * 4],
+                expected_digest[word * 4 + 1],
+                expected_digest[word * 4 + 2],
+                expected_digest[word * 4 + 3],
+            ])
+        });
+        assert_eq!(digest, expected_words);
+        Ok(())
     }
 
     #[test]
