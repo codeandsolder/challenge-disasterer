@@ -1,9 +1,6 @@
 use core::simd::u32x4;
 
-use crate::{
-    Align16,
-    message::{DecimalMessage, DoubleBlockMessage, GoAwayMessage, SingleBlockMessage},
-};
+use crate::message::{DecimalMessage, DoubleBlockMessage, GoAwayMessage, SingleBlockMessage};
 
 cpufeatures::new!(sse41sha, "sha", "sse4.1");
 
@@ -193,7 +190,7 @@ impl SingleBlockSolver {
             }
         }
 
-        let mut partial_state = Align16(self.message.prefix_state);
+        let mut partial_state = self.message.prefix_state;
         crate::sha256::ingest_message_prefix::<{ DIGIT_WORD_IDX0_DIV_4_TIMES_4 }>(
             &mut partial_state,
             core::array::from_fn(|i| self.message.message[i]),
@@ -534,17 +531,17 @@ impl DoubleBlockSolver {
         // Keep the candidate block alive across iterations. Only the seven mutable
         // ASCII digits change in the hot loop; rebuilding/copying the other 13 words
         // every four hashes is pure input-generation overhead.
-        let mut msg0 = Align16([0; 16]);
+        let mut msg0 = [0; 16];
         msg0[..13].copy_from_slice(&self.message.message[..13]);
         msg0[14] = self.message.message[14];
         msg0[15] = self.message.message[15];
 
         let iv_state = crate::sha256::sha_ni::prepare_state(&self.message.prefix_state);
-        let mut prefix_state = Align16(self.message.prefix_state);
+        let mut prefix_state = self.message.prefix_state;
         crate::sha256::sha2_arx::<0>(&mut prefix_state, &self.message.message[..12]);
         let prepared_state = crate::sha256::sha_ni::prepare_state(&prefix_state);
 
-        let mut terminal_message = Align16([0; 16]);
+        let mut terminal_message = [0; 16];
         terminal_message[14] = ((self.message.message_length * 8) >> 32) as u32;
         terminal_message[15] = (self.message.message_length * 8) as u32;
 
@@ -645,7 +642,7 @@ impl DoubleBlockSolver {
                         nonce_prefix as u64 * 10u64.pow(7) + inner_key + self.message.nonce_addend;
 
                     // the nonce is the 8 digits in the message, plus the first two digits recomputed from the lane index
-                    return Some((computed_nonce, *final_sha_state));
+                    return Some((computed_nonce, final_sha_state));
                 }
 
                 // Advance the seven mutable decimal bytes in-place. Carries are rare, so
@@ -718,7 +715,7 @@ impl GoAwaySolver {
         target: u64,
         mask: u64,
     ) -> Option<(u64, [u32; 8])> {
-        let mut message_block = Align16([0; 16]);
+        let mut message_block = [0; 16];
         message_block[0..8].copy_from_slice(&self.message.challenge);
         message_block[8] = self.message.high_word;
         message_block[10] = u32::from_be_bytes([0x80, 0, 0, 0]);
@@ -781,14 +778,14 @@ impl GoAwaySolver {
     fn solve_impl<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
         let target = target & mask;
 
-        let mut prefix_state = Align16(crate::sha256::IV);
+        let mut prefix_state = crate::sha256::IV;
         crate::sha256::ingest_message_prefix(&mut prefix_state, self.message.challenge);
         let prepared_state = crate::sha256::sha_ni::prepare_state(&prefix_state);
 
         let feedback_ab =
             crate::sha256::sha_ni::feedback_ab(crate::sha256::IV[0], crate::sha256::IV[1]);
 
-        let mut message_block = Align16([0; 16]);
+        let mut message_block = [0; 16];
         message_block[0..8].copy_from_slice(&self.message.challenge);
         message_block[8] = self.message.high_word;
         message_block[10] = u32::from_be_bytes([0x80, 0, 0, 0]);

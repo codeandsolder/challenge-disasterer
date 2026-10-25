@@ -8,7 +8,6 @@ use core::arch::x86_64::*;
 #[cfg(target_arch = "x86")]
 use core::arch::x86::*;
 
-use crate::Align16;
 use crate::sha256::K32;
 use core::simd::{simd_swizzle, u32x4, u64x2};
 
@@ -42,7 +41,7 @@ macro_rules! schedule {
 }
 
 #[inline(always)]
-pub(crate) fn prepare_state(state: &Align16<[u32; 8]>) -> [__m128i; 2] {
+pub(crate) fn prepare_state(state: &[u32; 8]) -> [__m128i; 2] {
     [
         u32x4::from_array([state[5], state[4], state[1], state[0]]).into(),
         u32x4::from_array([state[7], state[6], state[3], state[2]]).into(),
@@ -247,7 +246,7 @@ mod layout_tests {
 
     #[test]
     fn portable_state_helpers_preserve_sha_ni_layout() {
-        let prepared = prepare_state(&Align16([0, 1, 2, 3, 4, 5, 6, 7]));
+        let prepared = prepare_state(&[0, 1, 2, 3, 4, 5, 6, 7]);
         let prepared_abef: u32x4 = prepared[0].into();
         let prepared_cdgh: u32x4 = prepared[1].into();
         assert_eq!(prepared_abef.to_array(), [5, 4, 1, 0]);
@@ -279,7 +278,7 @@ mod tests {
             0x00000000, 0x00000018,
         ];
 
-        let state = Align16(crate::sha256::IV);
+        let state = crate::sha256::IV;
 
         let mut prepared_state_0 = prepare_state(&state);
         let mut prepared_state_1 = prepare_state(&state);
@@ -301,7 +300,7 @@ mod tests {
         full_message_schedule[0..16].copy_from_slice(&input_block);
         crate::sha256::do_message_schedule(&mut full_message_schedule);
 
-        let mut reference_state = Align16(crate::sha256::IV);
+        let mut reference_state = crate::sha256::IV;
         crate::sha256::sha2_arx::<0>(&mut reference_state, &full_message_schedule);
 
         assert_eq!(a, reference_state[0]);

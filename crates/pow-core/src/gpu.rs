@@ -1014,9 +1014,9 @@ impl DoubleBlockSolver {
             p[7] = target as u32;
             p[8] = (mask >> 32) as u32;
             p[9] = mask as u32;
-            p[16..24].copy_from_slice(&self.message.prefix_state.0);
+            p[16..24].copy_from_slice(&self.message.prefix_state);
             p[24..40].copy_from_slice(&self.message.message.0);
-            let mut hot_state = self.message.prefix_state.0;
+            let mut hot_state = self.message.prefix_state;
             crate::sha256::ingest_message_prefix::<13>(
                 &mut hot_state,
                 self.message.message[..13].try_into().unwrap(),
@@ -1249,7 +1249,7 @@ impl BinarySolver {
             p[10] = used;
             p[11] = u32::from(self.message.nonce_byte_count.get());
             p[12] = self.message.salt_residual_len as u32;
-            p[16..24].copy_from_slice(&self.message.prefix_state.0);
+            p[16..24].copy_from_slice(&self.message.prefix_state);
             p[24..40].copy_from_slice(&templates[0]);
             p[40..56].copy_from_slice(&templates[1]);
             if let Some((nonce, hash)) = gpu.dispatch_multi(&p, wgs).await? {
@@ -1347,7 +1347,7 @@ impl CerberusSolver {
             match &self.message {
                 crate::message::CerberusMessage::Decimal(message) => {
                     p[0] = 0;
-                    p[8..16].copy_from_slice(&message.prefix_state.0);
+                    p[8..16].copy_from_slice(&message.prefix_state);
                     for (i, chunk) in message.salt_residual.as_chunks::<4>().0.iter().enumerate() {
                         p[16 + i] = u32::from_le_bytes(*chunk);
                     }
@@ -1359,7 +1359,7 @@ impl CerberusSolver {
                 }
                 crate::message::CerberusMessage::Binary(message) => {
                     p[0] = 1;
-                    p[8..16].copy_from_slice(&message.midstate.0);
+                    p[8..16].copy_from_slice(&message.midstate);
                     p[16] = message.first_word;
                 }
             }
@@ -1675,7 +1675,7 @@ fn verify_cerberus(
                 u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
             });
             crate::blake3::compress8(
-                &message.prefix_state.0,
+                &message.prefix_state,
                 &words,
                 0,
                 message.salt_residual_len as u32 + 9,
@@ -1690,7 +1690,7 @@ fn verify_cerberus(
             words[0] = message.first_word;
             words[1] = nonce as u32;
             crate::blake3::compress8(
-                &message.midstate.0,
+                &message.midstate,
                 &words,
                 0,
                 8,
@@ -2000,7 +2000,7 @@ fn verify_double_block<const TYPE: u8>(
         let sh = (3 - (pos % 4)) * 8;
         block[wi] = (block[wi] & !(0xffu32 << sh)) | ((u32::from(b'0') + digit) << sh);
     }
-    let mut state = message.prefix_state.0;
+    let mut state = message.prefix_state;
     crate::sha256::digest_block(&mut state, &block);
     let mut tail = [0u32; 16];
     let bits = message.message_length * 8;
@@ -2079,7 +2079,7 @@ fn verify_binary<const TYPE: u8>(
         let sh = (3 - (pos % 4)) * 8;
         flat[wi] = (flat[wi] & !(0xffu32 << sh)) | (u32::from(*byte) << sh);
     }
-    let mut state = message.prefix_state.0;
+    let mut state = message.prefix_state;
     crate::sha256::digest_block(&mut state, flat[..16].try_into().unwrap());
     if used == 2 {
         crate::sha256::digest_block(&mut state, flat[16..32].try_into().unwrap());

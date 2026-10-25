@@ -1,5 +1,5 @@
 use crate::{
-    Align16, Align64,
+    Align64,
     message::{
         AltchaMessage, BinaryMessage, CerberusMessage, DecimalMessage, DoubleBlockMessage,
         GoAwayMessage, SingleBlockMessage,
@@ -206,7 +206,7 @@ impl crate::solver::Solver for DoubleBlockSolver {
 
                 let mut state = self.message.prefix_state;
                 sha2::block_api::compress256(&mut state, &[buffer, buffer2]);
-                return Some((key as u64 + self.message.nonce_addend, *state));
+                return Some((key as u64 + self.message.nonce_addend, state));
             }
 
             if self.attempted_nonces >= self.limit {
@@ -267,7 +267,7 @@ impl crate::solver::Solver for GoAwaySolver {
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
         let target = target & mask;
 
-        let mut buffer = Align16([[0u8; 64]; 16]);
+        let mut buffer = [[0u8; 64]; 16];
         for i in 0..8 {
             buffer[0][i * 4..i * 4 + 4].copy_from_slice(&self.message.challenge[i].to_be_bytes());
         }
@@ -393,7 +393,7 @@ impl crate::solver::Solver for BinarySolver {
                 }
             };
             if cmp_fn((state[0] as u64) << 32 | (state[1] as u64), target) {
-                return Some((x, state.0));
+                return Some((x, state));
             }
 
             if self.attempted_nonces >= self.limit {
