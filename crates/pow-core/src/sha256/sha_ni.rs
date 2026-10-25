@@ -10,7 +10,7 @@ use core::arch::x86::*;
 
 use crate::Align16;
 use crate::sha256::K32;
-use core::simd::{u32x4, u64x2};
+use core::simd::{simd_swizzle, u32x4, u64x2};
 
 const K32X4: [[u32; 4]; 16] = [
     [K32[3], K32[2], K32[1], K32[0]],
@@ -33,10 +33,11 @@ const K32X4: [[u32; 4]; 16] = [
 
 macro_rules! schedule {
     ($v0:expr, $v1:expr, $v2:expr, $v3:expr) => {{
-        let t1 = _mm_sha256msg1_epu32($v0, $v1);
-        let t2 = _mm_alignr_epi8($v3, $v2, 4);
-        let t3 = _mm_add_epi32(t1, t2);
-        _mm_sha256msg2_epu32(t3, $v3)
+        let t1: u32x4 = _mm_sha256msg1_epu32($v0, $v1).into();
+        let v2: u32x4 = $v2.into();
+        let v3: u32x4 = $v3.into();
+        let t2 = simd_swizzle!(v2, v3, [1, 2, 3, 4]);
+        _mm_sha256msg2_epu32((t1 + t2).into(), $v3)
     }};
 }
 
@@ -95,7 +96,7 @@ pub(crate) fn multiway_arx_abef_cdgh<
     const LANES: usize,
     P: Plucker,
 >(
-    mut state: [&mut [__m128i; 2]; LANES],
+    state: [&mut [__m128i; 2]; LANES],
     block_template: &Align16<[u32; 16]>,
     mut plucker: P,
 ) {
@@ -103,10 +104,16 @@ pub(crate) fn multiway_arx_abef_cdgh<
         macro_rules! rounds4 {
             ($abef:ident, $cdgh:ident, $rest:expr, $i:expr) => {{
                 let k = K32X4[$i];
-                let kv = _mm_set_epi32(k[0] as i32, k[1] as i32, k[2] as i32, k[3] as i32);
-                let t1: [_; LANES] = core::array::from_fn(|i| _mm_add_epi32($rest[i], kv));
+                let kv = u32x4::from_array([k[3], k[2], k[1], k[0]]);
+                let t1: [__m128i; LANES] = core::array::from_fn(|i| {
+                    let words: u32x4 = $rest[i].into();
+                    (words + kv).into()
+                });
                 $cdgh = core::array::from_fn(|i| _mm_sha256rnds2_epu32($cdgh[i], $abef[i], t1[i]));
-                let t2: [_; LANES] = core::array::from_fn(|i| _mm_shuffle_epi32(t1[i], 0x0E));
+                let t2: [__m128i; LANES] = core::array::from_fn(|i| {
+                    let words: u32x4 = t1[i].into();
+                    simd_swizzle!(words, [2, 3, 0, 0]).into()
+                });
                 $abef = core::array::from_fn(|i| _mm_sha256rnds2_epu32($abef[i], $cdgh[i], t2[i]));
             }};
         }
@@ -262,7 +269,6 @@ mod tests {
 
     #[test]
     fn test_multiway_arx() {
-        use core::arch::x86_64::*;
         let input_block = [
             0x61626380, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
             0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
