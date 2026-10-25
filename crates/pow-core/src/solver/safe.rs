@@ -547,12 +547,12 @@ impl AltchaSha256Solver {
         blocks[60..].copy_from_slice(&((32u32 + 4) * 8).to_be_bytes());
         let key_length = self.message.key_length.get().min(32);
 
-        for counter in 0u32.. {
-            if self.attempted_nonces >= self.limit {
-                return None;
-            }
+        let search_end = self.limit.min(u64::from(u32::MAX) + 1);
+        let mut counter = self.attempted_nonces.min(search_end);
+        while counter < search_end {
+            let counter_u32 = counter as u32;
             let mut state = crate::sha256::IV;
-            blocks[32..(32 + 4)].copy_from_slice(&counter.to_be_bytes());
+            blocks[32..(32 + 4)].copy_from_slice(&counter_u32.to_be_bytes());
             sha2::block_api::compress256(&mut state, core::array::from_ref(&blocks));
 
             for _ in 1..self.message.cost.get() {
@@ -565,7 +565,8 @@ impl AltchaSha256Solver {
                 state = crate::sha256::IV;
                 sha2::block_api::compress256(&mut state, core::array::from_ref(&subblocks));
             }
-            self.attempted_nonces += 1;
+
+            self.attempted_nonces = counter + 1;
             let cmp64_fn = |x: u64, y: u64| {
                 if TYPE == crate::solver::SOLVE_TYPE_GT {
                     x > y
@@ -576,8 +577,9 @@ impl AltchaSha256Solver {
                 }
             };
             if cmp64_fn((state[0] as u64) << 32 | (state[1] as u64), target) {
-                return Some((counter as u64, state));
+                return Some((counter, state));
             }
+            counter += 1;
         }
         None
     }
@@ -590,18 +592,20 @@ impl AltchaSha256Solver {
         let mut buffer = [0; 32];
         let mut password = [0; 16 + 4];
         password[..16].copy_from_slice(&self.message.nonce);
-        for counter in 0u32.. {
-            if self.attempted_nonces >= self.limit {
-                return None;
-            }
-            password[16..16 + 4].copy_from_slice(&counter.to_be_bytes());
+
+        let search_end = self.limit.min(u64::from(u32::MAX) + 1);
+        let mut counter = self.attempted_nonces.min(search_end);
+        while counter < search_end {
+            let counter_u32 = counter as u32;
+            password[16..16 + 4].copy_from_slice(&counter_u32.to_be_bytes());
             pbkdf2::pbkdf2_hmac::<sha2::Sha256>(
                 &password,
                 &self.message.salt,
                 self.message.cost.get(),
                 &mut buffer,
             );
-            self.attempted_nonces += 1;
+
+            self.attempted_nonces = counter + 1;
             let cmp64_fn = |x: u64, y: u64| {
                 if TYPE == crate::solver::SOLVE_TYPE_GT {
                     x > y
@@ -613,7 +617,7 @@ impl AltchaSha256Solver {
             };
             if cmp64_fn(u64::from_be_bytes(buffer[..8].try_into().unwrap()), target) {
                 return Some((
-                    counter as u64,
+                    counter,
                     core::array::from_fn(|i| {
                         u32::from_be_bytes([
                             buffer[i * 4],
@@ -624,6 +628,7 @@ impl AltchaSha256Solver {
                     }),
                 ));
             }
+            counter += 1;
         }
 
         None

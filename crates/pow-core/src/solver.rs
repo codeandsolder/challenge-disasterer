@@ -821,5 +821,103 @@ pub(crate) mod tests {
                 }
             }
         }
+
+        for key_length in [1u32, 4, 5, 8, 12, 16, 20, 24, 28, 31] {
+            let msg = crate::message::AltchaMessage {
+                nonce: [0x35; 16],
+                salt: [0xa7; 16],
+                cost: 3.try_into().unwrap(),
+                pbkdf2: false,
+                key_length: key_length.try_into().unwrap(),
+            };
+            let mut solver = factory(msg.clone()).expect("ALTCHA solver");
+            let mask = crate::compute_mask_zero_nibbles(1.try_into().unwrap());
+            let (nonce, hash) = solver
+                .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(0, mask)
+                .expect("truncated-key solver failed");
+            let nonce: u32 = nonce.try_into().expect("ALTCHA counter fits u32");
+
+            let mut first = [0u8; 36];
+            first[..16].copy_from_slice(&msg.salt);
+            first[16..32].copy_from_slice(&msg.nonce);
+            first[32..].copy_from_slice(&nonce.to_be_bytes());
+            let mut digest = Sha256::digest(first);
+            for _ in 1..msg.cost.get() {
+                digest = Sha256::digest(&digest[..key_length as usize]);
+            }
+            let expected = core::array::from_fn(|i| {
+                u32::from_be_bytes([
+                    digest[i * 4],
+                    digest[i * 4 + 1],
+                    digest[i * 4 + 2],
+                    digest[i * 4 + 3],
+                ])
+            });
+            assert_eq!(
+                hash, expected,
+                "ALTCHA nested key_length={key_length}, nonce={nonce}"
+            );
+        }
+
+        let resume_message = crate::message::AltchaMessage {
+            nonce: [0x42; 16],
+            salt: [0x91; 16],
+            cost: 1.try_into().unwrap(),
+            pbkdf2: false,
+            key_length: 32.try_into().unwrap(),
+        };
+        let target_nonce = 4u32;
+        let reference = |counter: u32| {
+            let mut bytes = [0u8; 36];
+            bytes[..16].copy_from_slice(&resume_message.salt);
+            bytes[16..32].copy_from_slice(&resume_message.nonce);
+            bytes[32..].copy_from_slice(&counter.to_be_bytes());
+            Sha256::digest(bytes)
+        };
+        let target_digest = reference(target_nonce);
+        let target = u64::from_be_bytes([
+            target_digest[0],
+            target_digest[1],
+            target_digest[2],
+            target_digest[3],
+            0,
+            0,
+            0,
+            0,
+        ]);
+        let mask = 0xffff_ffff_0000_0000;
+        for counter in 0..target_nonce {
+            let digest = reference(counter);
+            assert_ne!(
+                &digest[..4],
+                &target_digest[..4],
+                "resume test needs a unique 32-bit prefix before the target"
+            );
+        }
+
+        let mut solver = factory(resume_message).expect("ALTCHA resume solver");
+        solver.set_limit(1);
+        assert!(
+            solver
+                .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(target, mask)
+                .is_none()
+        );
+        assert_eq!(solver.get_attempted_nonces(), 1);
+
+        solver.set_limit(u64::from(target_nonce) + 1);
+        let (nonce, hash) = solver
+            .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(target, mask)
+            .expect("resumed ALTCHA search should reach counter 4");
+        assert_eq!(nonce, u64::from(target_nonce));
+        let expected = core::array::from_fn(|i| {
+            u32::from_be_bytes([
+                target_digest[i * 4],
+                target_digest[i * 4 + 1],
+                target_digest[i * 4 + 2],
+                target_digest[i * 4 + 3],
+            ])
+        });
+        assert_eq!(hash, expected);
+        assert_eq!(solver.get_attempted_nonces(), u64::from(target_nonce) + 1);
     }
 }

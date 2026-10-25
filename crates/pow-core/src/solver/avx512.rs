@@ -988,308 +988,35 @@ impl From<AltchaMessage> for AltchaSha256Solver {
 
 impl AltchaSha256Solver {
     #[inline(never)]
-    fn solve_nested_impl<const TYPE: u8, const KW: usize>(
-        &mut self,
-        target: u64,
-        mask: u64,
-    ) -> Option<(u64, [u32; 8])> {
-        unsafe {
-            for counter in (0u32..).step_by(16) {
-                if self.attempted_nonces >= self.limit {
-                    return None;
-                }
-
-                let mut blocks = [
-                    _mm512_set1_epi32(i32::from_be_bytes(
-                        self.message.salt[0..4].try_into().unwrap(),
-                    )),
-                    _mm512_set1_epi32(i32::from_be_bytes(
-                        self.message.salt[4..8].try_into().unwrap(),
-                    )),
-                    _mm512_set1_epi32(i32::from_be_bytes(
-                        self.message.salt[8..12].try_into().unwrap(),
-                    )),
-                    _mm512_set1_epi32(i32::from_be_bytes(
-                        self.message.salt[12..16].try_into().unwrap(),
-                    )),
-                    _mm512_set1_epi32(i32::from_be_bytes(
-                        self.message.nonce[0..4].try_into().unwrap(),
-                    )),
-                    _mm512_set1_epi32(i32::from_be_bytes(
-                        self.message.nonce[4..8].try_into().unwrap(),
-                    )),
-                    _mm512_set1_epi32(i32::from_be_bytes(
-                        self.message.nonce[8..12].try_into().unwrap(),
-                    )),
-                    _mm512_set1_epi32(i32::from_be_bytes(
-                        self.message.nonce[12..16].try_into().unwrap(),
-                    )),
-                    _mm512_xor_si512(
-                        _mm512_set1_epi32(counter as _),
-                        _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
-                    ),
-                    _mm512_set1_epi32(i32::from_be_bytes([0x80, 0, 0, 0])),
-                    _mm512_setzero_si512(),
-                    _mm512_setzero_si512(),
-                    _mm512_setzero_si512(),
-                    _mm512_setzero_si512(),
-                    _mm512_setzero_si512(),
-                    _mm512_set1_epi32((32 + 4) * 8),
-                ];
-
-                //core::arch::asm!("# LLVM-MCA-BEGIN altcha_nested_impl",);
-
-                for r in 0..self.message.cost.get() {
-                    // key truncation if needed (generally not)
-                    if KW < 8 && r > 0 {
-                        blocks[KW] = _mm512_set1_epi32(0x80);
-                        for block in blocks.iter_mut().take(8).skip(KW + 1) {
-                            *block = _mm512_setzero_si512();
-                        }
-                    }
-                    let mut state =
-                        core::array::from_fn(|i| _mm512_set1_epi32(crate::sha256::IV[i] as _));
-                    crate::sha256::avx512::multiway_arx::<0>(&mut state, &mut blocks);
-
-                    // vpaddd blocks, state, dword bcst [] ; result goes in blocks[0..8], overwrite entire variable to defuse loop dependency
-                    blocks = [
-                        _mm512_add_epi32(state[0], _mm512_set1_epi32(crate::sha256::IV[0] as _)),
-                        _mm512_add_epi32(state[1], _mm512_set1_epi32(crate::sha256::IV[1] as _)),
-                        _mm512_add_epi32(state[2], _mm512_set1_epi32(crate::sha256::IV[2] as _)),
-                        _mm512_add_epi32(state[3], _mm512_set1_epi32(crate::sha256::IV[3] as _)),
-                        _mm512_add_epi32(state[4], _mm512_set1_epi32(crate::sha256::IV[4] as _)),
-                        _mm512_add_epi32(state[5], _mm512_set1_epi32(crate::sha256::IV[5] as _)),
-                        _mm512_add_epi32(state[6], _mm512_set1_epi32(crate::sha256::IV[6] as _)),
-                        _mm512_add_epi32(state[7], _mm512_set1_epi32(crate::sha256::IV[7] as _)),
-                        _mm512_set1_epi32(i32::from_be_bytes([0x80, 0, 0, 0])),
-                        _mm512_setzero_si512(),
-                        _mm512_setzero_si512(),
-                        _mm512_setzero_si512(),
-                        _mm512_setzero_si512(),
-                        _mm512_setzero_si512(),
-                        _mm512_setzero_si512(),
-                        _mm512_set1_epi32((KW * 4 * 8) as i32),
-                    ];
-                }
-
-                let cmp_fn = |x: __m512i, y: __m512i| {
-                    if TYPE == crate::solver::SOLVE_TYPE_GT {
-                        _mm512_cmpgt_epu32_mask(x, y)
-                    } else if TYPE == crate::solver::SOLVE_TYPE_LT {
-                        _mm512_cmplt_epu32_mask(x, y)
-                    } else {
-                        _mm512_cmpeq_epu32_mask(
-                            _mm512_and_si512(x, _mm512_set1_epi32((mask >> 32) as _)),
-                            y,
-                        )
-                    }
-                };
-
-                let met_target = cmp_fn(blocks[0], _mm512_set1_epi32((target >> 32) as _));
-
-                if met_target != 0 {
-                    crate::unlikely();
-                    let success_lane_idx = met_target.trailing_zeros() as usize;
-                    let perm = _mm512_set1_epi32(success_lane_idx as _);
-                    for block in blocks.iter_mut().take(8) {
-                        *block = _mm512_permutexvar_epi32(perm, *block);
-                    }
-                    return Some((
-                        counter as u64 + success_lane_idx as u64,
-                        core::array::from_fn(|i| {
-                            _mm_extract_epi32(_mm512_castsi512_si128(blocks[i]), 0) as u32
-                        }),
-                    ));
-                }
-
-                self.attempted_nonces += 16;
-
-                //core::arch::asm!("# LLVM-MCA-END altcha_nested_impl",);
-            }
-        }
-        None
+    #[target_feature(enable = "avx512f")]
+    fn solve_impl<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        crate::solver::wide::solve_altcha_impl::<16, TYPE>(
+            &self.message,
+            &mut self.attempted_nonces,
+            self.limit,
+            target,
+            mask,
+        )
     }
 
-    #[inline(never)]
-    fn solve_pbkdf2_impl<const TYPE: u8>(
+    fn solve_fallback<const TYPE: u8>(
         &mut self,
         target: u64,
         mask: u64,
     ) -> Option<(u64, [u32; 8])> {
-        unsafe {
-            for counter in (0u32..).step_by(16) {
-                if self.attempted_nonces >= self.limit {
-                    return None;
-                }
-
-                // first compute HMAC midstate
-                let hmac_state = {
-                    let mut midstate_ipad =
-                        core::array::from_fn(|i| _mm512_set1_epi32(crate::sha256::IV[i] as _));
-                    let mut blocks = core::array::from_fn(|_| {
-                        _mm512_set1_epi32(crate::solver::HMAC_IPAD32 as _)
-                    });
-                    for i in 0..4 {
-                        blocks[i] = _mm512_xor_si512(
-                            blocks[i],
-                            _mm512_set1_epi32(i32::from_be_bytes(
-                                self.message.nonce[i * 4..][..4].try_into().unwrap(),
-                            )),
-                        );
-                    }
-                    blocks[4] = _mm512_xor_si512(
-                        blocks[4],
-                        _mm512_xor_si512(
-                            _mm512_set1_epi32(counter as _),
-                            _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
-                        ),
-                    );
-                    crate::sha256::avx512::multiway_arx::<0>(&mut midstate_ipad, &mut blocks);
-                    let mut midstate_opad =
-                        core::array::from_fn(|i| _mm512_set1_epi32(crate::sha256::IV[i] as _));
-                    blocks = core::array::from_fn(|_| {
-                        _mm512_set1_epi32(crate::solver::HMAC_OPAD32 as _)
-                    });
-                    for i in 0..4 {
-                        blocks[i] = _mm512_xor_si512(
-                            blocks[i],
-                            _mm512_set1_epi32(i32::from_be_bytes(
-                                self.message.nonce[i * 4..][..4].try_into().unwrap(),
-                            )),
-                        );
-                    }
-                    blocks[4] = _mm512_xor_si512(
-                        blocks[4],
-                        _mm512_xor_si512(
-                            _mm512_set1_epi32(counter as _),
-                            _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
-                        ),
-                    );
-
-                    crate::sha256::avx512::multiway_arx::<0>(&mut midstate_opad, &mut blocks);
-
-                    for i in 0..8 {
-                        midstate_ipad[i] = _mm512_add_epi32(
-                            midstate_ipad[i],
-                            _mm512_set1_epi32(crate::sha256::IV[i] as _),
-                        );
-                        midstate_opad[i] = _mm512_add_epi32(
-                            midstate_opad[i],
-                            _mm512_set1_epi32(crate::sha256::IV[i] as _),
-                        );
-                    }
-
-                    [midstate_ipad, midstate_opad]
-                };
-
-                // load salt
-                let mut blocks = [
-                    _mm512_set1_epi32(i32::from_be_bytes(
-                        self.message.salt[0..4].try_into().unwrap(),
-                    ) as _),
-                    _mm512_set1_epi32(i32::from_be_bytes(
-                        self.message.salt[4..8].try_into().unwrap(),
-                    ) as _),
-                    _mm512_set1_epi32(i32::from_be_bytes(
-                        self.message.salt[8..12].try_into().unwrap(),
-                    ) as _),
-                    _mm512_set1_epi32(i32::from_be_bytes(
-                        self.message.salt[12..16].try_into().unwrap(),
-                    ) as _),
-                    _mm512_set1_epi32(1), // pbkdf counter
-                    _mm512_set1_epi32(i32::from_be_bytes([0x80, 0, 0, 0]) as _),
-                    _mm512_setzero_si512(),
-                    _mm512_setzero_si512(),
-                    _mm512_setzero_si512(),
-                    _mm512_setzero_si512(),
-                    _mm512_setzero_si512(),
-                    _mm512_setzero_si512(),
-                    _mm512_setzero_si512(),
-                    _mm512_setzero_si512(),
-                    _mm512_setzero_si512(),
-                    _mm512_set1_epi32(512 + ((16 + 4) * 8)),
-                ];
-
-                let mut result: [__m512i; 8] = core::mem::zeroed();
-
-                //core::arch::asm!("# LLVM-MCA-BEGIN altcha_pbkdf2_impl",);
-
-                for r in 0..(2 * self.message.cost.get()) {
-                    let midstate = &hmac_state[(r % 2) as usize];
-
-                    let mut state = *midstate;
-
-                    crate::sha256::avx512::multiway_arx::<0>(&mut state, &mut blocks);
-
-                    blocks = [
-                        _mm512_add_epi32(state[0], midstate[0]),
-                        _mm512_add_epi32(state[1], midstate[1]),
-                        _mm512_add_epi32(state[2], midstate[2]),
-                        _mm512_add_epi32(state[3], midstate[3]),
-                        _mm512_add_epi32(state[4], midstate[4]),
-                        _mm512_add_epi32(state[5], midstate[5]),
-                        _mm512_add_epi32(state[6], midstate[6]),
-                        _mm512_add_epi32(state[7], midstate[7]),
-                        _mm512_set1_epi32(i32::from_be_bytes([0x80, 0, 0, 0]) as _),
-                        _mm512_setzero_si512(),
-                        _mm512_setzero_si512(),
-                        _mm512_setzero_si512(),
-                        _mm512_setzero_si512(),
-                        _mm512_setzero_si512(),
-                        _mm512_setzero_si512(),
-                        _mm512_set1_epi32(512 + 256),
-                    ];
-
-                    if r % 2 == 1 {
-                        for i in 0..8 {
-                            result[i] = _mm512_xor_epi32(result[i], blocks[i]);
-                        }
-                    }
-                }
-
-                let cmp_fn = |x: __m512i, y: __m512i| {
-                    if TYPE == crate::solver::SOLVE_TYPE_GT {
-                        _mm512_cmpgt_epu32_mask(x, y)
-                    } else if TYPE == crate::solver::SOLVE_TYPE_LT {
-                        _mm512_cmplt_epu32_mask(x, y)
-                    } else {
-                        _mm512_cmpeq_epu32_mask(
-                            _mm512_and_si512(x, _mm512_set1_epi32((mask >> 32) as _)),
-                            y,
-                        )
-                    }
-                };
-
-                let met_target = cmp_fn(result[0], _mm512_set1_epi32((target >> 32) as _));
-
-                if met_target != 0 {
-                    crate::unlikely();
-
-                    let success_lane_idx = met_target.trailing_zeros() as usize;
-                    let perm = _mm512_set1_epi32(success_lane_idx as _);
-                    for word in &mut result {
-                        *word = _mm512_permutexvar_epi32(perm, *word);
-                    }
-                    return Some((
-                        counter as u64 + success_lane_idx as u64,
-                        core::array::from_fn(|i| {
-                            _mm_extract_epi32(_mm512_castsi512_si128(result[i]), 0) as u32
-                        }),
-                    ));
-                }
-
-                self.attempted_nonces += 16;
-
-                //core::arch::asm!("# LLVM-MCA-END altcha_pbkdf2_impl",);
-            }
-        }
-
-        None
+        crate::solver::wide::solve_altcha_fallback::<TYPE>(
+            &self.message,
+            &mut self.attempted_nonces,
+            self.limit,
+            target,
+            mask,
+        )
     }
 }
 
 impl crate::solver::Solver for AltchaSha256Solver {
     type Output = [u32; 8];
+
     fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
@@ -1299,22 +1026,12 @@ impl crate::solver::Solver for AltchaSha256Solver {
     }
 
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
-        if self.message.pbkdf2 {
-            self.solve_pbkdf2_impl::<TYPE>(target, mask)
-        } else {
-            match self.message.key_length.get().min(32) {
-                4 => self.solve_nested_impl::<TYPE, 1>(target, mask),
-                8 => self.solve_nested_impl::<TYPE, 2>(target, mask),
-                12 => self.solve_nested_impl::<TYPE, 3>(target, mask),
-                16 => self.solve_nested_impl::<TYPE, 4>(target, mask),
-                20 => self.solve_nested_impl::<TYPE, 5>(target, mask),
-                24 => self.solve_nested_impl::<TYPE, 6>(target, mask),
-                28 => self.solve_nested_impl::<TYPE, 7>(target, mask),
-                32 => self.solve_nested_impl::<TYPE, 8>(target, mask),
-                // weird config, likely not used in reality
-                _ => None,
-            }
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return self.solve_fallback::<TYPE>(target, mask);
         }
+
+        // SAFETY: RequiredFeatures::get() above proves AVX-512F is available.
+        unsafe { self.solve_impl::<TYPE>(target, mask) }
     }
 }
 

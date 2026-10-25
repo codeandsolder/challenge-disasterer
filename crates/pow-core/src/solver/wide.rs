@@ -540,3 +540,339 @@ pub(crate) fn solve_single_block_impl<
     crate::unlikely();
     None
 }
+
+#[inline(always)]
+fn altcha_be_word(bytes: &[u8; 16], word: usize) -> u32 {
+    let offset = word * 4;
+    u32::from_be_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
+}
+
+#[inline(always)]
+fn altcha_compare_mask<const TYPE: u8>(mask: u64) -> u64 {
+    if TYPE == crate::solver::SOLVE_TYPE_MASK {
+        mask
+    } else {
+        u64::MAX
+    }
+}
+
+#[inline(always)]
+fn solve_altcha_nested_impl<const LANES: usize, const TYPE: u8, const KEY_WORDS: usize>(
+    message: &crate::message::AltchaMessage,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<(u64, [u32; 8])> {
+    const PAD_WORD: u32 = 0x8000_0000;
+
+    let salt: [u32; 4] = core::array::from_fn(|i| altcha_be_word(&message.salt, i));
+    let nonce: [u32; 4] = core::array::from_fn(|i| altcha_be_word(&message.nonce, i));
+    let zero = Simd::<u32, LANES>::splat(0);
+    let pad = Simd::<u32, LANES>::splat(PAD_WORD);
+    let search_end = limit.min(u64::from(u32::MAX) + 1);
+    let mut cursor = (*attempted_nonces).min(search_end);
+
+    while cursor < search_end {
+        let batch_start = cursor;
+        let valid_lanes = (search_end - cursor).min(LANES as u64) as usize;
+        let counters = Simd::<u32, LANES>::from_array(core::array::from_fn(|lane| {
+            (batch_start + lane as u64) as u32
+        }));
+        let mut blocks = [
+            Simd::splat(salt[0]),
+            Simd::splat(salt[1]),
+            Simd::splat(salt[2]),
+            Simd::splat(salt[3]),
+            Simd::splat(nonce[0]),
+            Simd::splat(nonce[1]),
+            Simd::splat(nonce[2]),
+            Simd::splat(nonce[3]),
+            counters,
+            pad,
+            zero,
+            zero,
+            zero,
+            zero,
+            zero,
+            Simd::splat((32 + 4) * 8),
+        ];
+
+        for round in 0..message.cost.get() {
+            let mut state =
+                core::array::from_fn(|i| Simd::<u32, LANES>::splat(crate::sha256::IV[i]));
+            crate::sha256::portable::multiway_arx::<LANES, 0>(&mut state, &mut blocks);
+            let digest: [Simd<u32, LANES>; 8] =
+                core::array::from_fn(|i| state[i] + Simd::splat(crate::sha256::IV[i]));
+
+            if round + 1 == message.cost.get() {
+                blocks[..8].copy_from_slice(&digest);
+            } else {
+                blocks = core::array::from_fn(|word| {
+                    if word < KEY_WORDS {
+                        digest[word]
+                    } else if word == KEY_WORDS {
+                        pad
+                    } else if word == 15 {
+                        Simd::splat((KEY_WORDS * 4 * 8) as u32)
+                    } else {
+                        zero
+                    }
+                });
+            }
+        }
+
+        let met_target = target_match::<LANES, TYPE>(
+            blocks[0],
+            blocks[1],
+            target,
+            altcha_compare_mask::<TYPE>(mask),
+        );
+        cursor += valid_lanes as u64;
+        *attempted_nonces = cursor;
+
+        if met_target.any() {
+            crate::unlikely();
+            let lanes = met_target.to_array();
+            if let Some(success_lane) = (0..valid_lanes).find(|&lane| lanes[lane]) {
+                return Some((
+                    batch_start + success_lane as u64,
+                    core::array::from_fn(|word| blocks[word][success_lane]),
+                ));
+            }
+        }
+    }
+
+    None
+}
+
+#[inline(always)]
+fn solve_altcha_pbkdf2_impl<const LANES: usize, const TYPE: u8>(
+    message: &crate::message::AltchaMessage,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<(u64, [u32; 8])> {
+    const PAD_WORD: u32 = 0x8000_0000;
+
+    let salt: [u32; 4] = core::array::from_fn(|i| altcha_be_word(&message.salt, i));
+    let nonce: [u32; 4] = core::array::from_fn(|i| altcha_be_word(&message.nonce, i));
+    let zero = Simd::<u32, LANES>::splat(0);
+    let pad = Simd::<u32, LANES>::splat(PAD_WORD);
+    let search_end = limit.min(u64::from(u32::MAX) + 1);
+    let mut cursor = (*attempted_nonces).min(search_end);
+
+    while cursor < search_end {
+        let batch_start = cursor;
+        let valid_lanes = (search_end - cursor).min(LANES as u64) as usize;
+        let counters = Simd::<u32, LANES>::from_array(core::array::from_fn(|lane| {
+            (batch_start + lane as u64) as u32
+        }));
+
+        let mut ipad_blocks = [Simd::<u32, LANES>::splat(crate::solver::HMAC_IPAD32); 16];
+        let mut opad_blocks = [Simd::<u32, LANES>::splat(crate::solver::HMAC_OPAD32); 16];
+        for i in 0..4 {
+            ipad_blocks[i] ^= Simd::splat(nonce[i]);
+            opad_blocks[i] ^= Simd::splat(nonce[i]);
+        }
+        ipad_blocks[4] ^= counters;
+        opad_blocks[4] ^= counters;
+
+        let mut midstate_ipad =
+            core::array::from_fn(|i| Simd::<u32, LANES>::splat(crate::sha256::IV[i]));
+        crate::sha256::portable::multiway_arx::<LANES, 0>(&mut midstate_ipad, &mut ipad_blocks);
+        let mut midstate_opad =
+            core::array::from_fn(|i| Simd::<u32, LANES>::splat(crate::sha256::IV[i]));
+        crate::sha256::portable::multiway_arx::<LANES, 0>(&mut midstate_opad, &mut opad_blocks);
+        for i in 0..8 {
+            midstate_ipad[i] += Simd::splat(crate::sha256::IV[i]);
+            midstate_opad[i] += Simd::splat(crate::sha256::IV[i]);
+        }
+
+        let mut blocks = [
+            Simd::splat(salt[0]),
+            Simd::splat(salt[1]),
+            Simd::splat(salt[2]),
+            Simd::splat(salt[3]),
+            Simd::splat(1),
+            pad,
+            zero,
+            zero,
+            zero,
+            zero,
+            zero,
+            zero,
+            zero,
+            zero,
+            zero,
+            Simd::splat(512 + ((16 + 4) * 8)),
+        ];
+        let mut result = [zero; 8];
+
+        for _ in 0..message.cost.get() {
+            let mut state = midstate_ipad;
+            crate::sha256::portable::multiway_arx::<LANES, 0>(&mut state, &mut blocks);
+            blocks = [
+                state[0] + midstate_ipad[0],
+                state[1] + midstate_ipad[1],
+                state[2] + midstate_ipad[2],
+                state[3] + midstate_ipad[3],
+                state[4] + midstate_ipad[4],
+                state[5] + midstate_ipad[5],
+                state[6] + midstate_ipad[6],
+                state[7] + midstate_ipad[7],
+                pad,
+                zero,
+                zero,
+                zero,
+                zero,
+                zero,
+                zero,
+                Simd::splat(512 + 256),
+            ];
+
+            let mut state = midstate_opad;
+            crate::sha256::portable::multiway_arx::<LANES, 0>(&mut state, &mut blocks);
+            blocks = [
+                state[0] + midstate_opad[0],
+                state[1] + midstate_opad[1],
+                state[2] + midstate_opad[2],
+                state[3] + midstate_opad[3],
+                state[4] + midstate_opad[4],
+                state[5] + midstate_opad[5],
+                state[6] + midstate_opad[6],
+                state[7] + midstate_opad[7],
+                pad,
+                zero,
+                zero,
+                zero,
+                zero,
+                zero,
+                zero,
+                Simd::splat(512 + 256),
+            ];
+            for i in 0..8 {
+                result[i] ^= blocks[i];
+            }
+        }
+
+        let met_target = target_match::<LANES, TYPE>(
+            result[0],
+            result[1],
+            target,
+            altcha_compare_mask::<TYPE>(mask),
+        );
+        cursor += valid_lanes as u64;
+        *attempted_nonces = cursor;
+
+        if met_target.any() {
+            crate::unlikely();
+            let lanes = met_target.to_array();
+            if let Some(success_lane) = (0..valid_lanes).find(|&lane| lanes[lane]) {
+                return Some((
+                    batch_start + success_lane as u64,
+                    core::array::from_fn(|word| result[word][success_lane]),
+                ));
+            }
+        }
+    }
+
+    None
+}
+
+#[inline]
+pub(crate) fn solve_altcha_fallback<const TYPE: u8>(
+    message: &crate::message::AltchaMessage,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<(u64, [u32; 8])> {
+    use crate::solver::Solver as _;
+
+    let mut fallback = crate::solver::safe::AltchaSha256Solver::from(message.clone());
+    fallback.attempted_nonces = *attempted_nonces;
+    fallback.limit = limit;
+    let result = fallback.solve::<TYPE>(target, mask);
+    *attempted_nonces = fallback.attempted_nonces;
+    result
+}
+
+#[inline(always)]
+pub(crate) fn solve_altcha_impl<const LANES: usize, const TYPE: u8>(
+    message: &crate::message::AltchaMessage,
+    attempted_nonces: &mut u64,
+    limit: u64,
+    target: u64,
+    mask: u64,
+) -> Option<(u64, [u32; 8])> {
+    if message.pbkdf2 {
+        solve_altcha_pbkdf2_impl::<LANES, TYPE>(message, attempted_nonces, limit, target, mask)
+    } else {
+        match message.key_length.get().min(32) {
+            4 => solve_altcha_nested_impl::<LANES, TYPE, 1>(
+                message,
+                attempted_nonces,
+                limit,
+                target,
+                mask,
+            ),
+            8 => solve_altcha_nested_impl::<LANES, TYPE, 2>(
+                message,
+                attempted_nonces,
+                limit,
+                target,
+                mask,
+            ),
+            12 => solve_altcha_nested_impl::<LANES, TYPE, 3>(
+                message,
+                attempted_nonces,
+                limit,
+                target,
+                mask,
+            ),
+            16 => solve_altcha_nested_impl::<LANES, TYPE, 4>(
+                message,
+                attempted_nonces,
+                limit,
+                target,
+                mask,
+            ),
+            20 => solve_altcha_nested_impl::<LANES, TYPE, 5>(
+                message,
+                attempted_nonces,
+                limit,
+                target,
+                mask,
+            ),
+            24 => solve_altcha_nested_impl::<LANES, TYPE, 6>(
+                message,
+                attempted_nonces,
+                limit,
+                target,
+                mask,
+            ),
+            28 => solve_altcha_nested_impl::<LANES, TYPE, 7>(
+                message,
+                attempted_nonces,
+                limit,
+                target,
+                mask,
+            ),
+            32 => solve_altcha_nested_impl::<LANES, TYPE, 8>(
+                message,
+                attempted_nonces,
+                limit,
+                target,
+                mask,
+            ),
+            _ => solve_altcha_fallback::<TYPE>(message, attempted_nonces, limit, target, mask),
+        }
+    }
+}
