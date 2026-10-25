@@ -33,7 +33,7 @@ fn maj<const N: usize>(x: Simd<u32, N>, y: Simd<u32, N>, z: Simd<u32, N>) -> Sim
     (x & y) ^ (x & z) ^ (y & z)
 }
 #[inline(always)]
-pub(super) fn multiway_arx<const N: usize, const BEGIN: usize>(
+pub(crate) fn multiway_arx<const N: usize, const BEGIN: usize>(
     state: &mut [Simd<u32, N>; 8],
     block: &mut [Simd<u32, N>; 16],
 ) {
@@ -64,7 +64,7 @@ pub(super) fn multiway_arx<const N: usize, const BEGIN: usize>(
     });
 }
 #[inline(always)]
-pub(super) fn bcst_multiway_arx<const N: usize, const LEAD: usize>(
+pub(crate) fn bcst_multiway_arx<const N: usize, const LEAD: usize>(
     state: &mut [Simd<u32, N>; 8],
     wk: &[u32; 64],
 ) {
@@ -82,4 +82,73 @@ pub(super) fn bcst_multiway_arx<const N: usize, const LEAD: usize>(
         *b = *a;
         *a = t1 + t2;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sha256::{IV, deterministic_test_word, digest_block, do_message_schedule_k_w};
+
+    fn check_digest_block_equivalence<const LANES: usize>() {
+        let mut states: [[u32; 8]; LANES] = core::array::from_fn(|lane| {
+            core::array::from_fn(|word| deterministic_test_word(lane, word, 0x5354_4154))
+        });
+        let blocks: [[u32; 16]; LANES] = core::array::from_fn(|lane| {
+            core::array::from_fn(|word| deterministic_test_word(lane, word, 0x424c_4f43))
+        });
+        let mut state_simd: [Simd<u32, LANES>; 8] = core::array::from_fn(|word| {
+            Simd::from_array(core::array::from_fn(|lane| states[lane][word]))
+        });
+        let state_save = state_simd;
+        let mut block_simd: [Simd<u32, LANES>; 16] = core::array::from_fn(|word| {
+            Simd::from_array(core::array::from_fn(|lane| blocks[lane][word]))
+        });
+
+        for lane in 0..LANES {
+            digest_block(&mut states[lane], &blocks[lane]);
+        }
+        multiway_arx::<LANES, 0>(&mut state_simd, &mut block_simd);
+        for word in 0..8 {
+            state_simd[word] += state_save[word];
+        }
+
+        let actual: [[u32; 8]; LANES] =
+            core::array::from_fn(|lane| core::array::from_fn(|word| state_simd[word][lane]));
+        assert_eq!(states, actual);
+    }
+
+    fn check_broadcast_block<const LANES: usize>() {
+        let mut schedule = [0u32; 64];
+        schedule[0] = u32::from_be_bytes(*b"abc\x80");
+        schedule[15] = 3 * 8;
+        do_message_schedule_k_w(&mut schedule);
+
+        let mut state: [Simd<u32, LANES>; 8] = core::array::from_fn(|word| Simd::splat(IV[word]));
+        let state_save = state;
+        bcst_multiway_arx::<LANES, 0>(&mut state, &schedule);
+        for word in 0..8 {
+            state[word] += state_save[word];
+        }
+
+        let expected = [
+            0xba7816bf, 0x8f01cfea, 0x414140de, 0x5dae2223, 0xb00361a3, 0x96177a9c, 0xb410ff61,
+            0xf20015ad,
+        ];
+        for lane in 0..LANES {
+            let actual = core::array::from_fn(|word| state[word][lane]);
+            assert_eq!(actual, expected, "lane {lane}");
+        }
+    }
+
+    #[test]
+    fn multiway_matches_scalar_for_8_and_16_lanes() {
+        check_digest_block_equivalence::<8>();
+        check_digest_block_equivalence::<16>();
+    }
+
+    #[test]
+    fn broadcast_schedule_matches_nist_vector_for_8_and_16_lanes() {
+        check_broadcast_block::<8>();
+        check_broadcast_block::<16>();
+    }
 }

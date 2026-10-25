@@ -118,6 +118,19 @@ pub(crate) fn compress_mb8<const CONSTANT_WORD_COUNT: usize, const PATCH_1: usiz
     }
 }
 
+#[inline(always)]
+pub(crate) fn compress_simd8<const CONSTANT_WORD_COUNT: usize, const PATCH_1: usize>(
+    state: &mut [core::simd::u32x8; 16],
+    block_template: &[u32; 16],
+    patch: core::simd::u32x8,
+) {
+    let mut raw: [__m256i; 16] = core::array::from_fn(|i| state[i].into());
+    compress_mb8::<CONSTANT_WORD_COUNT, PATCH_1>(&mut raw, block_template, patch.into());
+    for i in 0..16 {
+        state[i] = raw[i].into();
+    }
+}
+
 #[cfg(target_feature = "avx2")]
 #[cfg(test)]
 mod tests {

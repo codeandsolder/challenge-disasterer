@@ -1,8 +1,4 @@
-#[cfg(target_arch = "x86_64")]
-use core::arch::x86_64::*;
-
-#[cfg(target_arch = "x86")]
-use core::arch::x86::*;
+use core::simd::u32x4;
 
 use crate::{
     Align16, SWAP_DWORD_BYTE_ORDER, decompose_blocks_mut,
@@ -209,14 +205,10 @@ impl SingleBlockSolver {
 
         // move AB into position for feedback
         unsafe {
-            let feedback_ab = {
-                let lows = _mm_cvtsi64x_si128(
-                    ((self.message.prefix_state[0] as u64) << 32
-                        | self.message.prefix_state[1] as u64) as _,
-                );
-
-                _mm_shuffle_epi32(lows, 0b01001010)
-            };
+            let feedback_ab = crate::sha256::sha_ni::feedback_ab(
+                self.message.prefix_state[0],
+                self.message.prefix_state[1],
+            );
 
             let prefix_start = if REDUCED_RADIX { 0u32 } else { 10u32 };
             let prefix_end = if REDUCED_RADIX { 92u32 } else { 96u32 };
@@ -296,60 +288,26 @@ impl SingleBlockSolver {
                     >
                 {
                     #[inline(always)]
-                    fn pluck_qword0(&mut self, lane: usize, w: &mut __m128i) {
-                        unsafe {
-                            *w = _mm_or_si128(
-                                *w,
-                                _mm_setr_epi32(
-                                    self.fetch_msg_or(0, lane) as _,
-                                    self.fetch_msg_or(1, lane) as _,
-                                    self.fetch_msg_or(2, lane) as _,
-                                    self.fetch_msg_or(3, lane) as _,
-                                ),
-                            );
-                        }
+                    fn pluck_qword0(&mut self, lane: usize, w: u32x4) -> u32x4 {
+                        w | u32x4::from_array(core::array::from_fn(|i| self.fetch_msg_or(i, lane)))
                     }
                     #[inline(always)]
-                    fn pluck_qword1(&mut self, lane: usize, w: &mut __m128i) {
-                        unsafe {
-                            *w = _mm_or_si128(
-                                *w,
-                                _mm_setr_epi32(
-                                    self.fetch_msg_or(4, lane) as _,
-                                    self.fetch_msg_or(5, lane) as _,
-                                    self.fetch_msg_or(6, lane) as _,
-                                    self.fetch_msg_or(7, lane) as _,
-                                ),
-                            );
-                        }
+                    fn pluck_qword1(&mut self, lane: usize, w: u32x4) -> u32x4 {
+                        w | u32x4::from_array(core::array::from_fn(|i| {
+                            self.fetch_msg_or(i + 4, lane)
+                        }))
                     }
                     #[inline(always)]
-                    fn pluck_qword2(&mut self, lane: usize, w: &mut __m128i) {
-                        unsafe {
-                            *w = _mm_or_si128(
-                                *w,
-                                _mm_setr_epi32(
-                                    self.fetch_msg_or(8, lane) as _,
-                                    self.fetch_msg_or(9, lane) as _,
-                                    self.fetch_msg_or(10, lane) as _,
-                                    self.fetch_msg_or(11, lane) as _,
-                                ),
-                            );
-                        }
+                    fn pluck_qword2(&mut self, lane: usize, w: u32x4) -> u32x4 {
+                        w | u32x4::from_array(core::array::from_fn(|i| {
+                            self.fetch_msg_or(i + 8, lane)
+                        }))
                     }
                     #[inline(always)]
-                    fn pluck_qword3(&mut self, lane: usize, w: &mut __m128i) {
-                        unsafe {
-                            *w = _mm_or_si128(
-                                *w,
-                                _mm_setr_epi32(
-                                    self.fetch_msg_or(12, lane) as _,
-                                    self.fetch_msg_or(13, lane) as _,
-                                    self.fetch_msg_or(14, lane) as _,
-                                    self.fetch_msg_or(15, lane) as _,
-                                ),
-                            );
-                        }
+                    fn pluck_qword3(&mut self, lane: usize, w: u32x4) -> u32x4 {
+                        w | u32x4::from_array(core::array::from_fn(|i| {
+                            self.fetch_msg_or(i + 12, lane)
+                        }))
                     }
                 }
 
@@ -384,10 +342,10 @@ impl SingleBlockSolver {
                     );
 
                     // paddd is basically free on modern CPUs so do the feedback uncondtionally
-                    state0[0] = _mm_add_epi32(state0[0], feedback_ab);
-                    state1[0] = _mm_add_epi32(state1[0], feedback_ab);
-                    state2[0] = _mm_add_epi32(state2[0], feedback_ab);
-                    state3[0] = _mm_add_epi32(state3[0], feedback_ab);
+                    state0[0] = crate::sha256::sha_ni::add_words(state0[0], feedback_ab);
+                    state1[0] = crate::sha256::sha_ni::add_words(state1[0], feedback_ab);
+                    state2[0] = crate::sha256::sha_ni::add_words(state2[0], feedback_ab);
+                    state3[0] = crate::sha256::sha_ni::add_words(state3[0], feedback_ab);
 
                     let cmp_fn = |x: &u64, y: &u64| {
                         if TYPE == crate::solver::SOLVE_TYPE_GT {
@@ -401,10 +359,10 @@ impl SingleBlockSolver {
 
                     let success_lane_idx = {
                         let result_abs = [
-                            _mm_extract_epi64(state0[0], 1) as u64,
-                            _mm_extract_epi64(state1[0], 1) as u64,
-                            _mm_extract_epi64(state2[0], 1) as u64,
-                            _mm_extract_epi64(state3[0], 1) as u64,
+                            crate::sha256::sha_ni::extract_ab(state0[0]),
+                            crate::sha256::sha_ni::extract_ab(state1[0]),
+                            crate::sha256::sha_ni::extract_ab(state2[0]),
+                            crate::sha256::sha_ni::extract_ab(state3[0]),
                         ];
 
                         result_abs.iter().position(|x| cmp_fn(x, &target))
@@ -621,13 +579,8 @@ impl DoubleBlockSolver {
                 }
                 impl<'a> crate::sha256::sha_ni::Plucker for LaneIdPlucker<'a> {
                     #[inline(always)]
-                    fn pluck_qword3(&mut self, lane: usize, w: &mut __m128i) {
-                        *w = unsafe {
-                            _mm_or_si128(
-                                *w,
-                                _mm_setr_epi32(0, self.lane_index_value_v[lane] as _, 0, 0),
-                            )
-                        };
+                    fn pluck_qword3(&mut self, lane: usize, w: u32x4) -> u32x4 {
+                        w | u32x4::from_array([0, self.lane_index_value_v[lane], 0, 0])
                     }
                 }
 
@@ -643,7 +596,7 @@ impl DoubleBlockSolver {
                     s.iter_mut()
                         .zip(iv_state.iter())
                         .for_each(|(state, iv_state)| {
-                            *state = _mm_add_epi32(*state, *iv_state);
+                            *state = crate::sha256::sha_ni::add_words(*state, *iv_state);
                         });
                 }
 
@@ -657,16 +610,16 @@ impl DoubleBlockSolver {
                     (),
                 );
 
-                states0[0] = _mm_add_epi32(states0[0], save_abs[0]);
-                states1[0] = _mm_add_epi32(states1[0], save_abs[1]);
-                states2[0] = _mm_add_epi32(states2[0], save_abs[2]);
-                states3[0] = _mm_add_epi32(states3[0], save_abs[3]);
+                states0[0] = crate::sha256::sha_ni::add_words(states0[0], save_abs[0]);
+                states1[0] = crate::sha256::sha_ni::add_words(states1[0], save_abs[1]);
+                states2[0] = crate::sha256::sha_ni::add_words(states2[0], save_abs[2]);
+                states3[0] = crate::sha256::sha_ni::add_words(states3[0], save_abs[3]);
 
                 let final_abs = [
-                    _mm_extract_epi64(states0[0], 1) as u64,
-                    _mm_extract_epi64(states1[0], 1) as u64,
-                    _mm_extract_epi64(states2[0], 1) as u64,
-                    _mm_extract_epi64(states3[0], 1) as u64,
+                    crate::sha256::sha_ni::extract_ab(states0[0]),
+                    crate::sha256::sha_ni::extract_ab(states1[0]),
+                    crate::sha256::sha_ni::extract_ab(states2[0]),
+                    crate::sha256::sha_ni::extract_ab(states3[0]),
                 ];
 
                 let cmp_fn = |x: &u64, y: &u64| {
@@ -836,13 +789,8 @@ impl GoAwaySolver {
             crate::sha256::ingest_message_prefix(&mut prefix_state, self.message.challenge);
             let prepared_state = crate::sha256::sha_ni::prepare_state(&prefix_state);
 
-            let feedback_ab = {
-                let lows = _mm_cvtsi64x_si128(
-                    ((crate::sha256::IV[0] as u64) << 32 | crate::sha256::IV[1] as u64) as _,
-                );
-
-                _mm_shuffle_epi32(lows, 0b01001010)
-            };
+            let feedback_ab =
+                crate::sha256::sha_ni::feedback_ab(crate::sha256::IV[0], crate::sha256::IV[1]);
 
             let mut message_block = Align16([0; 16]);
             message_block[0..8].copy_from_slice(&self.message.challenge);
@@ -863,8 +811,8 @@ impl GoAwaySolver {
                     struct LaneIdPlucker;
                     impl crate::sha256::sha_ni::Plucker for LaneIdPlucker {
                         #[inline(always)]
-                        fn pluck_qword2(&mut self, lane: usize, w: &mut __m128i) {
-                            *w = unsafe { _mm_add_epi32(*w, _mm_setr_epi32(0, lane as _, 0, 0)) };
+                        fn pluck_qword2(&mut self, lane: usize, w: u32x4) -> u32x4 {
+                            w + u32x4::from_array([0, lane as u32, 0, 0])
                         }
                     }
 
@@ -874,16 +822,16 @@ impl GoAwaySolver {
                         LaneIdPlucker,
                     );
 
-                    states0[0] = _mm_add_epi32(states0[0], feedback_ab);
-                    states1[0] = _mm_add_epi32(states1[0], feedback_ab);
-                    states2[0] = _mm_add_epi32(states2[0], feedback_ab);
-                    states3[0] = _mm_add_epi32(states3[0], feedback_ab);
+                    states0[0] = crate::sha256::sha_ni::add_words(states0[0], feedback_ab);
+                    states1[0] = crate::sha256::sha_ni::add_words(states1[0], feedback_ab);
+                    states2[0] = crate::sha256::sha_ni::add_words(states2[0], feedback_ab);
+                    states3[0] = crate::sha256::sha_ni::add_words(states3[0], feedback_ab);
 
                     let result_abs = [
-                        _mm_extract_epi64(states0[0], 1) as u64,
-                        _mm_extract_epi64(states1[0], 1) as u64,
-                        _mm_extract_epi64(states2[0], 1) as u64,
-                        _mm_extract_epi64(states3[0], 1) as u64,
+                        crate::sha256::sha_ni::extract_ab(states0[0]),
+                        crate::sha256::sha_ni::extract_ab(states1[0]),
+                        crate::sha256::sha_ni::extract_ab(states2[0]),
+                        crate::sha256::sha_ni::extract_ab(states3[0]),
                     ];
 
                     let cmp_fn = |x: &u64, y: &u64| {

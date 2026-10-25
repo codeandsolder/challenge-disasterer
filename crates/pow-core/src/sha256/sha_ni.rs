@@ -10,6 +10,7 @@ use core::arch::x86::*;
 
 use crate::Align16;
 use crate::sha256::K32;
+use core::simd::{simd_swizzle, u32x4, u64x2};
 
 const K32X4: [[u32; 4]; 16] = [
     [K32[3], K32[2], K32[1], K32[0]],
@@ -32,39 +33,58 @@ const K32X4: [[u32; 4]; 16] = [
 
 macro_rules! schedule {
     ($v0:expr, $v1:expr, $v2:expr, $v3:expr) => {{
-        let t1 = _mm_sha256msg1_epu32($v0, $v1);
-        let t2 = _mm_alignr_epi8($v3, $v2, 4);
-        let t3 = _mm_add_epi32(t1, t2);
-        _mm_sha256msg2_epu32(t3, $v3)
+        let t1: u32x4 = _mm_sha256msg1_epu32($v0, $v1).into();
+        let v2: u32x4 = $v2.into();
+        let v3: u32x4 = $v3.into();
+        let t2 = simd_swizzle!(v2, v3, [1, 2, 3, 4]);
+        _mm_sha256msg2_epu32((t1 + t2).into(), $v3)
     }};
 }
 
 #[inline(always)]
 pub(crate) fn prepare_state(state: &Align16<[u32; 8]>) -> [__m128i; 2] {
-    unsafe {
-        let state_ptr = state.as_ptr().cast::<__m128i>();
-        let dcba = _mm_load_si128(state_ptr.add(0));
-        let efgh = _mm_load_si128(state_ptr.add(1));
+    [
+        u32x4::from_array([state[5], state[4], state[1], state[0]]).into(),
+        u32x4::from_array([state[7], state[6], state[3], state[2]]).into(),
+    ]
+}
 
-        let cdab = _mm_shuffle_epi32(dcba, 0xB1);
-        let efgh = _mm_shuffle_epi32(efgh, 0x1B);
-        let abef = _mm_alignr_epi8(cdab, efgh, 8);
-        let cdgh = _mm_blend_epi16(efgh, cdab, 0xF0);
+#[inline(always)]
+pub(crate) fn feedback_ab(a: u32, b: u32) -> __m128i {
+    u32x4::from_array([0, 0, b, a]).into()
+}
 
-        [abef, cdgh]
-    }
+#[inline(always)]
+pub(crate) fn add_words(a: __m128i, b: __m128i) -> __m128i {
+    let a: u32x4 = a.into();
+    let b: u32x4 = b.into();
+    (a + b).into()
+}
+
+#[inline(always)]
+pub(crate) fn extract_ab(state: __m128i) -> u64 {
+    let state: u64x2 = state.into();
+    state.to_array()[1]
 }
 
 #[allow(unused_variables)]
 pub trait Plucker: Sized {
     #[inline(always)]
-    fn pluck_qword0(&mut self, lane: usize, w: &mut __m128i) {}
+    fn pluck_qword0(&mut self, lane: usize, w: u32x4) -> u32x4 {
+        w
+    }
     #[inline(always)]
-    fn pluck_qword1(&mut self, lane: usize, w: &mut __m128i) {}
+    fn pluck_qword1(&mut self, lane: usize, w: u32x4) -> u32x4 {
+        w
+    }
     #[inline(always)]
-    fn pluck_qword2(&mut self, lane: usize, w: &mut __m128i) {}
+    fn pluck_qword2(&mut self, lane: usize, w: u32x4) -> u32x4 {
+        w
+    }
     #[inline(always)]
-    fn pluck_qword3(&mut self, lane: usize, w: &mut __m128i) {}
+    fn pluck_qword3(&mut self, lane: usize, w: u32x4) -> u32x4 {
+        w
+    }
 }
 
 impl Plucker for () {}
@@ -76,7 +96,7 @@ pub(crate) fn multiway_arx_abef_cdgh<
     const LANES: usize,
     P: Plucker,
 >(
-    mut state: [&mut [__m128i; 2]; LANES],
+    state: [&mut [__m128i; 2]; LANES],
     block_template: &Align16<[u32; 16]>,
     mut plucker: P,
 ) {
@@ -84,10 +104,16 @@ pub(crate) fn multiway_arx_abef_cdgh<
         macro_rules! rounds4 {
             ($abef:ident, $cdgh:ident, $rest:expr, $i:expr) => {{
                 let k = K32X4[$i];
-                let kv = _mm_set_epi32(k[0] as i32, k[1] as i32, k[2] as i32, k[3] as i32);
-                let t1: [_; LANES] = core::array::from_fn(|i| _mm_add_epi32($rest[i], kv));
+                let kv = u32x4::from_array([k[3], k[2], k[1], k[0]]);
+                let t1: [__m128i; LANES] = core::array::from_fn(|i| {
+                    let words: u32x4 = $rest[i].into();
+                    (words + kv).into()
+                });
                 $cdgh = core::array::from_fn(|i| _mm_sha256rnds2_epu32($cdgh[i], $abef[i], t1[i]));
-                let t2: [_; LANES] = core::array::from_fn(|i| _mm_shuffle_epi32(t1[i], 0x0E));
+                let t2: [__m128i; LANES] = core::array::from_fn(|i| {
+                    let words: u32x4 = t1[i].into();
+                    simd_swizzle!(words, [2, 3, 0, 0]).into()
+                });
                 $abef = core::array::from_fn(|i| _mm_sha256rnds2_epu32($abef[i], $cdgh[i], t2[i]));
             }};
         }
@@ -106,20 +132,44 @@ pub(crate) fn multiway_arx_abef_cdgh<
         let mut abef: [_; LANES] = core::array::from_fn(|i| state[i][0]);
         let mut cdgh: [_; LANES] = core::array::from_fn(|i| state[i][1]);
 
-        let w0_t = _mm_load_si128(block_template.as_ptr().cast::<u32>().add(0).cast());
-        let w1_t = _mm_load_si128(block_template.as_ptr().cast::<u32>().add(4).cast());
-        let w2_t = _mm_load_si128(block_template.as_ptr().cast::<u32>().add(8).cast());
-        let w3_t = _mm_load_si128(block_template.as_ptr().cast::<u32>().add(12).cast());
+        let w0_t: __m128i = u32x4::from_array([
+            block_template[0],
+            block_template[1],
+            block_template[2],
+            block_template[3],
+        ])
+        .into();
+        let w1_t: __m128i = u32x4::from_array([
+            block_template[4],
+            block_template[5],
+            block_template[6],
+            block_template[7],
+        ])
+        .into();
+        let w2_t: __m128i = u32x4::from_array([
+            block_template[8],
+            block_template[9],
+            block_template[10],
+            block_template[11],
+        ])
+        .into();
+        let w3_t: __m128i = u32x4::from_array([
+            block_template[12],
+            block_template[13],
+            block_template[14],
+            block_template[15],
+        ])
+        .into();
 
         let mut w0: [_; LANES] = [w0_t; LANES];
         let mut w1: [_; LANES] = [w1_t; LANES];
         let mut w2: [_; LANES] = [w2_t; LANES];
         let mut w3: [_; LANES] = [w3_t; LANES];
         for i in 0..LANES {
-            plucker.pluck_qword0(i, &mut w0[i]);
-            plucker.pluck_qword1(i, &mut w1[i]);
-            plucker.pluck_qword2(i, &mut w2[i]);
-            plucker.pluck_qword3(i, &mut w3[i]);
+            w0[i] = plucker.pluck_qword0(i, w0[i].into()).into();
+            w1[i] = plucker.pluck_qword1(i, w1[i].into()).into();
+            w2[i] = plucker.pluck_qword2(i, w2[i].into()).into();
+            w3[i] = plucker.pluck_qword3(i, w3[i].into()).into();
         }
         let mut w4: [_; LANES] = core::array::from_fn(|i| schedule!(w0[i], w1[i], w2[i], w3[i]));
 
@@ -180,29 +230,35 @@ pub(crate) fn multiway_arx_abef_cdgh<
             schedule_rounds4!(abef, cdgh, w1, w2, w3, w4, w0, 15);
         });
 
-        state.iter_mut().zip(abef).for_each(|(state, abef)| {
-            _mm_store_si128(
-                state
-                    .as_mut_slice()
-                    .as_mut_ptr()
-                    .cast::<u32>()
-                    .add(0)
-                    .cast(),
-                abef,
-            );
-        });
+        for i in 0..LANES {
+            state[i][0] = abef[i];
+            state[i][1] = cdgh[i];
+        }
+    }
+}
 
-        state.iter_mut().zip(cdgh).for_each(|(state, cdgh)| {
-            _mm_store_si128(
-                state
-                    .as_mut_slice()
-                    .as_mut_ptr()
-                    .cast::<u32>()
-                    .add(4)
-                    .cast(),
-                cdgh,
-            );
-        });
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn portable_state_helpers_preserve_sha_ni_layout() {
+        let prepared = prepare_state(&Align16([0, 1, 2, 3, 4, 5, 6, 7]));
+        let prepared_abef: u32x4 = prepared[0].into();
+        let prepared_cdgh: u32x4 = prepared[1].into();
+        assert_eq!(prepared_abef.to_array(), [5, 4, 1, 0]);
+        assert_eq!(prepared_cdgh.to_array(), [7, 6, 3, 2]);
+
+        let feedback: u32x4 = feedback_ab(0x1122_3344, 0x5566_7788).into();
+        assert_eq!(feedback.to_array(), [0, 0, 0x5566_7788, 0x1122_3344]);
+
+        let lhs = u32x4::from_array([u32::MAX, 2, 3, 4]);
+        let rhs = u32x4::from_array([1, 20, 30, 40]);
+        let sum: u32x4 = add_words(lhs.into(), rhs.into()).into();
+        assert_eq!(sum.to_array(), [0, 22, 33, 44]);
+
+        let state: __m128i = u32x4::from_array([1, 2, 3, 4]).into();
+        assert_eq!(extract_ab(state), (4u64 << 32) | 3);
     }
 }
 
@@ -213,7 +269,6 @@ mod tests {
 
     #[test]
     fn test_multiway_arx() {
-        use core::arch::x86_64::*;
         let input_block = [
             0x61626380, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
             0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
@@ -231,10 +286,10 @@ mod tests {
             (),
         );
 
-        let a = unsafe { _mm_extract_epi32(prepared_state_0[0], 3) as u32 };
-        let b = unsafe { _mm_extract_epi32(prepared_state_0[0], 2) as u32 };
+        let prepared_abef: u32x4 = prepared_state_0[0].into();
+        let [_, _, b, a] = prepared_abef.to_array();
 
-        let ab = unsafe { _mm_extract_epi64(prepared_state_0[0], 1) };
+        let ab = extract_ab(prepared_state_0[0]);
         let ab_b = ab as u32;
         let ab_a = (ab >> 32) as u32;
 

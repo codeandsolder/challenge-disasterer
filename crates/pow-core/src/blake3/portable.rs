@@ -24,7 +24,7 @@ pub(super) fn g<const N: usize>(
     *b = ror(*b ^ *c, 7);
 }
 #[inline(always)]
-pub(super) fn compress<const N: usize, const CONSTANT_WORD_COUNT: usize, const PATCH: usize>(
+pub(crate) fn compress<const N: usize, const CONSTANT_WORD_COUNT: usize, const PATCH: usize>(
     v: &mut [Simd<u32, N>; 16],
     tpl: &[u32; 16],
     patch: Simd<u32, N>,
@@ -78,4 +78,40 @@ pub(super) fn compress<const N: usize, const CONSTANT_WORD_COUNT: usize, const P
     repeat8!(i, {
         v[i] ^= v[i + 8];
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check_compress<const LANES: usize>() {
+        let mut initial = [0u32; 16];
+        initial[..8].copy_from_slice(&crate::blake3::IV);
+        initial[8..12].copy_from_slice(&crate::blake3::IV[..4]);
+        initial[14] = 4;
+        initial[15] = crate::blake3::FLAG_CHUNK_START
+            | crate::blake3::FLAG_CHUNK_END
+            | crate::blake3::FLAG_ROOT;
+
+        let mut state: [Simd<u32, LANES>; 16] =
+            core::array::from_fn(|word| Simd::splat(initial[word]));
+        let mut block = [0u32; 16];
+        block[0] = u32::from_le_bytes(*b"IETF");
+        compress::<LANES, 0, 16>(&mut state, &block, Simd::splat(0));
+
+        let expected = [
+            0x1edea283, 0xabe6f4e6, 0x24896868, 0xcfc04e8f, 0x9470c54c, 0xff82a646, 0xd6b4cbd1,
+            0xe2815116,
+        ];
+        for lane in 0..LANES {
+            let actual: [u32; 8] = core::array::from_fn(|word| state[word][lane]);
+            assert_eq!(actual, expected, "lane {lane} of {LANES}");
+        }
+    }
+
+    #[test]
+    fn compression_matches_reference_for_8_and_16_lanes() {
+        check_compress::<8>();
+        check_compress::<16>();
+    }
 }
