@@ -258,7 +258,7 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
     terminal_message_schedule[15] = (message.message_length * 8) as u32;
     crate::sha256::do_message_schedule_k_w(&mut terminal_message_schedule);
 
-    let mut itoa_buf = Align16(*b"1111\x80111");
+    let mut itoa_buf = *b"1111\x80111";
     // Preserve the historical wide-backend search bounds exactly: the AVX2
     // path covers 11x8 prefixes and AVX-512 covers 5x16 prefixes.
     let prefix_set_count = 90 / LANES;
@@ -428,9 +428,9 @@ pub(crate) fn solve_single_block_impl<
         };
 
         let mut inner_key_buf = if octal {
-            Align16(*b"1111\x80111")
+            *b"1111\x80111"
         } else {
-            Align16(*b"0000\x80000")
+            *b"0000\x80000"
         };
         let max_inner_iterations = if octal {
             0o10_000_000u64

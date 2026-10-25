@@ -1,4 +1,4 @@
-use crate::{Align16, Align64};
+use crate::Align64;
 
 pub(crate) static DIGIT_LUT_10000_LE_EVEN: Align64<[u32; 10000 / 2]> = const {
     let mut out = [0; 10000 / 2];
@@ -43,7 +43,7 @@ mod static_asserts {
 /// SIMD formatter.
 #[inline(always)]
 pub fn format_decimal_8<const N: usize, const REGISTER_BSWAP: bool, const PLACEHOLDER: u8>(
-    out: &mut Align16<[u8; 8]>,
+    out: &mut [u8; 8],
     mut input: u32,
 ) {
     debug_assert!(N <= 8);
@@ -64,7 +64,7 @@ pub fn format_decimal_8<const N: usize, const REGISTER_BSWAP: bool, const PLACEH
 /// `ADDEND` shifts the emitted digit alphabet (1 -> digits 1-8, 0 -> 0-7).
 #[inline(always)]
 pub fn to_octal_7<const REGISTER_BSWAP: bool, const PLACEHOLDER: u8, const ADDEND: u8>(
-    out: &mut Align16<[u8; 8]>,
+    out: &mut [u8; 8],
     mut input: u32,
 ) {
     out.fill(PLACEHOLDER);
@@ -85,36 +85,36 @@ mod tests {
     #[test]
     fn test_to_octal_7() {
         let i = 0o1234567;
-        let mut buf = Align16([0u8; 8]);
+        let mut buf = [0u8; 8];
         to_octal_7::<false, 0x80, 0>(&mut buf, i);
-        assert_eq!(buf, Align16(*b"1234567\x80"));
+        assert_eq!(buf, *b"1234567\x80");
         to_octal_7::<true, 0x80, 0>(&mut buf, i);
-        assert_eq!(buf, Align16(*b"4321\x80765"));
+        assert_eq!(buf, *b"4321\x80765");
         to_octal_7::<false, 0x80, 1>(&mut buf, i);
-        assert_eq!(buf, Align16(*b"2345678\x80"));
+        assert_eq!(buf, *b"2345678\x80");
         to_octal_7::<true, 0x80, 1>(&mut buf, i);
-        assert_eq!(buf, Align16(*b"5432\x80876"));
+        assert_eq!(buf, *b"5432\x80876");
     }
 
     #[test]
     fn test_format_decimal_8() {
-        let mut buf = Align16([0u8; 8]);
+        let mut buf = [0u8; 8];
         format_decimal_8::<8, false, 0x80>(&mut buf, 12345678);
-        assert_eq!(buf, Align16(*b"12345678"));
+        assert_eq!(buf, *b"12345678");
 
         format_decimal_8::<8, false, 0x80>(&mut buf, 1_0000_0000);
-        assert_eq!(buf, Align16(*b"00000000"));
+        assert_eq!(buf, *b"00000000");
 
         format_decimal_8::<7, false, 0x80>(&mut buf, 1234567);
-        assert_eq!(buf, Align16(*b"1234567\x80"));
+        assert_eq!(buf, *b"1234567\x80");
 
         format_decimal_8::<7, false, 0x80>(&mut buf, 1000_0000);
-        assert_eq!(buf, Align16(*b"0000000\x80"));
+        assert_eq!(buf, *b"0000000\x80");
 
         format_decimal_8::<8, true, 0x80>(&mut buf, 12345678);
-        assert_eq!(buf, Align16(*b"43218765"));
+        assert_eq!(buf, *b"43218765");
 
         format_decimal_8::<7, true, 0x80>(&mut buf, 1234567);
-        assert_eq!(buf, Align16(*b"4321\x80765"));
+        assert_eq!(buf, *b"4321\x80765");
     }
 }

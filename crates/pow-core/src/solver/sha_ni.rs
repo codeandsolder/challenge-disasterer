@@ -299,7 +299,7 @@ impl SingleBlockSolver {
             }
 
             #[cfg(target_feature = "avx2")]
-            let mut itoa_buf = Align16(*b"0000\x80000");
+            let mut itoa_buf = *b"0000\x80000";
 
             let mut next_inner_key = if NO_TRAILING_ZEROS { 2 } else { 1 };
             let inner_iteration_end = if REDUCED_RADIX { 1 << 21 } else { 10_000_000 };
