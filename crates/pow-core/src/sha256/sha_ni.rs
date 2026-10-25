@@ -10,6 +10,7 @@ use core::arch::x86::*;
 
 use crate::Align16;
 use crate::sha256::K32;
+use core::simd::{u32x4, u64x2};
 
 const K32X4: [[u32; 4]; 16] = [
     [K32[3], K32[2], K32[1], K32[0]],
@@ -55,16 +56,42 @@ pub(crate) fn prepare_state(state: &Align16<[u32; 8]>) -> [__m128i; 2] {
     }
 }
 
+#[inline(always)]
+pub(crate) fn feedback_ab(a: u32, b: u32) -> __m128i {
+    u32x4::from_array([0, 0, b, a]).into()
+}
+
+#[inline(always)]
+pub(crate) fn add_words(a: __m128i, b: __m128i) -> __m128i {
+    let a: u32x4 = a.into();
+    let b: u32x4 = b.into();
+    (a + b).into()
+}
+
+#[inline(always)]
+pub(crate) fn extract_ab(state: __m128i) -> u64 {
+    let state: u64x2 = state.into();
+    state.to_array()[1]
+}
+
 #[allow(unused_variables)]
 pub trait Plucker: Sized {
     #[inline(always)]
-    fn pluck_qword0(&mut self, lane: usize, w: &mut __m128i) {}
+    fn pluck_qword0(&mut self, lane: usize, w: u32x4) -> u32x4 {
+        w
+    }
     #[inline(always)]
-    fn pluck_qword1(&mut self, lane: usize, w: &mut __m128i) {}
+    fn pluck_qword1(&mut self, lane: usize, w: u32x4) -> u32x4 {
+        w
+    }
     #[inline(always)]
-    fn pluck_qword2(&mut self, lane: usize, w: &mut __m128i) {}
+    fn pluck_qword2(&mut self, lane: usize, w: u32x4) -> u32x4 {
+        w
+    }
     #[inline(always)]
-    fn pluck_qword3(&mut self, lane: usize, w: &mut __m128i) {}
+    fn pluck_qword3(&mut self, lane: usize, w: u32x4) -> u32x4 {
+        w
+    }
 }
 
 impl Plucker for () {}
@@ -116,10 +143,10 @@ pub(crate) fn multiway_arx_abef_cdgh<
         let mut w2: [_; LANES] = [w2_t; LANES];
         let mut w3: [_; LANES] = [w3_t; LANES];
         for i in 0..LANES {
-            plucker.pluck_qword0(i, &mut w0[i]);
-            plucker.pluck_qword1(i, &mut w1[i]);
-            plucker.pluck_qword2(i, &mut w2[i]);
-            plucker.pluck_qword3(i, &mut w3[i]);
+            w0[i] = plucker.pluck_qword0(i, w0[i].into()).into();
+            w1[i] = plucker.pluck_qword1(i, w1[i].into()).into();
+            w2[i] = plucker.pluck_qword2(i, w2[i].into()).into();
+            w3[i] = plucker.pluck_qword3(i, w3[i].into()).into();
         }
         let mut w4: [_; LANES] = core::array::from_fn(|i| schedule!(w0[i], w1[i], w2[i], w3[i]));
 
@@ -203,6 +230,25 @@ pub(crate) fn multiway_arx_abef_cdgh<
                 cdgh,
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn portable_state_helpers_preserve_sha_ni_layout() {
+        let feedback: u32x4 = feedback_ab(0x1122_3344, 0x5566_7788).into();
+        assert_eq!(feedback.to_array(), [0, 0, 0x5566_7788, 0x1122_3344]);
+
+        let lhs = u32x4::from_array([u32::MAX, 2, 3, 4]);
+        let rhs = u32x4::from_array([1, 20, 30, 40]);
+        let sum: u32x4 = add_words(lhs.into(), rhs.into()).into();
+        assert_eq!(sum.to_array(), [0, 22, 33, 44]);
+
+        let state: __m128i = u32x4::from_array([1, 2, 3, 4]).into();
+        assert_eq!(extract_ab(state), (4u64 << 32) | 3);
     }
 }
 
