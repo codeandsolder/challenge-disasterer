@@ -469,12 +469,12 @@ impl SingleBlockSolver {
                                     .cast::<Align16<[u8; 8]>>()
                                     .as_mut()
                                     .unwrap();
-                                crate::strings::simd_itoa8::<7, true, 0x80>(
+                                crate::strings::format_decimal_8::<7, true, 0x80>(
                                     out,
                                     next_inner_key as u32,
                                 );
                             } else {
-                                crate::strings::simd_itoa8::<7, false, 0x80>(
+                                crate::strings::format_decimal_8::<7, false, 0x80>(
                                     &mut itoa_buf,
                                     next_inner_key as u32,
                                 );
