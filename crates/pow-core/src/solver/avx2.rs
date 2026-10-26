@@ -101,7 +101,14 @@ impl crate::solver::Solver for SingleBlockSolver {
         self.attempted_nonces
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve_nonce_only<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return None;
+        }
         if self.attempted_nonces >= self.limit {
             return None;
         }
@@ -168,7 +175,7 @@ impl crate::solver::Solver for SingleBlockSolver {
             11 => dispatch!(11),
             12 => dispatch!(12),
             13 => dispatch!(13),
-            _ => unsafe { core::hint::unreachable_unchecked() },
+            _ => return None,
         }?;
 
         Some(nonce + self.message.nonce_addend)
@@ -228,7 +235,15 @@ impl crate::solver::Solver for DoubleBlockSolver {
     }
 
     #[inline]
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return None;
+        }
+        // SAFETY: the feature check above proves AVX2 is available.
         unsafe { self.solve_impl::<TYPE>(target, mask) }
     }
 }
@@ -326,7 +341,14 @@ impl crate::solver::Solver for BinarySolver {
         self.attempted_nonces
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return None;
+        }
         // A one-byte search has only 256 candidates, and a nonce crossing a SHA block boundary
         // needs a distinct shuffle layout. Keep those rare cases on the scalar fallback instead of
         // burdening the hot SIMD path with extra setup and branches.
@@ -482,11 +504,7 @@ impl GoAwaySolver {
 
     #[inline(never)]
     #[target_feature(enable = "avx2")]
-    unsafe fn solve_nonce_only_impl<const TYPE: u8>(
-        &mut self,
-        target: u64,
-        mask: u64,
-    ) -> Option<u64> {
+    fn solve_nonce_only_impl<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
         crate::solver::wide::solve_goaway_impl::<8, TYPE>(
             &mut self.attempted_nonces,
             self.limit,
@@ -509,7 +527,15 @@ impl crate::solver::Solver for GoAwaySolver {
     }
 
     #[inline(always)]
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve_nonce_only<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return None;
+        }
+        // SAFETY: the feature check above proves AVX2 is available.
         unsafe { self.solve_nonce_only_impl::<TYPE>(target, mask) }
     }
 
@@ -610,7 +636,14 @@ impl crate::solver::Solver for CerberusSolver {
         self.attempted_nonces
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve_nonce_only<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
+        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+            return None;
+        }
         match &self.message {
             CerberusMessage::Binary(_) => unsafe { self.solve_binary_impl(target, mask) },
             CerberusMessage::Decimal(message) => {
@@ -844,6 +877,10 @@ impl crate::solver::Solver for AltchaSha256Solver {
         self.attempted_nonces
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
+    )]
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
         if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
             return self.solve_fallback::<TYPE>(target, mask);

@@ -247,8 +247,7 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
         .take(9)
         .enumerate()
     {
-        let bytes = crate::decompose_blocks_mut(&mut message.message);
-        bytes[crate::SWAP_DWORD_BYTE_ORDER[i]] = if ix >= 2 { b'1' } else { b'0' };
+        crate::write_be_word_byte(&mut message.message, i, if ix >= 2 { b'1' } else { b'0' });
     }
 
     let mut partial_state = message.prefix_state;
@@ -259,7 +258,7 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
     terminal_message_schedule[15] = (message.message_length * 8) as u32;
     crate::sha256::do_message_schedule_k_w(&mut terminal_message_schedule);
 
-    let mut itoa_buf = Align16(*b"1111\x80111");
+    let mut itoa_buf = *b"1111\x80111";
     // Preserve the historical wide-backend search bounds exactly: the AVX2
     // path covers 11x8 prefixes and AVX-512 covers 5x16 prefixes.
     let prefix_set_count = 90 / LANES;
@@ -314,12 +313,17 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
                     let nonce_prefix = 10 + LANES * prefix_set_index + success_lane_idx;
                     message.message[14] = cum0;
                     message.message[15] = cum1;
-                    let bytes = crate::decompose_blocks_mut(&mut message.message);
                     let digit_idx = crate::message::DoubleBlockMessage::DIGIT_IDX as usize;
-                    bytes[crate::SWAP_DWORD_BYTE_ORDER[digit_idx]] =
-                        (nonce_prefix / 10) as u8 + b'0';
-                    bytes[crate::SWAP_DWORD_BYTE_ORDER[digit_idx + 1]] =
-                        (nonce_prefix % 10) as u8 + b'0';
+                    crate::write_be_word_byte(
+                        &mut message.message,
+                        digit_idx,
+                        (nonce_prefix / 10) as u8 + b'0',
+                    );
+                    crate::write_be_word_byte(
+                        &mut message.message,
+                        digit_idx + 1,
+                        (nonce_prefix % 10) as u8 + b'0',
+                    );
 
                     let mut final_sha_state = message.prefix_state;
                     crate::sha256::digest_block(&mut final_sha_state, &message.message);
@@ -381,12 +385,12 @@ pub(crate) fn solve_single_block_impl<
     );
 
     // Reset the nine nonce bytes so a reused solver cannot inherit a previous hit.
-    {
-        let message_bytes = crate::decompose_blocks_mut(&mut message.message);
-        for (ix, i) in (message.digit_index..).take(9).enumerate() {
-            message_bytes[crate::SWAP_DWORD_BYTE_ORDER[i]] =
-                if ix >= 2 && octal { b'1' } else { b'0' };
-        }
+    for (ix, i) in (message.digit_index..).take(9).enumerate() {
+        crate::write_be_word_byte(
+            &mut message.message,
+            i,
+            if ix >= 2 && octal { b'1' } else { b'0' },
+        );
     }
 
     let lane_id_0_byte_idx = message.digit_index % 4;
@@ -424,9 +428,9 @@ pub(crate) fn solve_single_block_impl<
         };
 
         let mut inner_key_buf = if octal {
-            Align16(*b"1111\x80111")
+            *b"1111\x80111"
         } else {
-            Align16(*b"0000\x80000")
+            *b"0000\x80000"
         };
         let max_inner_iterations = if octal {
             0o10_000_000u64
@@ -490,13 +494,16 @@ pub(crate) fn solve_single_block_impl<
                         message.message[DIGIT_WORD_IDX0 + 1] = inner_word_0;
                         message.message[DIGIT_WORD_IDX0 + 2] = inner_word_1;
                     }
-                    {
-                        let message_bytes = crate::decompose_blocks_mut(&mut message.message);
-                        message_bytes[crate::SWAP_DWORD_BYTE_ORDER[message.digit_index]] =
-                            (nonce_prefix / 10) as u8 + b'0';
-                        message_bytes[crate::SWAP_DWORD_BYTE_ORDER[message.digit_index + 1]] =
-                            (nonce_prefix % 10) as u8 + b'0';
-                    }
+                    crate::write_be_word_byte(
+                        &mut message.message,
+                        message.digit_index,
+                        (nonce_prefix / 10) as u8 + b'0',
+                    );
+                    crate::write_be_word_byte(
+                        &mut message.message,
+                        message.digit_index + 1,
+                        (nonce_prefix % 10) as u8 + b'0',
+                    );
 
                     let decimal_inner_key = if octal {
                         let mut decimal = 0u64;
@@ -526,14 +533,16 @@ pub(crate) fn solve_single_block_impl<
                     next_inner_key,
                 );
             } else {
-                let message_bytes = crate::decompose_blocks_mut(&mut message.message);
                 let mut key_copy = next_inner_key;
                 for i in (0..7).rev() {
                     let radix = if octal { 8 } else { 10 };
                     let output = key_copy % radix;
                     key_copy /= radix;
-                    message_bytes[crate::SWAP_DWORD_BYTE_ORDER[message.digit_index + i + 2]] =
-                        output as u8 + if octal { b'1' } else { b'0' };
+                    crate::write_be_word_byte(
+                        &mut message.message,
+                        message.digit_index + i + 2,
+                        output as u8 + if octal { b'1' } else { b'0' },
+                    );
                 }
             }
         }

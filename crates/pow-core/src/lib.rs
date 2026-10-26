@@ -2,11 +2,7 @@
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 #![doc = "Internal protocol PoW solver core for challenge-disasterer."]
 #![warn(missing_docs)]
-
-use sha2::digest::{
-    consts::{B1, U0, U16, U64},
-    typenum::{IsGreater, PowerOfTwo, Unsigned},
-};
+#![deny(unsafe_code)]
 
 use core::num::NonZeroU8;
 
@@ -46,39 +42,10 @@ pub mod solver;
 /// Data structures and adapters for end-to-end PoW solving without IO dependencies.
 pub mod adapter;
 
-/// A trait for a trivial aligner that has no function except setting the alignment and transparently holding a value of type `T`.
-///
-/// # Safety
-///
-/// Implementor must ensure their memory layout is valid.
-pub unsafe trait AlignerTo<T>:
-    core::ops::Deref<Target = T> + core::ops::DerefMut<Target = T> + From<T>
-{
-    /// The alignment of the aligner.
-    type Alignment: Unsigned + PowerOfTwo + IsGreater<U0, Output = B1>;
-    /// The type of the aligner.
-    type Output;
-
-    /// Create a `core::alloc::Layout` for the aligner.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the request memory size is rejected by the allocator API.
-    fn create_layout() -> core::alloc::Layout;
-}
-
 #[repr(align(16))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Align to 16 bytes
 pub struct Align16<T>(pub T);
-
-unsafe impl<T> AlignerTo<T> for Align16<T> {
-    type Alignment = U16;
-    type Output = T;
-    fn create_layout() -> core::alloc::Layout {
-        core::alloc::Layout::new::<Align16<T>>()
-    }
-}
 
 impl<T> From<T> for Align16<T> {
     fn from(value: T) -> Self {
@@ -104,31 +71,9 @@ impl<T> core::ops::DerefMut for Align16<T> {
 /// Align to 64 bytes
 pub struct Align64<T>(pub T);
 
-unsafe impl<T> AlignerTo<T> for Align64<T> {
-    type Alignment = U64;
-    type Output = T;
-    fn create_layout() -> core::alloc::Layout {
-        core::alloc::Layout::new::<Align64<T>>()
-    }
-}
-
 impl<T> From<T> for Align64<T> {
     fn from(value: T) -> Self {
         Align64(value)
-    }
-}
-
-// Ref downcast to Align16
-impl<'a, T> From<&'a Align64<T>> for &'a Align16<T> {
-    fn from(this: &'a Align64<T>) -> &'a Align16<T> {
-        unsafe { core::mem::transmute(this) }
-    }
-}
-
-// Ref downcast to Align16
-impl<'a, T> From<&'a mut Align64<T>> for &'a mut Align16<T> {
-    fn from(this: &'a mut Align64<T>) -> &'a mut Align16<T> {
-        unsafe { core::mem::transmute(this) }
     }
 }
 
@@ -148,15 +93,34 @@ impl<T> core::ops::DerefMut for Align64<T> {
 #[cold]
 fn unlikely() {}
 
-const SWAP_DWORD_BYTE_ORDER: [usize; 64] = {
-    let mut data = [0; 64];
-    let mut i = 0;
-    while i < 64 {
-        data[i] = i / 4 * 4 + 3 - i % 4;
-        i += 1;
-    }
-    data
-};
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline(always)]
+pub(crate) fn read_be_word_byte(words: &[u32; 16], byte_index: usize) -> u8 {
+    let shift = (3 - byte_index % 4) * 8;
+    (words[byte_index / 4] >> shift) as u8
+}
+
+#[inline(always)]
+pub(crate) fn write_be_word_byte(words: &mut [u32; 16], byte_index: usize, byte: u8) {
+    let shift = (3 - byte_index % 4) * 8;
+    let mask = 0xffu32 << shift;
+    let word = &mut words[byte_index / 4];
+    *word = (*word & !mask) | (u32::from(byte) << shift);
+}
+
+#[inline(always)]
+pub(crate) fn read_le_word_byte(words: &[u32; 16], byte_index: usize) -> u8 {
+    let shift = (byte_index % 4) * 8;
+    (words[byte_index / 4] >> shift) as u8
+}
+
+#[inline(always)]
+pub(crate) fn write_le_word_byte(words: &mut [u32; 16], byte_index: usize, byte: u8) {
+    let shift = (byte_index % 4) * 8;
+    let mask = 0xffu32 << shift;
+    let word = &mut words[byte_index / 4];
+    *word = (*word & !mask) | (u32::from(byte) << shift);
+}
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 cfg_if::cfg_if! {
@@ -440,10 +404,6 @@ pub fn build_mcaptcha_prefix<E: Extend<u8>>(out: &mut E, string: &str, salt: &st
     out.extend(string.as_bytes().iter().copied());
 }
 
-pub(crate) const fn decompose_blocks_mut(inp: &mut [u32; 16]) -> &mut [u8; 64] {
-    unsafe { core::mem::transmute(inp) }
-}
-
 /// Compute a plausible time for a SHA-256 PoW to prevent tainting metrics
 ///
 /// # Arguments
@@ -564,8 +524,8 @@ mod tests {
             ],
         );
         assert_eq!(
-            unsafe { std::str::from_utf8_unchecked(&out) },
-            "123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"
+            &out,
+            b"123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"
         );
     }
 
