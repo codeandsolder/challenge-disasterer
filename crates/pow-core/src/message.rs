@@ -2,7 +2,7 @@
 #![allow(clippy::collapsible_if)]
 use core::num::{NonZeroU8, NonZeroU32};
 
-use crate::{Align64, blake3, sha256};
+use crate::{blake3, sha256};
 
 /// Solves an mCaptcha/Anubis/Cap.js SHA256 PoW where the SHA-256 message is a single block (512 bytes minus padding).
 ///
@@ -12,7 +12,7 @@ use crate::{Align64, blake3, sha256};
 #[derive(Debug, Clone)]
 pub struct SingleBlockMessage {
     /// the message template for the final block, pre-padded except for the mutating part
-    pub message: Align64<[u32; 16]>,
+    pub message: [u32; 16],
 
     /// the SHA-256 midstate for the previous block
     pub prefix_state: [u32; 8],
@@ -200,14 +200,14 @@ impl SingleBlockMessage {
         }
 
         Some(Self {
-            message: Align64(core::array::from_fn(|i| {
+            message: core::array::from_fn(|i| {
                 u32::from_be_bytes([
                     message[i * 4],
                     message[i * 4 + 1],
                     message[i * 4 + 2],
                     message[i * 4 + 3],
                 ])
-            })),
+            }),
             prefix_state,
             digit_index,
             nonce_addend,
@@ -418,14 +418,14 @@ impl SingleBlockMessage {
 
         Some((
             Self {
-                message: Align64(core::array::from_fn(|i| {
+                message: core::array::from_fn(|i| {
                     u32::from_be_bytes([
                         message[i * 4],
                         message[i * 4 + 1],
                         message[i * 4 + 2],
                         message[i * 4 + 3],
                     ])
-                })),
+                }),
                 prefix_state,
                 digit_index,
                 nonce_addend,
@@ -444,7 +444,7 @@ impl SingleBlockMessage {
 /// Currently the mutating part is always 9 digits long.
 pub struct DoubleBlockMessage {
     /// the message template for the final block, pre-padded except for the mutating part
-    pub message: Align64<[u32; 16]>,
+    pub message: [u32; 16],
 
     /// the SHA-256 midstate for the previous block
     pub prefix_state: [u32; 8],
@@ -540,14 +540,14 @@ impl DoubleBlockMessage {
 
         Some(Self {
             prefix_state,
-            message: Align64(core::array::from_fn(|i| {
+            message: core::array::from_fn(|i| {
                 u32::from_be_bytes([
                     message[i * 4],
                     message[i * 4 + 1],
                     message[i * 4 + 2],
                     message[i * 4 + 3],
                 ])
-            })),
+            }),
             nonce_addend,
             message_length,
         })
@@ -696,7 +696,7 @@ impl CerberusBinaryMessage {
 /// Construct: Proof := (prefix || ASCII_GO_INT_DECIMAL(nonce))
 pub struct CerberusDecimalMessage {
     pub(crate) prefix_state: [u32; 8],
-    pub(crate) salt_residual: Align64<[u8; 64]>,
+    pub(crate) salt_residual: [u8; 64],
     pub(crate) salt_residual_len: usize,
     pub(crate) flags: u32,
     pub(crate) nonce_addend: u64,
@@ -740,8 +740,8 @@ impl CerberusDecimalMessage {
             prefix_state.copy_from_slice(&output);
             flags &= !blake3::FLAG_CHUNK_START;
         }
-        let mut salt_residual = crate::Align64([0; 64]);
-        salt_residual.0[..remainder.len()].copy_from_slice(remainder);
+        let mut salt_residual = [0; 64];
+        salt_residual[..remainder.len()].copy_from_slice(remainder);
         let mut ptr = remainder.len();
 
         let mut nonce_addend = 0;
@@ -751,9 +751,9 @@ impl CerberusDecimalMessage {
             // not enough room for 9 digits, assume 64-bit server and pad generously
             let head_digit = (working_set % 8) as u8 + 1; // i64::MAX starts with 9 so we can only use 1-8 as head digit
             nonce_addend = head_digit as u64;
-            salt_residual.0[remainder.len()] = head_digit + b'0';
+            salt_residual[remainder.len()] = head_digit + b'0';
             working_set /= 8;
-            for byte in salt_residual.0.iter_mut().skip(remainder.len() + 1) {
+            for byte in salt_residual.iter_mut().skip(remainder.len() + 1) {
                 let digit = working_set % 10;
                 *byte = digit as u8 + b'0';
                 nonce_addend *= 10;
