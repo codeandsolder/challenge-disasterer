@@ -83,6 +83,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "anubis-argon2"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "blake2 0.11.0",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -389,8 +397,8 @@ dependencies = [
 name = "challenge-disasterer"
 version = "0.1.0"
 dependencies = [
+ "anubis-argon2",
  "anyhow",
- "argon2",
  "axum",
  "bytemuck",
  "challenge-pow-core",
