@@ -1,8 +1,5 @@
-use crate::{
-    Align64,
-    message::{
-        CerberusMessage, DecimalMessage, DoubleBlockMessage, GoAwayMessage, SingleBlockMessage,
-    },
+use crate::message::{
+    CerberusMessage, DecimalMessage, DoubleBlockMessage, GoAwayMessage, SingleBlockMessage,
 };
 
 /// SIMD128 decimal nonce single block solver.
@@ -342,7 +339,7 @@ impl CerberusSolver {
         const CONSTANT_WORD_COUNT: usize,
     >(
         &mut self,
-        msg_tpl: Align64<[u32; 16]>,
+        msg_tpl: [u32; 16],
         target: u64,
         mask: u64,
     ) -> Option<(u64, u64)> {
@@ -425,14 +422,14 @@ impl crate::solver::Solver for CerberusSolver {
                             _ => return None,
                         }
 
-                        let msg = Align64(core::array::from_fn(|i| {
+                        let msg = core::array::from_fn(|i| {
                             u32::from_le_bytes([
                                 msg[i * 4],
                                 msg[i * 4 + 1],
                                 msg[i * 4 + 2],
                                 msg[i * 4 + 3],
                             ])
-                        }));
+                        });
 
                         macro_rules! dispatch {
                             ($center_word_idx:literal) => {

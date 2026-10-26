@@ -1,9 +1,6 @@
-use crate::{
-    Align64,
-    message::{
-        AltchaMessage, BinaryMessage, CerberusMessage, DecimalMessage, DoubleBlockMessage,
-        GoAwayMessage, SingleBlockMessage,
-    },
+use crate::message::{
+    AltchaMessage, BinaryMessage, CerberusMessage, DecimalMessage, DoubleBlockMessage,
+    GoAwayMessage, SingleBlockMessage,
 };
 
 cpufeatures::new!(avx2, "avx2");
@@ -308,7 +305,7 @@ impl BinarySolver {
     >(
         &mut self,
         prefix_state: [u32; 8],
-        first_block: &Align64<[u32; 16]>,
+        first_block: &[u32; 16],
         second_block_schedule: &[u32; 64],
         nonce_byte_offset: usize,
         nonce_byte_count: core::num::NonZeroU8,
@@ -384,7 +381,7 @@ impl crate::solver::Solver for BinarySolver {
 
         let used_blocks = &mut blocks[..=cur_block];
 
-        let mut block_template_be = Align64([0; 16]);
+        let mut block_template_be = [0; 16];
         for i in 0..16 {
             block_template_be[i] =
                 u32::from_be_bytes(used_blocks[0][i * 4..][..4].try_into().unwrap());
@@ -595,7 +592,7 @@ impl CerberusSolver {
         const CONSTANT_WORD_COUNT: usize,
     >(
         &mut self,
-        msg_tpl: Align64<[u32; 16]>,
+        msg_tpl: [u32; 16],
         target: u64,
         mask: u64,
     ) -> Option<(u64, u64)> {
@@ -686,14 +683,14 @@ impl crate::solver::Solver for CerberusSolver {
                             _ => unreachable!(),
                         }
 
-                        let msg = Align64(core::array::from_fn(|i| {
+                        let msg = core::array::from_fn(|i| {
                             u32::from_le_bytes([
                                 msg[i * 4],
                                 msg[i * 4 + 1],
                                 msg[i * 4 + 2],
                                 msg[i * 4 + 3],
                             ])
-                        }));
+                        });
 
                         macro_rules! dispatch {
                             ($center_word_idx:literal) => {

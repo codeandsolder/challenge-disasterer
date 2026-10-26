@@ -669,7 +669,7 @@ impl GpuContext {
         };
         let mut params = [0_u32; 40];
         params[..8].copy_from_slice(&message.prefix_state);
-        params[8..24].copy_from_slice(&message.message.0);
+        params[8..24].copy_from_slice(&message.message);
         params[25] = message.digit_index as u32;
         params[26] = message.nonce_addend as u32;
         params[27] = (message.nonce_addend >> 32) as u32;
@@ -1015,7 +1015,7 @@ impl DoubleBlockSolver {
             p[8] = (mask >> 32) as u32;
             p[9] = mask as u32;
             p[16..24].copy_from_slice(&self.message.prefix_state);
-            p[24..40].copy_from_slice(&self.message.message.0);
+            p[24..40].copy_from_slice(&self.message.message);
             let mut hot_state = self.message.prefix_state;
             crate::sha256::ingest_message_prefix::<13>(
                 &mut hot_state,
@@ -1507,7 +1507,7 @@ fn single_block_fast_compatible(message: &crate::message::SingleBlockMessage) ->
     {
         return false;
     }
-    let words = &message.message.0;
+    let words = &message.message;
     words[0] == 0x3130_3030
         && words[1] == 0x3030_3030
         && (words[2] & 0xffff_0000) == 0x3030_0000
@@ -1581,7 +1581,7 @@ fn digest_single_block_message(
     if suffix >= 1_000_000_000 {
         return None;
     }
-    let mut words = message.message.0;
+    let mut words = message.message;
     let mut x = suffix as u32;
     for j in 0..9 {
         let digit = x % 10;
@@ -1666,7 +1666,7 @@ fn verify_cerberus(
             if suffix >= 1_000_000_000 {
                 return false;
             }
-            let mut bytes = message.salt_residual.0;
+            let mut bytes = message.salt_residual;
             for i in (0..9).rev() {
                 bytes[message.salt_residual_len + i] = (suffix % 10) as u8 + b'0';
                 suffix /= 10;
@@ -1991,7 +1991,7 @@ fn verify_double_block<const TYPE: u8>(
     if suffix >= 1_000_000_000 {
         return false;
     }
-    let mut block = message.message.0;
+    let mut block = message.message;
     for j in (0..9).rev() {
         let digit = (suffix % 10) as u32;
         suffix /= 10;

@@ -1,9 +1,6 @@
-use crate::{
-    Align64,
-    message::{
-        AltchaMessage, BinaryMessage, CerberusMessage, DecimalMessage, DoubleBlockMessage,
-        GoAwayMessage, SingleBlockMessage,
-    },
+use crate::message::{
+    AltchaMessage, BinaryMessage, CerberusMessage, DecimalMessage, DoubleBlockMessage,
+    GoAwayMessage, SingleBlockMessage,
 };
 
 /// Safe decimal nonce single block solver.
@@ -34,21 +31,21 @@ impl SingleBlockSolver {
         target: u64,
         mask: u64,
     ) -> Option<(u64, [u32; 8])> {
-        let mut message_be = Align64([0u8; 64]);
+        let mut message_be = [0u8; 64];
         for i in 0..16 {
-            message_be.0[i * 4..i * 4 + 4].copy_from_slice(&self.message.message[i].to_be_bytes());
+            message_be[i * 4..i * 4 + 4].copy_from_slice(&self.message.message[i].to_be_bytes());
         }
         let target = target & mask;
 
         for nonzero_digit in 1..=9 {
             let start = self.message.digit_index;
             let varying_range = if NO_TRAILING_ZEROS {
-                message_be.0[start..start + 8].fill(b'0');
-                message_be.0[start + 8] = b'0' + nonzero_digit as u8;
+                message_be[start..start + 8].fill(b'0');
+                message_be[start + 8] = b'0' + nonzero_digit as u8;
                 start..start + 8
             } else {
-                message_be.0[start] = b'0' + nonzero_digit as u8;
-                message_be.0[start + 1..start + 9].fill(b'0');
+                message_be[start] = b'0' + nonzero_digit as u8;
+                message_be[start + 1..start + 9].fill(b'0');
                 start + 1..start + 9
             };
 
@@ -58,7 +55,7 @@ impl SingleBlockSolver {
                 }
 
                 let mut state = self.message.prefix_state;
-                sha2::block_api::compress256(&mut state, core::array::from_ref(&*message_be));
+                sha2::block_api::compress256(&mut state, core::array::from_ref(&message_be));
                 self.attempted_nonces += 1;
 
                 let pass = if TYPE == crate::solver::SOLVE_TYPE_GT {
@@ -82,7 +79,7 @@ impl SingleBlockSolver {
 
                 if key + 1 < 100_000_000 {
                     let wrapped = crate::solver::increment_ascii_decimal(
-                        &mut message_be.0[varying_range.clone()],
+                        &mut message_be[varying_range.clone()],
                     );
                     debug_assert!(!wrapped);
                 }

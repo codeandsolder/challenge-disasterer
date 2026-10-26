@@ -3,8 +3,6 @@ use core::simd::{
     cmp::{SimdPartialEq as _, SimdPartialOrd as _},
 };
 
-use crate::Align64;
-
 #[inline(always)]
 fn target_match<const LANES: usize, const TYPE: u8>(
     a: Simd<u32, LANES>,
@@ -51,7 +49,7 @@ pub(crate) struct BinaryWork<'a> {
     pub(crate) attempted_nonces: &'a mut u64,
     pub(crate) limit: u64,
     pub(crate) prefix_state: [u32; 8],
-    pub(crate) first_block: &'a Align64<[u32; 16]>,
+    pub(crate) first_block: &'a [u32; 16],
     pub(crate) second_block_schedule: &'a [u32; 64],
     pub(crate) nonce_byte_offset: usize,
     pub(crate) nonce_byte_count: core::num::NonZeroU8,
@@ -94,7 +92,7 @@ pub(crate) fn solve_binary_impl<
     let mut cursor = (*attempted_nonces).min(search_end);
     while cursor < search_end {
         let x = cursor >> 8;
-        let mut block_template = **first_block;
+        let mut block_template = *first_block;
         let x_bytes = x.to_le_bytes();
         for (i, byte) in x_bytes
             .iter()
@@ -956,7 +954,7 @@ fn solve_cerberus_decimal_impl<
     B: CerberusCompression<LANES>,
 >(
     message: &crate::message::CerberusMessage,
-    msg_tpl: Align64<[u32; 16]>,
+    msg_tpl: [u32; 16],
     attempted_nonces: &mut u64,
     limit: u64,
     target: u64,
@@ -968,8 +966,8 @@ fn solve_cerberus_decimal_impl<
         return None;
     };
 
-    let mut msg = Align64([0u32; 16]);
-    msg.0[..=CENTER_WORD_IDX + 1].copy_from_slice(&msg_tpl.0[..=CENTER_WORD_IDX + 1]);
+    let mut msg = [0u32; 16];
+    msg[..=CENTER_WORD_IDX + 1].copy_from_slice(&msg_tpl[..=CENTER_WORD_IDX + 1]);
     let prepared_state = crate::blake3::ingest_message_prefix(
         message.prefix_state,
         &msg[..CONSTANT_WORD_COUNT],
@@ -1132,7 +1130,7 @@ pub(crate) fn solve_cerberus_decimal_avx2<
     const CONSTANT_WORD_COUNT: usize,
 >(
     message: &crate::message::CerberusMessage,
-    msg_tpl: Align64<[u32; 16]>,
+    msg_tpl: [u32; 16],
     attempted_nonces: &mut u64,
     limit: u64,
     target: u64,
@@ -1155,7 +1153,7 @@ pub(crate) fn solve_cerberus_decimal_wide16<
     const CONSTANT_WORD_COUNT: usize,
 >(
     message: &crate::message::CerberusMessage,
-    msg_tpl: Align64<[u32; 16]>,
+    msg_tpl: [u32; 16],
     attempted_nonces: &mut u64,
     limit: u64,
     target: u64,
@@ -1214,7 +1212,7 @@ pub(crate) fn solve_cerberus_decimal_wide4<
     const CONSTANT_WORD_COUNT: usize,
 >(
     message: &crate::message::CerberusMessage,
-    msg_tpl: crate::Align64<[u32; 16]>,
+    msg_tpl: [u32; 16],
     attempted_nonces: &mut u64,
     limit: u64,
     target: u64,
