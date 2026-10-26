@@ -2,7 +2,7 @@
 #![allow(clippy::collapsible_if)]
 use core::num::{NonZeroU8, NonZeroU32};
 
-use crate::{Align16, Align64, blake3, sha256};
+use crate::{Align64, blake3, sha256};
 
 /// Solves an mCaptcha/Anubis/Cap.js SHA256 PoW where the SHA-256 message is a single block (512 bytes minus padding).
 ///
@@ -447,7 +447,7 @@ pub struct DoubleBlockMessage {
     pub message: Align64<[u32; 16]>,
 
     /// the SHA-256 midstate for the previous block
-    pub prefix_state: Align16<[u32; 8]>,
+    pub prefix_state: [u32; 8],
 
     /// the length of the message in bytes
     pub message_length: u64,
@@ -463,7 +463,7 @@ impl DoubleBlockMessage {
     /// creates a new double block message
     pub fn new(mut prefix: &[u8], mut working_set: u32) -> Option<Self> {
         // construct the message buffer
-        let mut prefix_state = crate::Align16(sha256::IV);
+        let mut prefix_state = sha256::IV;
 
         let mut complete_blocks_before = 0;
 
@@ -588,7 +588,7 @@ impl DecimalMessage {
 #[derive(Debug, Clone)]
 pub struct BinaryMessage {
     /// the SHA-256 midstate for the previous block
-    pub prefix_state: Align16<[u32; 8]>,
+    pub prefix_state: [u32; 8],
 
     /// the residual salt
     pub salt_residual: [u8; 64],
@@ -611,7 +611,7 @@ impl BinaryMessage {
             nonce_byte_count.get() <= 8,
             "nonce_byte_count must be less or equal to 8"
         );
-        let mut prefix_state = crate::Align16(sha256::IV);
+        let mut prefix_state = sha256::IV;
 
         let (chunks, remainder) = salt.as_chunks::<64>();
         for block in chunks {
@@ -653,7 +653,7 @@ pub enum CerberusMessage {
 ///
 /// Construct: Proof := (prefix || U64(nonce))
 pub struct CerberusBinaryMessage {
-    pub(crate) midstate: Align16<[u32; 8]>,
+    pub(crate) midstate: [u32; 8],
     pub(crate) first_word: u32,
 }
 
@@ -684,7 +684,7 @@ impl CerberusBinaryMessage {
         );
 
         Self {
-            midstate: Align16(midstate),
+            midstate,
             first_word,
         }
     }
@@ -695,7 +695,7 @@ impl CerberusBinaryMessage {
 ///
 /// Construct: Proof := (prefix || ASCII_GO_INT_DECIMAL(nonce))
 pub struct CerberusDecimalMessage {
-    pub(crate) prefix_state: Align16<[u32; 8]>,
+    pub(crate) prefix_state: [u32; 8],
     pub(crate) salt_residual: Align64<[u8; 64]>,
     pub(crate) salt_residual_len: usize,
     pub(crate) flags: u32,
@@ -722,7 +722,7 @@ impl CerberusDecimalMessage {
             return None;
         }
         let (chunks, remainder) = salt.as_chunks::<64>();
-        let mut prefix_state = crate::Align16(blake3::IV);
+        let mut prefix_state = blake3::IV;
         let mut flags = blake3::FLAG_CHUNK_START | blake3::FLAG_CHUNK_END | blake3::FLAG_ROOT;
 
         for (i, block) in chunks.iter().enumerate() {

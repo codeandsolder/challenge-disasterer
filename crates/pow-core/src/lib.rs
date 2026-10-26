@@ -42,30 +42,6 @@ pub mod solver;
 /// Data structures and adapters for end-to-end PoW solving without IO dependencies.
 pub mod adapter;
 
-#[repr(align(16))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Align to 16 bytes
-pub struct Align16<T>(pub T);
-
-impl<T> From<T> for Align16<T> {
-    fn from(value: T) -> Self {
-        Align16(value)
-    }
-}
-
-impl<T> core::ops::Deref for Align16<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> core::ops::DerefMut for Align16<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
 #[repr(align(64))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Align to 64 bytes

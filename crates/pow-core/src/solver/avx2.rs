@@ -404,7 +404,7 @@ impl crate::solver::Solver for BinarySolver {
                 unsafe {
                     if cur_block == 1 {
                         if let Some(nonce) = self.solve_impl::<TYPE, { $skipped_rounds }, true>(
-                            *self.message.prefix_state,
+                            self.message.prefix_state,
                             &block_template_be,
                             &second_block_schedule,
                             self.message.salt_residual_len,
@@ -418,11 +418,11 @@ impl crate::solver::Solver for BinarySolver {
                                     nonce.to_le_bytes()[i];
                             }
                             sha2::block_api::compress256(&mut final_sha_state, &used_blocks);
-                            return Some((nonce, final_sha_state.0));
+                            return Some((nonce, final_sha_state));
                         }
                     } else {
                         if let Some(nonce) = self.solve_impl::<TYPE, { $skipped_rounds }, false>(
-                            *self.message.prefix_state,
+                            self.message.prefix_state,
                             &block_template_be,
                             &[0; 64],
                             self.message.salt_residual_len,
@@ -436,7 +436,7 @@ impl crate::solver::Solver for BinarySolver {
                                     nonce.to_le_bytes()[i];
                             }
                             sha2::block_api::compress256(&mut final_sha_state, &used_blocks);
-                            return Some((nonce, final_sha_state.0));
+                            return Some((nonce, final_sha_state));
                         }
                     }
                 }

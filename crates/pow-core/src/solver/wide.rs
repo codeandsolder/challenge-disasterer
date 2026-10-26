@@ -3,7 +3,7 @@ use core::simd::{
     cmp::{SimdPartialEq as _, SimdPartialOrd as _},
 };
 
-use crate::{Align16, Align64};
+use crate::Align64;
 
 #[inline(always)]
 fn target_match<const LANES: usize, const TYPE: u8>(
@@ -253,7 +253,7 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
     let mut partial_state = message.prefix_state;
     crate::sha256::sha2_arx::<0>(&mut partial_state, &message.message[..13]);
 
-    let mut terminal_message_schedule = Align16([0; 64]);
+    let mut terminal_message_schedule = [0; 64];
     terminal_message_schedule[14] = ((message.message_length * 8) >> 32) as u32;
     terminal_message_schedule[15] = (message.message_length * 8) as u32;
     crate::sha256::do_message_schedule_k_w(&mut terminal_message_schedule);
@@ -342,7 +342,7 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
                     let computed_nonce = nonce_prefix as u64 * 10u64.pow(7)
                         + decimal_inner_key
                         + message.nonce_addend;
-                    return Some((computed_nonce, *final_sha_state));
+                    return Some((computed_nonce, final_sha_state));
                 }
             }
 
@@ -971,7 +971,7 @@ fn solve_cerberus_decimal_impl<
     let mut msg = Align64([0u32; 16]);
     msg.0[..=CENTER_WORD_IDX + 1].copy_from_slice(&msg_tpl.0[..=CENTER_WORD_IDX + 1]);
     let prepared_state = crate::blake3::ingest_message_prefix(
-        *message.prefix_state,
+        message.prefix_state,
         &msg[..CONSTANT_WORD_COUNT],
         0,
         message.salt_residual_len as u32 + 9,
@@ -1088,7 +1088,7 @@ fn solve_cerberus_binary_impl<const LANES: usize, B: CerberusCompression<LANES>>
     let mut msg = [0; 16];
     msg[0] = message.first_word;
     let prepared_state = crate::blake3::ingest_message_prefix(
-        *message.midstate,
+        message.midstate,
         &msg[..1],
         0,
         8,
