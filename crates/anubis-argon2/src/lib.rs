@@ -286,25 +286,33 @@ fn compress_at(
     current: usize,
     with_xor: bool,
 ) -> bool {
-    if reference == current {
+    if reference == current || reference >= memory.len() || current >= memory.len() {
         return false;
     }
-    if reference < current {
-        let (before, current_and_after) = memory.split_at_mut(current);
-        compress(
-            state,
-            &before[reference],
-            &mut current_and_after[0],
-            with_xor,
-        );
+
+    if with_xor {
+        for (i, value) in state.iter_mut().enumerate() {
+            *value ^= load_vec(&memory[reference], i);
+            let saved = *value ^ load_vec(&memory[current], i);
+            store_vec(&mut memory[current], i, saved);
+        }
     } else {
-        let (before_current, reference_and_after) = memory.split_at_mut(reference);
-        compress(
-            state,
-            &reference_and_after[0],
-            &mut before_current[current],
-            with_xor,
-        );
+        for (i, value) in state.iter_mut().enumerate() {
+            *value ^= load_vec(&memory[reference], i);
+            store_vec(&mut memory[current], i, *value);
+        }
+    }
+
+    for i in 0..4 {
+        round_rows(state, i);
+    }
+    for i in 0..4 {
+        round_columns(state, i);
+    }
+
+    for (i, value) in state.iter_mut().enumerate() {
+        *value ^= load_vec(&memory[current], i);
+        store_vec(&mut memory[current], i, *value);
     }
     true
 }
@@ -337,14 +345,16 @@ fn store_vec(block: &mut Block, i: usize, value: V) {
 
 #[inline(always)]
 fn compress(state: &mut State, rhs: &Block, next: &mut Block, with_xor: bool) {
-    for (i, value) in state.iter_mut().enumerate() {
-        *value ^= load_vec(rhs, i);
-        let saved = if with_xor {
-            *value ^ load_vec(next, i)
-        } else {
-            *value
-        };
-        store_vec(next, i, saved);
+    if with_xor {
+        for (i, value) in state.iter_mut().enumerate() {
+            *value ^= load_vec(rhs, i);
+            store_vec(next, i, *value ^ load_vec(next, i));
+        }
+    } else {
+        for (i, value) in state.iter_mut().enumerate() {
+            *value ^= load_vec(rhs, i);
+            store_vec(next, i, *value);
+        }
     }
 
     for i in 0..4 {
