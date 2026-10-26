@@ -56,6 +56,11 @@ jobs:
       - name: Test
         run: cargo test --locked --workspace --all-features
 
+      - name: Check portable Anubis Argon2 on WASI
+        env:
+          RUSTFLAGS: -D warnings
+        run: cargo check --locked --target wasm32-wasip1 -p anubis-argon2
+
       - name: Test WASM SIMD128 backend
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: node ../../tools/wasm-wasi-runner.mjs

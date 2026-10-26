@@ -10,7 +10,7 @@ gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "pow-buster/gpu", "pow-buster/c
 
 [dependencies]
 anyhow = "1"
-argon2 = { path = "crates/argon2-fast" }
+anubis-argon2 = { path = "crates/anubis-argon2" }
 axum = "0.8"
 bytemuck = { version = "1", features = ["derive"], optional = true }
 clap = { version = "4", features = ["derive"] }
@@ -43,6 +43,6 @@ unsafe_code = "deny"
 all = { level = "deny", priority = -1 }
 
 [workspace]
-members = ["crates/pow-core", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench"]
+members = ["crates/anubis-argon2", "crates/pow-core", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench"]
 resolver = "3"
 exclude = ["crates/argon2-fast"]

@@ -8,8 +8,8 @@ use std::{
     time::Instant,
 };
 
+use anubis_argon2::Memory as Argon2Memory;
 use anyhow::{Context, ensure};
-use argon2::{Argon2, Block};
 use pow_buster::message::BinaryMessage;
 use pow_buster::solver::SOLVE_TYPE_MASK;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,7 @@ use crate::{
 
 const SEARCH_SPACE: u64 = 1_u64 << 32;
 const MAX_DIFFICULTY: u32 = 64;
+pub const ARGON2_IMPLEMENTATION: &str = "portable-simd";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Challenge {
@@ -91,8 +92,7 @@ fn sha256_hash(data: &[u8], nonce: u32) -> [u8; 32] {
 fn argon2id_hash_with_memory(
     data: &[u8],
     nonce: u32,
-    argon2: &Argon2<'_>,
-    memory: &mut [Block],
+    memory: &mut Argon2Memory,
 ) -> anyhow::Result<[u8; 32]> {
     let nonce = u64::from(nonce);
     let salt = if use_little_endian_nonce(data) {
@@ -100,25 +100,12 @@ fn argon2id_hash_with_memory(
     } else {
         nonce.to_be_bytes()
     };
-    let mut result = [0_u8; 32];
-    argon2
-        .hash_password_into_with_memory(data, &salt, &mut result, memory)
-        .map_err(|err| anyhow::anyhow!("Argon2id hash failed: {err}"))?;
-    Ok(result)
+    anubis_argon2::hash(data, salt, memory).context("specialized Argon2id hash failed")
 }
 
 fn argon2id_hash(data: &[u8], nonce: u32) -> anyhow::Result<[u8; 32]> {
-    let nonce = u64::from(nonce);
-    let salt = if use_little_endian_nonce(data) {
-        nonce.to_le_bytes()
-    } else {
-        nonce.to_be_bytes()
-    };
-    let mut result = [0_u8; 32];
-    Argon2::default()
-        .hash_password_into(data, &salt, &mut result)
-        .map_err(|err| anyhow::anyhow!("Argon2id hash failed: {err}"))?;
-    Ok(result)
+    let mut memory = Argon2Memory::new();
+    argon2id_hash_with_memory(data, nonce, &mut memory)
 }
 
 pub fn verify_sha256(challenge: &Challenge, answer: &Answer) -> bool {
@@ -233,7 +220,7 @@ pub fn solve_argon2id(
     ensure!(
         matches!(
             implementation,
-            None | Some("argon2-0.6.0") | Some("argon2-0.5.3")
+            None | Some(ARGON2_IMPLEMENTATION) | Some("argon2-0.6.0") | Some("argon2-0.5.3")
         ),
         "unsupported Argon2id implementation: {}",
         implementation.unwrap_or_default()
@@ -251,14 +238,12 @@ pub fn solve_argon2id(
             let winner = &winner;
             let data = &data;
             handles.push(scope.spawn(move || -> anyhow::Result<()> {
-                let argon2 = Argon2::default();
-                let mut memory = vec![Block::default(); argon2.params().block_count()];
+                let mut memory = Argon2Memory::new();
                 let mut nonce = u64::try_from(worker).context("Argon2id worker index overflow")?;
 
                 while nonce < SEARCH_SPACE && nonce < best_nonce.load(Ordering::Acquire) {
                     let protocol_nonce = u32::try_from(nonce).context("Argon2id nonce overflow")?;
-                    let hash =
-                        argon2id_hash_with_memory(data, protocol_nonce, &argon2, &mut memory)?;
+                    let hash = argon2id_hash_with_memory(data, protocol_nonce, &mut memory)?;
                     if has_leading_zero_bits(&hash, challenge.difficulty) {
                         let previous = best_nonce.fetch_min(nonce, Ordering::AcqRel);
                         if nonce < previous {
@@ -304,7 +289,7 @@ pub fn solve_argon2id(
     Ok(Result {
         answer,
         solve_ms: started.elapsed().as_secs_f64() * 1000.0,
-        implementation: "argon2-0.6.0".to_owned(),
+        implementation: ARGON2_IMPLEMENTATION.to_owned(),
     })
 }
 
@@ -349,18 +334,17 @@ mod tests {
             difficulty: 1,
         };
         let result = solve_argon2id(&challenge, Some("argon2-0.5.3"), 1).unwrap();
-        assert_eq!(result.implementation, "argon2-0.6.0");
+        assert_eq!(result.implementation, ARGON2_IMPLEMENTATION);
         assert!(verify_argon2id(&challenge, &result.answer));
     }
 
     #[test]
     fn argon2id_reused_memory_matches_fresh_hashes() {
         let data = hex::decode("0011223344556680").unwrap();
-        let argon2 = Argon2::default();
-        let mut memory = vec![Block::default(); argon2.params().block_count()];
+        let mut memory = Argon2Memory::new();
         for nonce in [0, 1, 2, 17] {
             assert_eq!(
-                argon2id_hash_with_memory(&data, nonce, &argon2, &mut memory).unwrap(),
+                argon2id_hash_with_memory(&data, nonce, &mut memory).unwrap(),
                 argon2id_hash(&data, nonce).unwrap()
             );
         }
