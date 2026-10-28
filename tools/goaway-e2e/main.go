@@ -16,7 +16,7 @@ import (
 
 type challengeConfig struct {
 	Challenge  string `json:"challenge"`
-	Difficulty uint8  `json:"difficulty"`
+	Difficulty uint64 `json:"difficulty"`
 }
 
 type solveResponse struct {
@@ -25,6 +25,61 @@ type solveResponse struct {
 	Answer         struct {
 		Token string `json:"token"`
 	} `json:"answer"`
+}
+
+type solverCapability struct {
+	Solver          string   `json:"solver"`
+	DifficultyMin   uint64   `json:"difficulty_min"`
+	DifficultyMax   uint64   `json:"difficulty_max"`
+	Implementations []string `json:"implementations"`
+}
+
+type statsResponse struct {
+	SolverCapabilities []solverCapability `json:"solver_capabilities"`
+}
+
+func contains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func assertCapabilities(serviceURL string) error {
+	response, err := http.Get(serviceURL + "/stats")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("stats status=%d", response.StatusCode)
+	}
+	var stats statsResponse
+	if err := json.NewDecoder(response.Body).Decode(&stats); err != nil {
+		return err
+	}
+	var full, fast *solverCapability
+	for i := range stats.SolverCapabilities {
+		row := &stats.SolverCapabilities[i]
+		if row.Solver != "goaway" {
+			continue
+		}
+		if row.DifficultyMin == 0 && row.DifficultyMax == 256 {
+			full = row
+		}
+		if row.DifficultyMin == 1 && row.DifficultyMax == 64 {
+			fast = row
+		}
+	}
+	if full == nil || !contains(full.Implementations, "auto") || !contains(full.Implementations, "safe") {
+		return fmt.Errorf("missing go-away full-digest auto/safe capability: %+v", full)
+	}
+	if fast == nil || contains(fast.Implementations, "auto") || contains(fast.Implementations, "safe") {
+		return fmt.Errorf("go-away accelerated capability overlaps full-digest selectors: %+v", fast)
+	}
+	return nil
 }
 
 func main() {
@@ -42,8 +97,16 @@ func main() {
 	if err := runner.Compile("goaway-e2e", wasmData); err != nil {
 		panic(err)
 	}
+	if err := assertCapabilities(serviceURL); err != nil {
+		panic(err)
+	}
 
-	for _, difficulty := range []string{"8", "13", "20"} {
+	difficulties := []string{"8", "13", "20"}
+	implementation := os.Getenv("CHALLENGE_IMPLEMENTATION")
+	if implementation == "" || implementation == "auto" || implementation == "safe" {
+		difficulties = append([]string{"0"}, difficulties...)
+	}
+	for _, difficulty := range difficulties {
 		if err := runCase(runner, serviceURL, difficulty); err != nil {
 			panic(err)
 		}

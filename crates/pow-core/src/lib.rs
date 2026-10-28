@@ -386,6 +386,27 @@ pub const fn compute_mask_zero_nibbles(difficulty_factor: NonZeroU8) -> u64 {
     }
 }
 
+/// Test the full SHA-256 digest against go-away's leading-zero-bit rule.
+///
+/// Difficulties above 256 are unsatisfiable because SHA-256 has only 256 bits.
+pub fn goaway_hash_matches_difficulty(hash: &[u32; 8], difficulty: u16) -> bool {
+    if difficulty > 256 {
+        return false;
+    }
+    let mut remaining = u32::from(difficulty);
+    for word in hash {
+        if remaining == 0 {
+            return true;
+        }
+        let required = remaining.min(32);
+        if word.leading_zeros() < required {
+            return false;
+        }
+        remaining -= required;
+    }
+    remaining == 0
+}
+
 /// Compute the mask for a GoAway PoW against the first 64 SHA-256 bits.
 pub const fn compute_mask_goaway(difficulty_factor: NonZeroU8) -> u64 {
     let bits = difficulty_factor.get();
@@ -563,6 +584,27 @@ mod challenge_domain_tests {
             u64::MAX << 31
         );
         assert_eq!(compute_mask_goaway(NonZeroU8::new(64).unwrap()), u64::MAX);
+    }
+
+    #[test]
+    fn goaway_full_digest_predicate_covers_zero_through_256_bits() {
+        let all_zero = [0_u32; 8];
+        assert!(goaway_hash_matches_difficulty(&all_zero, 0));
+        assert!(goaway_hash_matches_difficulty(&all_zero, 256));
+        assert!(!goaway_hash_matches_difficulty(&all_zero, 257));
+
+        let hash = [
+            0,
+            0,
+            0x07ff_ffff,
+            u32::MAX,
+            u32::MAX,
+            u32::MAX,
+            u32::MAX,
+            u32::MAX,
+        ];
+        assert!(goaway_hash_matches_difficulty(&hash, 69));
+        assert!(!goaway_hash_matches_difficulty(&hash, 70));
     }
 
     #[test]

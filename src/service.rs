@@ -1298,6 +1298,12 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         }
         implementations
     };
+    let accelerated_classic_implementations = |sha_ni: bool, wgpu: bool| {
+        classic_implementations(sha_ni, wgpu)
+            .into_iter()
+            .filter(|implementation| !matches!(*implementation, "auto" | "safe"))
+            .collect::<Vec<_>>()
+    };
 
     for solver in [
         "cerberus", "goaway", "capjs", "mcaptcha", "haphash", "altcha",
@@ -1319,12 +1325,22 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         SolverCapability {
             solver: "goaway",
             algorithms: &["sha256"],
+            difficulty_min: 0,
+            difficulty_max: 256,
+            router: false,
+            counter_mode: None,
+            counter_max: None,
+            implementations: vec!["auto", "safe"],
+        },
+        SolverCapability {
+            solver: "goaway",
+            algorithms: &["sha256"],
             difficulty_min: 1,
             difficulty_max: 64,
             router: false,
             counter_mode: None,
             counter_max: None,
-            implementations: classic_implementations(true, true),
+            implementations: accelerated_classic_implementations(true, true),
         },
         SolverCapability {
             solver: "capjs",
