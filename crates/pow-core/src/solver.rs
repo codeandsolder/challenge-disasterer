@@ -323,7 +323,9 @@ pub(crate) mod tests {
                     break;
                 };
 
-                let target_bytes = compute_target_mcaptcha(DIFFICULTY as u64).to_be_bytes();
+                let target_bytes =
+                    compute_target_mcaptcha(core::num::NonZeroU64::new(DIFFICULTY as u64).unwrap())
+                        .to_be_bytes();
                 let target_u64 = u64::from_be_bytes(target_bytes[..8].try_into().unwrap());
                 let mask_anubis = compute_mask_zero_nibbles(ANUBIS_DIFFICULTY);
                 let (nonce, result) = solver
@@ -373,7 +375,7 @@ pub(crate) mod tests {
                     config.is_sufficient_difficulty(&test_response, DIFFICULTY),
                     "{:016x} is not sufficient difficulty, expected {:016x} (solver: {})",
                     result_u128,
-                    compute_target_mcaptcha(DIFFICULTY as u64),
+                    compute_target_mcaptcha(core::num::NonZeroU64::new(DIFFICULTY as u64).unwrap()),
                     core::any::type_name::<S>()
                 );
 
@@ -441,7 +443,8 @@ pub(crate) mod tests {
                 let mut msg = Vec::from_iter(b"abc".iter().cloned().cycle().take(prefix_len));
                 let mut solver = factory(&msg, NonZeroU8::new(nonce_byte_count).unwrap());
                 const DIFFICULTY: u64 = 100_000;
-                let target = compute_target_mcaptcha(DIFFICULTY);
+                let target =
+                    compute_target_mcaptcha(core::num::NonZeroU64::new(DIFFICULTY).unwrap());
                 let (nonce, result) = solver
                     .solve::<SOLVE_TYPE_GT>(target, !0)
                     .expect("solver failed");
@@ -478,13 +481,19 @@ pub(crate) mod tests {
         mut factory: F,
     ) {
         use std::io::Write;
+        let mut tested_by_search_space = [0_u32; 3];
         for c in b'a'..=b'c' {
             let salts = [c; 64];
             for len in 1..=64 {
                 for search_space in 0..=2 {
                     let u64_target = 0b10111 << (64 - 5);
                     let u64_mask = !0 << (64 - 5);
-                    let (mut solver, fixup_prefix) = factory(&salts[..len], search_space).unwrap();
+                    let Some((mut solver, fixup_prefix)) = factory(&salts[..len], search_space)
+                    else {
+                        assert_ne!(search_space, 0, "baseline f64 shape must remain supported");
+                        continue;
+                    };
+                    tested_by_search_space[search_space as usize] += 1;
 
                     let (nonce, result) = solver
                         .solve::<SOLVE_TYPE_MASK>(u64_target, u64_mask)
@@ -527,6 +536,10 @@ pub(crate) mod tests {
                 }
             }
         }
+        assert!(
+            tested_by_search_space.into_iter().all(|count| count > 0),
+            "each requested f64 working-set value must exercise at least one supported shape"
+        );
     }
 
     pub(crate) fn test_cerberus_decimal_validator<

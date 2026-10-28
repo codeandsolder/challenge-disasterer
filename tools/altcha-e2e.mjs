@@ -15,6 +15,33 @@ const { deriveKey: deriveScrypt } = await load("dist/esm/v2/algorithms/scrypt.js
 
 const secret = "challenge-disasterer-altcha-e2e-secret";
 
+async function assertCapabilities() {
+  const response = await fetch(`${serviceUrl}/stats`);
+  const stats = await response.json();
+  if (!response.ok) throw new Error(`stats failed: ${JSON.stringify(stats)}`);
+  const rows = stats.solver_capabilities.filter((row) => row.solver === "altcha");
+  if (rows.some((row) => row.implementations.includes("altcha-rust"))) {
+    throw new Error(`obsolete ALTCHA selector leaked through /stats: ${JSON.stringify(rows)}`);
+  }
+  const uint32 = rows.filter((row) => row.counter_mode === "uint32");
+  const string = rows.find((row) => row.counter_mode === "string");
+  const v1 = rows.find((row) => row.algorithms.includes("sha1-v1"));
+  if (uint32.length !== 2 || uint32.some((row) => row.counter_max !== 0xffffffff)) {
+    throw new Error(`bad ALTCHA uint32 capability domain: ${JSON.stringify(rows)}`);
+  }
+  if (!uint32.every((row) => row.implementations.includes("reference"))) {
+    throw new Error(`ALTCHA uint32 rows must expose the canonical reference selector: ${JSON.stringify(rows)}`);
+  }
+  if (!string || string.counter_max !== Number.MAX_SAFE_INTEGER || JSON.stringify(string.implementations) !== JSON.stringify(["auto", "safe"])) {
+    throw new Error(`bad ALTCHA string capability domain: ${JSON.stringify(rows)}`);
+  }
+  if (!v1 || JSON.stringify(v1.implementations) !== JSON.stringify(["auto", "safe"])) {
+    throw new Error(`bad ALTCHA v1 capability row: ${JSON.stringify(rows)}`);
+  }
+}
+
+await assertCapabilities();
+
 async function callSolver(challenge, requestedImplementation = implementation, counterMode) {
   const wireChallenge = counterMode ? { ...challenge, counterMode } : challenge;
   const response = await fetch(`${serviceUrl}/solve`, {
@@ -116,7 +143,7 @@ await runV2({ algorithm: "PBKDF2/SHA-256", cost: 16, deriveKey: derivePbkdf2, ex
 await runV2({ algorithm: "SHA-256", cost: 2, deriveKey: deriveSha, requestedImplementation: "reference", expectedImplementation: "reference" });
 
 if (!optimizedOnly) {
-  const genericImplementation = implementation === "altcha-rust" ? "altcha-rust" : "altcha-generic";
+  const genericImplementation = implementation === "reference" ? "reference" : "altcha-generic";
   for (const algorithm of ["SHA-384", "SHA-512"]) {
     await runV2({ algorithm, cost: 2, deriveKey: deriveSha, expectedImplementation: genericImplementation });
   }

@@ -10,6 +10,22 @@ const { generateChallenge, generateRswKeypair, validateChallenge } = core;
 const secret = "challenge-disasterer-capjs-e2e-secret-32bytes";
 const scope = "challenge-disasterer-e2e";
 
+async function assertCapabilities() {
+  const response = await fetch(`${serviceUrl}/stats`);
+  const stats = await response.json();
+  if (!response.ok) throw new Error(`stats failed: ${JSON.stringify(stats)}`);
+  const rows = stats.solver_capabilities.filter((row) => row.solver === "capjs");
+  for (const algorithm of ["rsw", "hashwx"]) {
+    const row = rows.find((candidate) => candidate.algorithms.includes(algorithm));
+    if (!row) throw new Error(`missing Cap.js capability row for ${algorithm}`);
+    if (JSON.stringify(row.implementations) !== JSON.stringify(["auto"])) {
+      throw new Error(`Cap.js ${algorithm} must advertise only the selectable auto backend: ${JSON.stringify(row)}`);
+    }
+  }
+}
+
+await assertCapabilities();
+
 async function solve(challenge) {
   const response = await fetch(`${serviceUrl}/solve`, {
     method: "POST",

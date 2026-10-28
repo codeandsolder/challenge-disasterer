@@ -1,5 +1,5 @@
 use std::{
-    num::{NonZeroU8, NonZeroU32},
+    num::{NonZeroU8, NonZeroU32, NonZeroU64},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -651,7 +651,7 @@ fn run_cpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             &format!("matrix-salt-{sample:08x}"),
         );
         let mcaptcha_factor = 1_000_000_u64;
-        let mcaptcha_target = compute_target_mcaptcha(mcaptcha_factor);
+        let mcaptcha_target = compute_target_mcaptcha(NonZeroU64::new(mcaptcha_factor).unwrap());
         for (implementation, solver) in
             decimal_backends(|| DecimalMessage::new(&mcaptcha_prefix, 0).unwrap())
         {
@@ -971,7 +971,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             &format!("matrix-salt-{sample:08x}"),
         );
         let factor = 1_000_000_u64;
-        let target = compute_target_mcaptcha(factor);
+        let target = compute_target_mcaptcha(NonZeroU64::new(factor).unwrap());
         let mut solver =
             pow_core::gpu::DecimalSolver::from(DecimalMessage::new(&mcaptcha_prefix, 0).unwrap());
         solver.set_limit(args.limit);
