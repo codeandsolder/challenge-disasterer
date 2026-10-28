@@ -24,7 +24,7 @@ use pow_buster::{
     build_mcaptcha_prefix, compute_mask_goaway, compute_mask_zero_nibbles, compute_target_mcaptcha,
     extract128_be,
     message::{AltchaMessage, CapJSEmitter, CerberusMessage, DecimalMessage, GoAwayMessage},
-    solver::{SOLVE_TYPE_GT, SOLVE_TYPE_MASK, Solver, SolverDyn},
+    solver::{SOLVE_TYPE_GT, SOLVE_TYPE_LEADING_ZERO_BITS, SOLVE_TYPE_MASK, Solver, SolverDyn},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -48,7 +48,7 @@ struct McaptchaRequest {
 #[derive(Debug, Deserialize)]
 struct HaphashChallenge {
     prefix: String,
-    difficulty: NonZeroU8,
+    difficulty: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -395,28 +395,11 @@ fn solve_goaway(challenge: Value, implementation: Implementation) -> anyhow::Res
         config.difficulty() <= 256,
         "go-away difficulty above the 256-bit SHA-256 digest width is unsatisfiable"
     );
-    let started = Instant::now();
-
-    if config.difficulty() == 0 || config.difficulty() > 64 {
-        ensure!(
-            matches!(implementation, Implementation::Auto | Implementation::Safe),
-            "go-away difficulty outside 1..=64 supports auto/safe implementations only"
-        );
-        let (solution, attempted_nonces) = config.solve_with_limit(DEFAULT_LIMIT);
-        let solution = solution.context("go-away search exhausted configured limit")?;
-        return Ok(finish_goaway(
-            &config,
-            implementation.name(),
-            solution,
-            attempted_nonces,
-            started,
-        ));
-    }
-
-    let difficulty = NonZeroU8::new(
-        u8::try_from(config.difficulty()).context("go-away difficulty does not fit u8")?,
-    )
-    .context("accelerated go-away difficulty must be positive")?;
+    let accelerated_mask = u8::try_from(config.difficulty())
+        .ok()
+        .and_then(NonZeroU8::new)
+        .filter(|difficulty| difficulty.get() <= 64)
+        .map(compute_mask_goaway);
     let challenge_bytes: [u8; 64] = config
         .challenge()
         .as_bytes()
@@ -424,13 +407,18 @@ fn solve_goaway(challenge: Value, implementation: Implementation) -> anyhow::Res
         .context("go-away challenge must be exactly 64 bytes")?;
     let mut message =
         GoAwayMessage::new_hex(&challenge_bytes, 0).context("invalid go-away hex challenge")?;
+    let started = Instant::now();
     let mut attempted_nonces = 0_u64;
     let mut solution = None;
     for high_word in 0_u32.. {
         message.set_high_word(high_word);
         let mut solver = goaway_solver(implementation, message.clone())?;
         solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
-        solution = solver.solve(0, SOLVE_TYPE_MASK, compute_mask_goaway(difficulty));
+        solution = if let Some(mask) = accelerated_mask {
+            solver.solve(0, SOLVE_TYPE_MASK, mask)
+        } else {
+            solver.solve(config.difficulty(), SOLVE_TYPE_LEADING_ZERO_BITS, u64::MAX)
+        };
         attempted_nonces = attempted_nonces.saturating_add(solver.attempted());
         if solution.is_some() || attempted_nonces >= DEFAULT_LIMIT {
             break;
@@ -709,12 +697,15 @@ fn solve_haphash(challenge: Value, implementation: Implementation) -> anyhow::Re
     let challenge: HaphashChallenge =
         serde_json::from_value(challenge).context("invalid haphash challenge")?;
     ensure!(
-        challenge.difficulty.get() <= 16,
-        "haphash difficulty above 16 nibbles is unsupported"
+        challenge.difficulty <= 64,
+        "haphash difficulty above the 64-nibble SHA-256 digest width is unsatisfiable"
     );
     let prefix = challenge.prefix.as_bytes();
     ensure!(!prefix.is_empty(), "haphash prefix must not be empty");
-    let mask = compute_mask_zero_nibbles(challenge.difficulty);
+    let fast_mask = NonZeroU8::new(challenge.difficulty)
+        .filter(|difficulty| difficulty.get() <= 16)
+        .map(compute_mask_zero_nibbles);
+    let full_digest_bits = u64::from(challenge.difficulty) * 4;
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
     for bank in 0_u32.. {
@@ -723,7 +714,11 @@ fn solve_haphash(challenge: Value, implementation: Implementation) -> anyhow::Re
         };
         let mut solver = decimal_solver(implementation, message)?;
         solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
-        let result = solver.solve(0, SOLVE_TYPE_MASK, mask);
+        let result = if let Some(mask) = fast_mask {
+            solver.solve(0, SOLVE_TYPE_MASK, mask)
+        } else {
+            solver.solve(full_digest_bits, SOLVE_TYPE_LEADING_ZERO_BITS, u64::MAX)
+        };
         attempted_nonces = attempted_nonces.saturating_add(solver.attempted());
         if let Some((nonce, _)) = result {
             return Ok(Result {
@@ -1280,13 +1275,14 @@ async fn solve_goaway_gpu(
     let config: GoAwayConfig =
         serde_json::from_value(challenge).context("invalid go-away challenge")?;
     ensure!(
-        (1..=64).contains(&config.difficulty()),
-        "go-away WGPU supports difficulty 1..=64 only"
+        config.difficulty() <= 256,
+        "go-away difficulty above the 256-bit SHA-256 digest width is unsatisfiable"
     );
-    let difficulty = NonZeroU8::new(
-        u8::try_from(config.difficulty()).context("go-away WGPU difficulty does not fit u8")?,
-    )
-    .context("go-away WGPU difficulty must be positive")?;
+    let accelerated_mask = u8::try_from(config.difficulty())
+        .ok()
+        .and_then(NonZeroU8::new)
+        .filter(|difficulty| difficulty.get() <= 64)
+        .map(compute_mask_goaway);
     let challenge_bytes: [u8; 64] = config
         .challenge()
         .as_bytes()
@@ -1301,9 +1297,13 @@ async fn solve_goaway_gpu(
         message.set_high_word(high_word);
         let mut solver = pow_buster::gpu::GoAwaySolver::from(message.clone());
         solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
-        solution = solver
-            .solve::<SOLVE_TYPE_MASK>(gpu, 0, compute_mask_goaway(difficulty))
-            .await?;
+        solution = if let Some(mask) = accelerated_mask {
+            solver.solve::<SOLVE_TYPE_MASK>(gpu, 0, mask).await?
+        } else {
+            solver
+                .solve::<SOLVE_TYPE_LEADING_ZERO_BITS>(gpu, config.difficulty(), u64::MAX)
+                .await?
+        };
         attempted_nonces = attempted_nonces.saturating_add(solver.get_attempted_nonces());
         if solution.is_some() || attempted_nonces >= DEFAULT_LIMIT {
             break;
@@ -1432,12 +1432,15 @@ async fn solve_haphash_gpu(
     let challenge: HaphashChallenge =
         serde_json::from_value(challenge).context("invalid haphash challenge")?;
     ensure!(
-        challenge.difficulty.get() <= 16,
-        "haphash difficulty above 16 nibbles is unsupported"
+        challenge.difficulty <= 64,
+        "haphash difficulty above the 64-nibble SHA-256 digest width is unsatisfiable"
     );
     let prefix = challenge.prefix.as_bytes();
     ensure!(!prefix.is_empty(), "haphash prefix must not be empty");
-    let mask = compute_mask_zero_nibbles(challenge.difficulty);
+    let fast_mask = NonZeroU8::new(challenge.difficulty)
+        .filter(|difficulty| difficulty.get() <= 16)
+        .map(compute_mask_zero_nibbles);
+    let full_digest_bits = u64::from(challenge.difficulty) * 4;
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
     for bank in 0_u32.. {
@@ -1446,7 +1449,13 @@ async fn solve_haphash_gpu(
         };
         let mut solver = pow_buster::gpu::DecimalSolver::from(message);
         solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
-        let result = solver.solve::<SOLVE_TYPE_MASK>(gpu, 0, mask).await?;
+        let result = if let Some(mask) = fast_mask {
+            solver.solve::<SOLVE_TYPE_MASK>(gpu, 0, mask).await?
+        } else {
+            solver
+                .solve::<SOLVE_TYPE_LEADING_ZERO_BITS>(gpu, full_digest_bits, u64::MAX)
+                .await?
+        };
         attempted_nonces = attempted_nonces.saturating_add(solver.get_attempted_nonces());
         if let Some(solution) = result {
             return Ok(Result {
@@ -1563,6 +1572,45 @@ mod tests {
         )
         .unwrap();
         assert!(result.answer["nonce"].is_string());
+    }
+
+    #[test]
+    fn haphash_full_digest_predicate_covers_zero_through_64_nibbles() {
+        let zero = [0_u32; 8];
+        assert!(pow_buster::hash_has_leading_zero_bits(&zero, 0));
+        assert!(pow_buster::hash_has_leading_zero_bits(&zero, 256));
+
+        let mut digest = [0_u32; 8];
+        digest[2] = 0x0fff_ffff;
+        assert!(pow_buster::hash_has_leading_zero_bits(&digest, 68));
+        assert!(!pow_buster::hash_has_leading_zero_bits(&digest, 69));
+
+        digest.fill(0);
+        digest[7] = 1;
+        assert!(pow_buster::hash_has_leading_zero_bits(&digest, 255));
+        assert!(!pow_buster::hash_has_leading_zero_bits(&digest, 256));
+        assert!(!pow_buster::hash_has_leading_zero_bits(&zero, 257));
+    }
+
+    #[test]
+    fn haphash_zero_difficulty_is_trivial_for_accelerated_solver() {
+        let result = solve_haphash(
+            json!({"prefix":"127.0.0.1;example.test;1759954402;","difficulty":0}),
+            Implementation::Safe,
+        )
+        .unwrap();
+        assert!(result.answer["nonce"].is_string());
+        assert_eq!(result.answer["attempted_nonces"], 1);
+    }
+
+    #[test]
+    fn haphash_rejects_unsatisfiable_difficulty_above_digest_width() {
+        let error = solve_haphash(
+            json!({"prefix":"127.0.0.1;example.test;1759954402;","difficulty":65}),
+            Implementation::Safe,
+        )
+        .expect_err("difficulty above 64 nibbles must be rejected");
+        assert!(error.to_string().contains("64-nibble SHA-256 digest width"));
     }
 
     #[test]

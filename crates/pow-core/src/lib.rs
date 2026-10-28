@@ -390,21 +390,26 @@ pub const fn compute_mask_zero_nibbles(difficulty_factor: NonZeroU8) -> u64 {
 ///
 /// Difficulties above 256 are unsatisfiable because SHA-256 has only 256 bits.
 pub fn goaway_hash_matches_difficulty(hash: &[u32; 8], difficulty: u16) -> bool {
-    if difficulty > 256 {
+    hash_has_leading_zero_bits(hash, u64::from(difficulty))
+}
+
+/// Test whether a SHA-256 digest has at least `bits` leading zero bits.
+///
+/// Values above the 256-bit digest width are unsatisfiable. This is shared by
+/// protocols such as go-away and haphash whose verifier difficulty spans the
+/// complete digest rather than only the first comparison word.
+pub fn hash_has_leading_zero_bits(hash: &[u32; 8], bits: u64) -> bool {
+    if bits > 256 {
         return false;
     }
-    let mut remaining = u32::from(difficulty);
-    for word in hash {
-        if remaining == 0 {
-            return true;
-        }
-        let required = remaining.min(32);
-        if word.leading_zeros() < required {
-            return false;
-        }
-        remaining -= required;
+
+    let full_words = (bits / 32) as usize;
+    if hash[..full_words].iter().any(|word| *word != 0) {
+        return false;
     }
-    remaining == 0
+
+    let remaining = (bits % 32) as u32;
+    remaining == 0 || hash[full_words].leading_zeros() >= remaining
 }
 
 /// Compute the mask for a GoAway PoW against the first 64 SHA-256 bits.

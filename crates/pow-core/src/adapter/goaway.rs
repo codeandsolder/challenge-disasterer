@@ -3,9 +3,9 @@
 use alloc::string::String;
 
 use crate::{
-    compute_mask_goaway, goaway_hash_matches_difficulty,
+    compute_mask_goaway,
     message::GoAwayMessage,
-    solver::{SOLVE_TYPE_MASK, Solver},
+    solver::{SOLVE_TYPE_LEADING_ZERO_BITS, SOLVE_TYPE_MASK, Solver},
 };
 
 #[derive(serde::Deserialize, Debug)]
@@ -59,47 +59,35 @@ impl GoAwayConfig {
             return (None, 0);
         }
 
-        if let Some(difficulty) = u8::try_from(self.difficulty)
+        let accelerated_mask = u8::try_from(self.difficulty)
             .ok()
             .and_then(core::num::NonZeroU8::new)
             .filter(|difficulty| difficulty.get() <= 64)
-        {
-            let mask = compute_mask_goaway(difficulty);
-            let mut attempted_nonces = 0;
-            for high_word in 0.. {
-                message.set_high_word(high_word);
-                let mut solver = crate::GoAwaySolver::from(message.clone());
-                solver.set_limit(limit.saturating_sub(attempted_nonces));
-                let res = solver.solve::<{ SOLVE_TYPE_MASK }>(0, mask);
-                attempted_nonces += solver.get_attempted_nonces();
-                if let Some(res) = res {
-                    return (Some(res), attempted_nonces);
-                }
-                if limit <= attempted_nonces {
-                    break;
-                }
-            }
-            return (None, attempted_nonces);
-        }
+            .map(compute_mask_goaway);
 
-        // The upstream verifier counts leading zeroes across the complete
-        // SHA-256 digest. Its meaningful domain is therefore 0..=256 bits.
-        // Difficulties above the accelerated first-64-bit path are absurdly
-        // expensive in practice, but they are valid wire values and should
-        // retain exact verifier semantics under the caller's work budget.
         let mut attempted_nonces = 0_u64;
-        while attempted_nonces < limit {
-            let nonce = attempted_nonces;
-            let hash = hash_nonce(&message, nonce);
-            attempted_nonces += 1;
-            if goaway_hash_matches_difficulty(&hash, self.difficulty as u16) {
-                return (Some((nonce, hash)), attempted_nonces);
+        for high_word in 0.. {
+            message.set_high_word(high_word);
+            let mut solver = crate::GoAwaySolver::from(message.clone());
+            solver.set_limit(limit.saturating_sub(attempted_nonces));
+            let res = if let Some(mask) = accelerated_mask {
+                solver.solve::<{ SOLVE_TYPE_MASK }>(0, mask)
+            } else {
+                solver.solve::<{ SOLVE_TYPE_LEADING_ZERO_BITS }>(self.difficulty, u64::MAX)
+            };
+            attempted_nonces += solver.get_attempted_nonces();
+            if let Some(res) = res {
+                return (Some(res), attempted_nonces);
+            }
+            if limit <= attempted_nonces {
+                break;
             }
         }
         (None, attempted_nonces)
     }
 }
 
+#[cfg(test)]
 fn hash_nonce(message: &GoAwayMessage, nonce: u64) -> [u32; 8] {
     let mut block = [0_u32; 16];
     block[..8].copy_from_slice(&message.challenge);
@@ -154,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn full_digest_fallback_attempts_valid_difficulty_above_64() {
+    fn full_digest_solver_attempts_valid_difficulty_above_64() {
         let config = GoAwayConfig {
             challenge: "00".repeat(32),
             difficulty: 65,
@@ -162,7 +150,7 @@ mod tests {
         let (result, attempted) = config.solve_with_limit(1);
         assert_eq!(attempted, 1);
         if let Some((_, hash)) = result {
-            assert!(goaway_hash_matches_difficulty(&hash, 65));
+            assert!(crate::goaway_hash_matches_difficulty(&hash, 65));
         }
     }
 
