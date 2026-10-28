@@ -187,10 +187,16 @@ func runCase(runner *wasm.Runner, serviceURL, difficulty string) error {
 	}
 
 	corrupted := []byte(solved.Answer.Token)
-	if corrupted[len(corrupted)-1] == '0' {
-		corrupted[len(corrupted)-1] = '1'
+	corruptIndex := len(corrupted) - 1
+	if difficulty == "0" {
+		// Every nonce is valid at difficulty zero, so changing only the nonce
+		// cannot be a negative test. Corrupt the challenge binding instead.
+		corruptIndex = 0
+	}
+	if corrupted[corruptIndex] == '0' {
+		corrupted[corruptIndex] = '1'
 	} else {
-		corrupted[len(corrupted)-1] = '0'
+		corrupted[corruptIndex] = '0'
 	}
 	got, err = verify(corrupted)
 	if err != nil {
