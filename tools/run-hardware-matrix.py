@@ -51,6 +51,7 @@ def metadata() -> dict:
         "git_status": text(["git", "status", "--short"]),
         "rustc": text(["rustc", "-Vv"]),
         "kernel": text(["uname", "-a"]),
+        "loadavg": Path("/proc/loadavg").read_text().strip(),
         "vulkan": text(["bash", "-lc", "vulkaninfo --summary 2>/dev/null | rg 'deviceName|driverName|driverInfo' || true"]),
         "nvidia": text(["bash", "-lc", "nvidia-smi --query-gpu=name,driver_version,pci.bus_id --format=csv,noheader 2>/dev/null || true"]),
         "tools": {
@@ -87,7 +88,7 @@ def classic_implementations(protocol: str, all_implementations: bool, gpu: bool)
     if gpu:
         implementations.append("wgpu")
     if protocol == "altcha":
-        implementations.append("altcha-rust")
+        implementations.append("reference")
     return implementations
 
 
@@ -102,6 +103,18 @@ def main() -> int:
         type=int,
         default=64,
         help="Exact Argon2id candidate budget per deterministic matrix sample.",
+    )
+    parser.add_argument(
+        "--hashwx-nonces-per-seed",
+        type=int,
+        default=65_536,
+        help="Cap HashWX production reuse window used by the external native ceiling.",
+    )
+    parser.add_argument(
+        "--cap-rsw-squarings",
+        type=int,
+        default=75_000,
+        help="Exact sequential-squaring count for the Cap RSW reference/ceiling rows.",
     )
     parser.add_argument("--cpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True)
@@ -126,6 +139,10 @@ def main() -> int:
     args = parser.parse_args()
     if not args.cpu and not args.gpu:
         parser.error("at least one of --cpu or --gpu must be enabled")
+    if not 1 <= args.hashwx_nonces_per_seed <= 1_048_576:
+        parser.error("--hashwx-nonces-per-seed must be in Cap's 1..=1048576 domain")
+    if not 1 <= args.cap_rsw_squarings <= 2_147_483_647:
+        parser.error("--cap-rsw-squarings must be in 1..=2147483647")
     if args.gpu and args.throughput_limit % ANUBIS_GPU_QUANTUM != 0:
         parser.error(
             f"--throughput-limit must be a multiple of {ANUBIS_GPU_QUANTUM} when --gpu is enabled"
@@ -144,6 +161,8 @@ def main() -> int:
         "correctness_limit": args.correctness_limit,
         "throughput_limit": args.throughput_limit,
         "argon2_limit": args.argon2_limit,
+        "hashwx_nonces_per_seed": args.hashwx_nonces_per_seed,
+        "cap_rsw_squarings": args.cap_rsw_squarings,
         "cpu": args.cpu,
         "gpu": args.gpu,
         "live": args.live,
@@ -267,7 +286,12 @@ def main() -> int:
             "uv", "run", str(ROOT / "tools" / "external-baselines.py"),
             "--samples", str(args.samples),
             "--hashx-limit", str(args.throughput_limit),
+            "--hashwx-limit", str(args.throughput_limit),
+            "--hashwx-nonces-per-seed", str(args.hashwx_nonces_per_seed),
             "--argon2-limit", str(args.argon2_limit),
+            "--cap-rsw-squarings", str(args.cap_rsw_squarings),
+            "--linear-limit", str(args.throughput_limit),
+            "--mcaptcha-limit", str(args.throughput_limit),
             "--opencl-limit", str(args.throughput_limit),
             "--cpu" if args.cpu else "--no-cpu",
             "--gpu" if args.gpu else "--no-gpu",
@@ -344,6 +368,9 @@ def main() -> int:
                             env["HAPHASH_DEBIAN_LIVE"] = "1"
                         if name == "capjs" and implementation == "auto" and adapter is None:
                             env["CAPJS_PRODUCTION_SHAPE"] = "1"
+                        if name == "altcha" and implementation == "auto" and adapter is None and args.cpu:
+                            env["ALTCHA_BENCH_OUT"] = str(out / "altcha-current.jsonl")
+                            env["ALTCHA_BENCH_SAMPLES"] = str(args.samples)
                         with (out / f"live-{suffix}.log").open("wb") as log:
                             result = run([str(script)], env=env, stdout=log, stderr=subprocess.STDOUT)
                         statuses[f"live-{suffix}"] = result.returncode

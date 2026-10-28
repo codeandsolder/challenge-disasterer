@@ -1,6 +1,10 @@
 use mcaptcha_pow_sha256::{ConfigBuilder, PoW};
 use serde::Deserialize;
-use std::io::{self, Read};
+use sha2::{Digest, Sha256};
+use std::{
+    io::{self, Read},
+    time::Instant,
+};
 
 #[derive(Deserialize)]
 struct ServiceResponse {
@@ -24,7 +28,40 @@ fn proof(nonce: u64, result: String) -> PoW<String> {
     .expect("deserialize official PoW type")
 }
 
+fn benchmark_fixed(sample: u32, limit: u64) {
+    assert!(limit > 0, "fixed-work limit must be positive");
+    let salt = format!("matrix-salt-{sample:08x}");
+    let phrase = "challenge-disasterer-matrix";
+    let serialized = bincode::serialize(&phrase).expect("serialize fixed mCaptcha phrase");
+    let prefix = Sha256::new()
+        .chain_update(salt.as_bytes())
+        .chain_update(&serialized);
+    println!("{}", mcaptcha_pow_sha256::dev::score(prefix.clone(), 0));
+
+    let mut sink = 0_u128;
+    let started = Instant::now();
+    for nonce in 0..limit {
+        sink ^= mcaptcha_pow_sha256::dev::score(prefix.clone(), nonce);
+    }
+    println!("{} {sink}", started.elapsed().as_nanos());
+}
+
 fn main() {
+    let args = std::env::args().collect::<Vec<_>>();
+    if args.get(1).map(String::as_str) == Some("--benchmark-fixed") {
+        let sample = args
+            .get(2)
+            .expect("missing benchmark sample")
+            .parse::<u32>()
+            .expect("invalid benchmark sample");
+        let limit = args
+            .get(3)
+            .expect("missing benchmark limit")
+            .parse::<u64>()
+            .expect("invalid benchmark limit");
+        benchmark_fixed(sample, limit);
+        return;
+    }
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)

@@ -472,9 +472,11 @@ dependencies = [
 name = "challenge-disasterer-mcaptcha-e2e"
 version = "0.0.0"
 dependencies = [
+ "bincode",
  "mcaptcha_pow_sha256",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -486,8 +488,10 @@ dependencies = [
  "challenge-pow-core",
  "clap",
  "hashwx",
+ "num-bigint",
  "serde",
  "serde_json",
+ "sha1",
  "sha2 0.11.1",
  "tokio",
 ]
