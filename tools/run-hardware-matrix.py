@@ -345,7 +345,14 @@ def main() -> int:
 
             cases = classic_implementations(name, args.all_implementations, bool(gpu_adapters))
             upstream_variants = (
-                (("current", None), ("v0.4.6", "v0.4.6"), ("v0.4.5", "v0.4.5"))
+                (
+                    ("current", None),
+                    ("v0.4.9", "v0.4.9"),
+                    ("v0.4.8", "v0.4.8"),
+                    ("v0.4.7", "v0.4.7"),
+                    ("v0.4.6", "v0.4.6"),
+                    ("v0.4.5", "v0.4.5"),
+                )
                 if name == "cerberus"
                 else (("current", None),)
             )
