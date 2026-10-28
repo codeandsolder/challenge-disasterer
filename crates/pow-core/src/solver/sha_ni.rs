@@ -212,6 +212,7 @@ impl SingleBlockSolver {
             self.message.prefix_state[0],
             self.message.prefix_state[1],
         );
+        let feedback_state = crate::sha256::sha_ni::prepare_state(&self.message.prefix_state);
 
         let prefix_start = if REDUCED_RADIX { 0u32 } else { 10u32 };
         let prefix_end = if REDUCED_RADIX { 92u32 } else { 96u32 };
@@ -326,30 +327,40 @@ impl SingleBlockSolver {
                     },
                 );
 
-                // paddd is basically free on modern CPUs so do the feedback uncondtionally
-                state0[0] = crate::sha256::sha_ni::add_words(state0[0], feedback_ab);
-                state1[0] = crate::sha256::sha_ni::add_words(state1[0], feedback_ab);
-                state2[0] = crate::sha256::sha_ni::add_words(state2[0], feedback_ab);
-                state3[0] = crate::sha256::sha_ni::add_words(state3[0], feedback_ab);
-
-                let cmp_fn = |x: &u64, y: &u64| {
-                    if TYPE == crate::solver::SOLVE_TYPE_GT {
-                        x > y
-                    } else if TYPE == crate::solver::SOLVE_TYPE_LT {
-                        x < y
+                // The normal predicates only need AB. Full-digest leading-zero
+                // checks keep both SHA-NI state vectors live and feed forward all words.
+                for state in [&mut state0, &mut state1, &mut state2, &mut state3] {
+                    if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                        for i in 0..2 {
+                            state[i] =
+                                crate::sha256::sha_ni::add_words(state[i], feedback_state[i]);
+                        }
                     } else {
-                        x & mask == y & mask
+                        state[0] = crate::sha256::sha_ni::add_words(state[0], feedback_ab);
                     }
-                };
+                }
 
-                let success_lane_idx = {
+                let success_lane_idx = if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                    [state0, state1, state2, state3].iter().position(|state| {
+                        let hash = crate::sha256::sha_ni::extract_state(*state);
+                        crate::hash_has_leading_zero_bits(&hash, target)
+                    })
+                } else {
+                    let cmp_fn = |x: &u64, y: &u64| {
+                        if TYPE == crate::solver::SOLVE_TYPE_GT {
+                            x > y
+                        } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                            x < y
+                        } else {
+                            x & mask == y & mask
+                        }
+                    };
                     let result_abs = [
                         crate::sha256::sha_ni::extract_ab(state0[0]),
                         crate::sha256::sha_ni::extract_ab(state1[0]),
                         crate::sha256::sha_ni::extract_ab(state2[0]),
                         crate::sha256::sha_ni::extract_ab(state3[0]),
                     ];
-
                     result_abs.iter().position(|x| cmp_fn(x, &target))
                 };
 
@@ -590,6 +601,7 @@ impl DoubleBlockSolver {
                         });
                 }
 
+                let saved_states = [states0, states1, states2, states3];
                 let save_abs = [states0[0], states1[0], states2[0], states3[0]];
 
                 // this isn't really SIMD so we can't really amortize the cost of fetching message schedule
@@ -600,29 +612,49 @@ impl DoubleBlockSolver {
                     (),
                 );
 
-                states0[0] = crate::sha256::sha_ni::add_words(states0[0], save_abs[0]);
-                states1[0] = crate::sha256::sha_ni::add_words(states1[0], save_abs[1]);
-                states2[0] = crate::sha256::sha_ni::add_words(states2[0], save_abs[2]);
-                states3[0] = crate::sha256::sha_ni::add_words(states3[0], save_abs[3]);
-
-                let final_abs = [
-                    crate::sha256::sha_ni::extract_ab(states0[0]),
-                    crate::sha256::sha_ni::extract_ab(states1[0]),
-                    crate::sha256::sha_ni::extract_ab(states2[0]),
-                    crate::sha256::sha_ni::extract_ab(states3[0]),
-                ];
-
-                let cmp_fn = |x: &u64, y: &u64| {
-                    if TYPE == crate::solver::SOLVE_TYPE_GT {
-                        x > y
-                    } else if TYPE == crate::solver::SOLVE_TYPE_LT {
-                        x < y
-                    } else {
-                        x & mask == y & mask
+                if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                    for (state, saved) in [
+                        (&mut states0, &saved_states[0]),
+                        (&mut states1, &saved_states[1]),
+                        (&mut states2, &saved_states[2]),
+                        (&mut states3, &saved_states[3]),
+                    ] {
+                        for i in 0..2 {
+                            state[i] = crate::sha256::sha_ni::add_words(state[i], saved[i]);
+                        }
                     }
-                };
+                } else {
+                    states0[0] = crate::sha256::sha_ni::add_words(states0[0], save_abs[0]);
+                    states1[0] = crate::sha256::sha_ni::add_words(states1[0], save_abs[1]);
+                    states2[0] = crate::sha256::sha_ni::add_words(states2[0], save_abs[2]);
+                    states3[0] = crate::sha256::sha_ni::add_words(states3[0], save_abs[3]);
+                }
 
-                let success_lane_idx = final_abs.iter().position(|x| cmp_fn(x, &target));
+                let success_lane_idx = if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                    [states0, states1, states2, states3]
+                        .iter()
+                        .position(|state| {
+                            let hash = crate::sha256::sha_ni::extract_state(*state);
+                            crate::hash_has_leading_zero_bits(&hash, target)
+                        })
+                } else {
+                    let final_abs = [
+                        crate::sha256::sha_ni::extract_ab(states0[0]),
+                        crate::sha256::sha_ni::extract_ab(states1[0]),
+                        crate::sha256::sha_ni::extract_ab(states2[0]),
+                        crate::sha256::sha_ni::extract_ab(states3[0]),
+                    ];
+                    let cmp_fn = |x: &u64, y: &u64| {
+                        if TYPE == crate::solver::SOLVE_TYPE_GT {
+                            x > y
+                        } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                            x < y
+                        } else {
+                            x & mask == y & mask
+                        }
+                    };
+                    final_abs.iter().position(|x| cmp_fn(x, &target))
+                };
 
                 if let Some(success_lane_idx) = success_lane_idx {
                     crate::unlikely();
@@ -729,7 +761,9 @@ impl GoAwaySolver {
             self.attempted_nonces += 1;
 
             let state_ab = (u64::from(final_sha_state[0]) << 32) | u64::from(final_sha_state[1]);
-            let hit = if TYPE == crate::solver::SOLVE_TYPE_GT {
+            let hit = if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                crate::hash_has_leading_zero_bits(&final_sha_state, target)
+            } else if TYPE == crate::solver::SOLVE_TYPE_GT {
                 state_ab > target
             } else if TYPE == crate::solver::SOLVE_TYPE_LT {
                 state_ab < target
@@ -784,6 +818,7 @@ impl GoAwaySolver {
 
         let feedback_ab =
             crate::sha256::sha_ni::feedback_ab(crate::sha256::IV[0], crate::sha256::IV[1]);
+        let feedback_state = crate::sha256::sha_ni::prepare_state(&crate::sha256::IV);
 
         let mut message_block = [0; 16];
         message_block[0..8].copy_from_slice(&self.message.challenge);
@@ -815,29 +850,42 @@ impl GoAwaySolver {
                     LaneIdPlucker,
                 );
 
-                states0[0] = crate::sha256::sha_ni::add_words(states0[0], feedback_ab);
-                states1[0] = crate::sha256::sha_ni::add_words(states1[0], feedback_ab);
-                states2[0] = crate::sha256::sha_ni::add_words(states2[0], feedback_ab);
-                states3[0] = crate::sha256::sha_ni::add_words(states3[0], feedback_ab);
-
-                let result_abs = [
-                    crate::sha256::sha_ni::extract_ab(states0[0]),
-                    crate::sha256::sha_ni::extract_ab(states1[0]),
-                    crate::sha256::sha_ni::extract_ab(states2[0]),
-                    crate::sha256::sha_ni::extract_ab(states3[0]),
-                ];
-
-                let cmp_fn = |x: &u64, y: &u64| {
-                    if TYPE == crate::solver::SOLVE_TYPE_GT {
-                        x > y
-                    } else if TYPE == crate::solver::SOLVE_TYPE_LT {
-                        x < y
+                for state in [&mut states0, &mut states1, &mut states2, &mut states3] {
+                    if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                        for i in 0..2 {
+                            state[i] =
+                                crate::sha256::sha_ni::add_words(state[i], feedback_state[i]);
+                        }
                     } else {
-                        x & mask == y & mask
+                        state[0] = crate::sha256::sha_ni::add_words(state[0], feedback_ab);
                     }
-                };
+                }
 
-                let success_lane_idx = result_abs.iter().position(|x| cmp_fn(x, &target));
+                let success_lane_idx = if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                    [states0, states1, states2, states3]
+                        .iter()
+                        .position(|state| {
+                            let hash = crate::sha256::sha_ni::extract_state(*state);
+                            crate::hash_has_leading_zero_bits(&hash, target)
+                        })
+                } else {
+                    let result_abs = [
+                        crate::sha256::sha_ni::extract_ab(states0[0]),
+                        crate::sha256::sha_ni::extract_ab(states1[0]),
+                        crate::sha256::sha_ni::extract_ab(states2[0]),
+                        crate::sha256::sha_ni::extract_ab(states3[0]),
+                    ];
+                    let cmp_fn = |x: &u64, y: &u64| {
+                        if TYPE == crate::solver::SOLVE_TYPE_GT {
+                            x > y
+                        } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                            x < y
+                        } else {
+                            x & mask == y & mask
+                        }
+                    };
+                    result_abs.iter().position(|x| cmp_fn(x, &target))
+                };
 
                 self.attempted_nonces += 4;
 
