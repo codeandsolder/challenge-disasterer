@@ -357,30 +357,42 @@ def main() -> int:
                 else (("current", None),)
             )
             for upstream_label, upstream_ref in upstream_variants:
+                protocol_variants = (
+                    (("", None), ("-d0", "0"))
+                    if name == "haphash"
+                    else (("", None),)
+                )
                 for implementation in cases:
                     adapter_cases = [(None, None)]
                     if implementation == "wgpu":
                         adapter_cases = [(index, adapter) for index, adapter in enumerate(gpu_adapters)]
-                    for adapter_index, adapter in adapter_cases:
-                        variant_suffix = "" if upstream_label == "current" else f"-{upstream_label}"
-                        adapter_suffix = "" if adapter_index is None else f"-gpu-{adapter_index}"
-                        suffix = f"{name}{variant_suffix}-{implementation}{adapter_suffix}"
-                        env = os.environ.copy()
-                        env["CHALLENGE_IMPLEMENTATION"] = implementation
-                        if adapter is not None:
-                            env["WGPU_ADAPTER_NAME"] = adapter
-                        if upstream_ref is not None:
-                            env["CERBERUS_REF"] = upstream_ref
-                        if name == "haphash" and args.haphash_debian_live:
-                            env["HAPHASH_DEBIAN_LIVE"] = "1"
-                        if name == "capjs" and implementation == "auto" and adapter is None:
-                            env["CAPJS_PRODUCTION_SHAPE"] = "1"
-                        if name == "altcha" and implementation == "auto" and adapter is None and args.cpu:
-                            env["ALTCHA_BENCH_OUT"] = str(out / "altcha-current.jsonl")
-                            env["ALTCHA_BENCH_SAMPLES"] = str(args.samples)
-                        with (out / f"live-{suffix}.log").open("wb") as log:
-                            result = run([str(script)], env=env, stdout=log, stderr=subprocess.STDOUT)
-                        statuses[f"live-{suffix}"] = result.returncode
+                    for protocol_suffix, haphash_difficulty in protocol_variants:
+                        for adapter_index, adapter in adapter_cases:
+                            variant_suffix = "" if upstream_label == "current" else f"-{upstream_label}"
+                            adapter_suffix = "" if adapter_index is None else f"-gpu-{adapter_index}"
+                            suffix = f"{name}{variant_suffix}{protocol_suffix}-{implementation}{adapter_suffix}"
+                            env = os.environ.copy()
+                            env["CHALLENGE_IMPLEMENTATION"] = implementation
+                            if adapter is not None:
+                                env["WGPU_ADAPTER_NAME"] = adapter
+                            if upstream_ref is not None:
+                                env["CERBERUS_REF"] = upstream_ref
+                            if haphash_difficulty is not None:
+                                env["HAPHASH_DIFFICULTY"] = haphash_difficulty
+                            if (
+                                name == "haphash"
+                                and haphash_difficulty is None
+                                and args.haphash_debian_live
+                            ):
+                                env["HAPHASH_DEBIAN_LIVE"] = "1"
+                            if name == "capjs" and implementation == "auto" and adapter is None:
+                                env["CAPJS_PRODUCTION_SHAPE"] = "1"
+                            if name == "altcha" and implementation == "auto" and adapter is None and args.cpu:
+                                env["ALTCHA_BENCH_OUT"] = str(out / "altcha-current.jsonl")
+                                env["ALTCHA_BENCH_SAMPLES"] = str(args.samples)
+                            with (out / f"live-{suffix}.log").open("wb") as log:
+                                result = run([str(script)], env=env, stdout=log, stderr=subprocess.STDOUT)
+                            statuses[f"live-{suffix}"] = result.returncode
 
     manifest = {"metadata": meta, "statuses": statuses}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
