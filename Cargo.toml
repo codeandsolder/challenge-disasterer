@@ -10,20 +10,27 @@ gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "pow-buster/gpu", "pow-buster/c
 
 [dependencies]
 anyhow = "1"
+argon2 = { path = "crates/argon2-fast" }
 anubis-argon2 = { path = "crates/anubis-argon2" }
+altcha = { version = "=1.1.0", features = ["argon2", "scrypt"] }
+challenge-hashwx = { path = "crates/hashwx" }
 axum = "0.8"
 bytemuck = { version = "1", features = ["derive"], optional = true }
 clap = { version = "4", features = ["derive"] }
 cudarc = { version = "0.19.10", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-13040"], optional = true }
 hex = "0.4"
+itoa = "1"
 hashx = "0.10"
+num-bigint = "0.4"
 num_cpus = "1.17"
+pbkdf2 = "0.13"
 pow-buster = { package = "challenge-pow-core", path = "crates/pow-core", default-features = true, features = ["json"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = { version = "0.11", default-features = false }
 sha2 = "0.11"
+scrypt = "0.11"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -43,6 +50,6 @@ unsafe_code = "deny"
 all = { level = "deny", priority = -1 }
 
 [workspace]
-members = ["crates/anubis-argon2", "crates/pow-core", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench"]
+members = ["crates/anubis-argon2", "crates/hashwx", "crates/pow-core", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench"]
 resolver = "3"
 exclude = ["crates/argon2-fast"]

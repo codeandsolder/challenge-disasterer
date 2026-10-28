@@ -1262,19 +1262,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             implementations: Vec::new(),
         },
     ];
-    for (solver, algorithms, difficulty_max, sha_ni) in [
-        (
-            "cerberus",
-            &["blake3"] as &'static [&'static str],
-            64,
-            false,
-        ),
-        ("goaway", &["sha256"], 32, true),
-        ("capjs", &["sha256"], 64, true),
-        ("mcaptcha", &["sha256"], 64, true),
-        ("haphash", &["sha256"], 16, true),
-        ("altcha", &["sha256", "pbkdf2-sha256"], 64, false),
-    ] {
+    let classic_implementations = |sha_ni: bool, wgpu: bool| {
         let mut implementations = vec!["auto", "safe"];
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
@@ -1289,19 +1277,111 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         if std::arch::is_x86_feature_detected!("avx512f") {
             implementations.push("avx512");
         }
-        if state.general_gpu_operational {
+        if wgpu && state.general_gpu_operational {
             implementations.push("wgpu");
         }
+        implementations
+    };
+
+    for solver in [
+        "cerberus", "goaway", "capjs", "mcaptcha", "haphash", "altcha",
+    ] {
         available_solvers.push(solver);
-        solver_capabilities.push(SolverCapability {
-            solver,
-            algorithms,
-            difficulty_min: 1,
-            difficulty_max,
-            router: false,
-            implementations,
-        });
     }
+
+    solver_capabilities.extend([
+        SolverCapability {
+            solver: "cerberus",
+            algorithms: &["blake3"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: false,
+            implementations: classic_implementations(false, true),
+        },
+        SolverCapability {
+            solver: "goaway",
+            algorithms: &["sha256"],
+            difficulty_min: 1,
+            difficulty_max: 32,
+            router: false,
+            implementations: classic_implementations(true, true),
+        },
+        SolverCapability {
+            solver: "capjs",
+            algorithms: &["sha256", "sha256-pow"],
+            difficulty_min: 1,
+            difficulty_max: 16,
+            router: false,
+            implementations: classic_implementations(true, true),
+        },
+        SolverCapability {
+            solver: "capjs",
+            algorithms: &["rsw"],
+            difficulty_min: 1,
+            difficulty_max: u32::MAX,
+            router: false,
+            implementations: vec!["rsw"],
+        },
+        SolverCapability {
+            solver: "capjs",
+            algorithms: &["hashwx"],
+            difficulty_min: 1,
+            difficulty_max: 1_000_000_000,
+            router: false,
+            implementations: vec!["hashwx-wasmtime"],
+        },
+        SolverCapability {
+            solver: "mcaptcha",
+            algorithms: &["sha256"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: false,
+            implementations: classic_implementations(true, true),
+        },
+        SolverCapability {
+            solver: "haphash",
+            algorithms: &["sha256"],
+            difficulty_min: 1,
+            difficulty_max: 16,
+            router: false,
+            implementations: classic_implementations(true, true),
+        },
+        SolverCapability {
+            solver: "altcha",
+            algorithms: &["sha256", "pbkdf2-sha256"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: false,
+            implementations: {
+                let mut implementations = classic_implementations(false, true);
+                implementations.push("altcha-rust");
+                implementations
+            },
+        },
+        SolverCapability {
+            solver: "altcha",
+            algorithms: &[
+                "sha384",
+                "sha512",
+                "pbkdf2-sha384",
+                "pbkdf2-sha512",
+                "argon2id",
+                "scrypt",
+            ],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: false,
+            implementations: vec!["auto", "safe", "altcha-rust"],
+        },
+        SolverCapability {
+            solver: "altcha",
+            algorithms: &["sha1-v1", "sha256-v1", "sha512-v1"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: false,
+            implementations: vec!["auto", "safe"],
+        },
+    ]);
     available_solvers.push("linear");
     solver_capabilities.push(SolverCapability {
         solver: "linear",

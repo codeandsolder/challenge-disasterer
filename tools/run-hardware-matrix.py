@@ -86,6 +86,8 @@ def classic_implementations(protocol: str, all_implementations: bool, gpu: bool)
         implementations.append("avx512")
     if gpu:
         implementations.append("wgpu")
+    if protocol == "altcha":
+        implementations.append("altcha-rust")
     return implementations
 
 
@@ -340,6 +342,8 @@ def main() -> int:
                             env["CERBERUS_REF"] = upstream_ref
                         if name == "haphash" and args.haphash_debian_live:
                             env["HAPHASH_DEBIAN_LIVE"] = "1"
+                        if name == "capjs" and implementation == "auto" and adapter is None:
+                            env["CAPJS_PRODUCTION_SHAPE"] = "1"
                         with (out / f"live-{suffix}.log").open("wb") as log:
                             result = run([str(script)], env=env, stdout=log, stderr=subprocess.STDOUT)
                         statuses[f"live-{suffix}"] = result.returncode

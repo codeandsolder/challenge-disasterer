@@ -481,48 +481,50 @@ pub(crate) mod tests {
         for c in b'a'..=b'c' {
             let salts = [c; 64];
             for len in 1..=64 {
-                let u64_target = 0b10111 << (64 - 5);
-                let u64_mask = !0 << (64 - 5);
-                let (mut solver, fixup_prefix) = factory(&salts[..len], 0).unwrap();
+                for search_space in 0..=2 {
+                    let u64_target = 0b10111 << (64 - 5);
+                    let u64_mask = !0 << (64 - 5);
+                    let (mut solver, fixup_prefix) = factory(&salts[..len], search_space).unwrap();
 
-                let (nonce, result) = solver
-                    .solve::<SOLVE_TYPE_MASK>(u64_target, u64_mask)
-                    .expect("solver failed");
-                let mut final_message = salts[..len].to_vec();
-                let mut final_message_f64 = final_message.clone();
-                let mut final_nonce = nonce as f64;
-                if let Some(ref fixup_prefix) = fixup_prefix {
-                    final_message.extend_from_slice(fixup_prefix.as_ref());
-                    final_nonce = fixup_prefix.fixup(nonce);
+                    let (nonce, result) = solver
+                        .solve::<SOLVE_TYPE_MASK>(u64_target, u64_mask)
+                        .expect("solver failed");
+                    let mut final_message = salts[..len].to_vec();
+                    let mut final_message_f64 = final_message.clone();
+                    let mut final_nonce = nonce as f64;
+                    if let Some(ref fixup_prefix) = fixup_prefix {
+                        final_message.extend_from_slice(fixup_prefix.as_ref());
+                        final_nonce = fixup_prefix.fixup(nonce);
+                    }
+                    if fixup_prefix.is_some() {
+                        assert_ne!(nonce % 10, 0);
+                    }
+                    write!(final_message, "{:09}", nonce).unwrap();
+                    write!(final_message_f64, "{}", final_nonce).unwrap();
+                    assert_eq!(
+                        final_message_f64,
+                        final_message,
+                        "final_nonce: {}, final_nonce_f64: {} (fixup_prefix: {:?})",
+                        String::from_utf8_lossy(&final_message),
+                        String::from_utf8_lossy(&final_message_f64),
+                        fixup_prefix,
+                    );
+                    let hash_result = sha2::Sha256::digest(&final_message);
+                    let hash_result_u64 = u64::from_be_bytes(hash_result[..8].try_into().unwrap());
+                    assert_eq!(
+                        hash_result_u64 & u64_mask,
+                        u64_target,
+                        "hash_result_u64: {:016x} (solver: {}, len: {}, message: {:?})",
+                        hash_result_u64,
+                        core::any::type_name::<S>(),
+                        len,
+                        String::from_utf8_lossy(&final_message)
+                    );
+                    assert_eq!(
+                        hash_result_u64,
+                        ((result[0] as u64) << 32 | (result[1] as u64))
+                    );
                 }
-                if fixup_prefix.is_some() {
-                    assert_ne!(nonce % 10, 0);
-                }
-                write!(final_message, "{:09}", nonce).unwrap();
-                write!(final_message_f64, "{}", final_nonce).unwrap();
-                assert_eq!(
-                    final_message_f64,
-                    final_message,
-                    "final_nonce: {}, final_nonce_f64: {} (fixup_prefix: {:?})",
-                    String::from_utf8_lossy(&final_message),
-                    String::from_utf8_lossy(&final_message_f64),
-                    fixup_prefix,
-                );
-                let hash_result = sha2::Sha256::digest(&final_message);
-                let hash_result_u64 = u64::from_be_bytes(hash_result[..8].try_into().unwrap());
-                assert_eq!(
-                    hash_result_u64 & u64_mask,
-                    u64_target,
-                    "hash_result_u64: {:016x} (solver: {}, len: {}, message: {:?})",
-                    hash_result_u64,
-                    core::any::type_name::<S>(),
-                    len,
-                    String::from_utf8_lossy(&final_message)
-                );
-                assert_eq!(
-                    hash_result_u64,
-                    ((result[0] as u64) << 32 | (result[1] as u64))
-                );
             }
         }
     }

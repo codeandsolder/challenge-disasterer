@@ -1,0 +1,11 @@
+HashWX bundled artifact provenance
+
+Upstream source: https://github.com/tevador/hashwx
+Source revision: 74b567a31276a4c5d7cb232a5b7639467f49f961
+Bundled artifact source: https://github.com/tiagozip/cap/blob/278796641bc82972b272c5d16dc6f479aeadc753/core/src/hashwx.wasm
+Cap revision: 278796641bc82972b272c5d16dc6f479aeadc753
+
+The module is HashWX 1.0 compiled for WebAssembly 1.0 by the upstream build.
+The adjacent vendor/LICENSE file is the upstream LGPL-3.0-or-later license.
+
+Artifact SHA-256: b1a0dbb3ef444d3c7069e0a5e0a0273ffa4cf8fef62cbbe43761c02f7cd6aff5
