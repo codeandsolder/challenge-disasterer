@@ -72,6 +72,19 @@ def load(run: Path):
     external_path = run / "external-baselines.jsonl"
     if external_path.is_file():
         external = [json.loads(line) for line in external_path.read_text().splitlines() if line.strip()]
+    altcha_path = run / "altcha-current.jsonl"
+    if altcha_path.is_file():
+        for line in altcha_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            kind = row.pop("row_kind", None)
+            if kind == "solver":
+                rows.append(row)
+            elif kind == "external":
+                external.append(row)
+            else:
+                raise ValueError(f"unknown altcha-current row_kind: {kind!r}")
     return meta, rows, paired, benches, baselines, external
 
 

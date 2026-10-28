@@ -13,8 +13,10 @@ argon2 = { path = "../../crates/argon2-fast" }
 challenge-hashwx = { path = "../../crates/hashwx" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+num-bigint = "0.4"
 pow-core = { package = "challenge-pow-core", path = "../../crates/pow-core", features = ["json", "compare-64bit"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha1 = { version = "0.11", default-features = false }
 sha2 = "0.11"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

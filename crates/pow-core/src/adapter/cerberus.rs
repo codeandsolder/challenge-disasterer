@@ -69,6 +69,11 @@ impl ChallengeDescriptor {
         self.version = MaybeSemver::Yes(version);
     }
 
+    /// Return the challenge difficulty in Cerberus dubits (two bits each).
+    pub const fn difficulty(&self) -> core::num::NonZeroU8 {
+        self.difficulty
+    }
+
     /// Return the estimated workload.
     pub fn estimated_workload(&self) -> u64 {
         4u64.saturating_pow(self.difficulty.get().into())

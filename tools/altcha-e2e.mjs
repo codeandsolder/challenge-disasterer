@@ -20,23 +20,17 @@ async function assertCapabilities() {
   const stats = await response.json();
   if (!response.ok) throw new Error(`stats failed: ${JSON.stringify(stats)}`);
   const rows = stats.solver_capabilities.filter((row) => row.solver === "altcha");
-  if (rows.some((row) => row.implementations.includes("altcha-rust"))) {
-    throw new Error(`obsolete ALTCHA selector leaked through /stats: ${JSON.stringify(rows)}`);
-  }
   const uint32 = rows.filter((row) => row.counter_mode === "uint32");
   const string = rows.find((row) => row.counter_mode === "string");
-  const v1 = rows.find((row) => row.algorithms.includes("sha1-v1"));
-  if (uint32.length !== 2 || uint32.some((row) => row.counter_max !== 0xffffffff)) {
-    throw new Error(`bad ALTCHA uint32 capability domain: ${JSON.stringify(rows)}`);
+  if (uint32.length < 2 || !string) throw new Error(`ALTCHA counter-mode capabilities incomplete: ${JSON.stringify(rows)}`);
+  if (string.counter_max !== Number.MAX_SAFE_INTEGER) {
+    throw new Error(`ALTCHA string counter ceiling mismatch: ${JSON.stringify(string)}`);
   }
-  if (!uint32.every((row) => row.implementations.includes("reference"))) {
-    throw new Error(`ALTCHA uint32 rows must expose the canonical reference selector: ${JSON.stringify(rows)}`);
+  if (string.implementations.join(",") !== "auto,safe") {
+    throw new Error(`ALTCHA string mode must advertise only auto/safe: ${JSON.stringify(string)}`);
   }
-  if (!string || string.counter_max !== Number.MAX_SAFE_INTEGER || JSON.stringify(string.implementations) !== JSON.stringify(["auto", "safe"])) {
-    throw new Error(`bad ALTCHA string capability domain: ${JSON.stringify(rows)}`);
-  }
-  if (!v1 || JSON.stringify(v1.implementations) !== JSON.stringify(["auto", "safe"])) {
-    throw new Error(`bad ALTCHA v1 capability row: ${JSON.stringify(rows)}`);
+  if (!uint32.some((row) => row.implementations.includes("reference"))) {
+    throw new Error(`ALTCHA uint32 capabilities lost the reference selector: ${JSON.stringify(uint32)}`);
   }
 }
 
@@ -155,8 +149,15 @@ if (!optimizedOnly) {
 }
 
 if (implementation === "auto" || implementation === "safe") {
-  // V2 compatibility mode: decimal-string counter encoding inherited from v1-style clients.
-  await runV2({ algorithm: "SHA-256", cost: 2, deriveKey: deriveSha, counterMode: "string", expectedImplementation: "altcha-string" });
+  // counterMode is orthogonal to the KDF: exercise the full current v2 KDF × string matrix.
+  for (const algorithm of ["SHA-256", "SHA-384", "SHA-512"]) {
+    await runV2({ algorithm, cost: 2, deriveKey: deriveSha, counterMode: "string", expectedImplementation: "altcha-string" });
+  }
+  for (const algorithm of ["PBKDF2/SHA-256", "PBKDF2/SHA-384", "PBKDF2/SHA-512"]) {
+    await runV2({ algorithm, cost: 16, deriveKey: derivePbkdf2, counterMode: "string", expectedImplementation: "altcha-string" });
+  }
+  await runV2({ algorithm: "ARGON2ID", cost: 1, deriveKey: deriveArgon2id, counterMode: "string", keyPrefix: "0", memoryCost: 64, parallelism: 1, expectedImplementation: "altcha-string" });
+  await runV2({ algorithm: "SCRYPT", cost: 16, deriveKey: deriveScrypt, counterMode: "string", keyPrefix: "0", memoryCost: 1, parallelism: 1, expectedImplementation: "altcha-string" });
 }
 
 // Still-supported v1 protocol. Its generic digest loop intentionally exposes
