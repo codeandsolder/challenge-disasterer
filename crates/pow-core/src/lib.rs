@@ -4,7 +4,7 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
-use core::num::NonZeroU8;
+use core::num::{NonZeroU8, NonZeroU64};
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -371,7 +371,8 @@ pub(crate) fn compute_plausible_time_sha256(hashes: u64) -> u64 {
 }
 
 /// Compute the target for an mCaptcha PoW
-pub const fn compute_target_mcaptcha(difficulty_factor: u64) -> u64 {
+pub const fn compute_target_mcaptcha(difficulty_factor: NonZeroU64) -> u64 {
+    let difficulty_factor = difficulty_factor.get();
     u64::MAX - u64::MAX / difficulty_factor
 }
 
@@ -385,16 +386,26 @@ pub const fn compute_mask_zero_nibbles(difficulty_factor: NonZeroU8) -> u64 {
     }
 }
 
-/// Compute the mask for a GoAway PoW (mask & (V\[0] << 32) == 0)
+/// Compute the mask for a GoAway PoW against the first 64 SHA-256 bits.
 pub const fn compute_mask_goaway(difficulty_factor: NonZeroU8) -> u64 {
-    !(!0u64 >> (difficulty_factor.get()))
+    let bits = difficulty_factor.get();
+    if bits >= 64 {
+        u64::MAX
+    } else {
+        !(!0u64 >> bits)
+    }
 }
 
 /// Compute a mask for a Cerberus PoW (mask & (V\[0] << 32) == 0)
 pub const fn compute_mask_cerberus(difficulty_factor: NonZeroU8) -> u64 {
-    let tmp = !(!0u64 >> (difficulty_factor.get() * 2));
-    let (tmp_hi, tmp_lo) = ((tmp >> 32) as u32, tmp as u32);
-    (tmp_hi.swap_bytes() as u64) << 32 | (tmp_lo.swap_bytes() as u64)
+    let doubled = difficulty_factor.get().saturating_mul(2);
+    let bits = if doubled > 32 { 32 } else { doubled };
+    let mask = if bits == 32 {
+        u32::MAX
+    } else {
+        !(!0u32 >> bits)
+    };
+    (mask.swap_bytes() as u64) << 32
 }
 
 /// Extract top 128 bits from a 64-bit word array
@@ -537,5 +548,31 @@ mod tests {
         let mut test = [0; 32];
         test[..4].copy_from_slice(&hash_partial);
         assert!(check_small(&test, 7));
+    }
+}
+
+#[cfg(test)]
+mod challenge_domain_tests {
+    use super::*;
+
+    #[test]
+    fn goaway_mask_covers_full_u64_domain() {
+        assert_eq!(compute_mask_goaway(NonZeroU8::new(1).unwrap()), 1_u64 << 63);
+        assert_eq!(
+            compute_mask_goaway(NonZeroU8::new(33).unwrap()),
+            u64::MAX << 31
+        );
+        assert_eq!(compute_mask_goaway(NonZeroU8::new(64).unwrap()), u64::MAX);
+    }
+
+    #[test]
+    fn cerberus_mask_clamps_to_the_upstream_32_bit_check() {
+        let full = compute_mask_cerberus(NonZeroU8::new(16).unwrap());
+        assert_eq!(full, u64::from(u32::MAX) << 32);
+        assert_eq!(compute_mask_cerberus(NonZeroU8::new(17).unwrap()), full);
+        assert_eq!(
+            compute_mask_cerberus(NonZeroU8::new(u8::MAX).unwrap()),
+            full
+        );
     }
 }

@@ -1,5 +1,5 @@
 use std::{
-    num::{NonZeroU8, NonZeroU32},
+    num::{NonZeroU8, NonZeroU32, NonZeroU64},
     time::Instant,
 };
 
@@ -94,7 +94,7 @@ struct CapV2HashWx {
 
 pub fn solve(kind: &str, challenge: Value, implementation: Option<&str>) -> anyhow::Result<Result> {
     if kind == "altcha"
-        && let Some(label @ ("reference" | "altcha-rust")) = implementation
+        && let Some(label @ "reference") = implementation
     {
         return solve_altcha_official_only(challenge, label);
     }
@@ -323,6 +323,10 @@ fn altcha_solver(
 fn solve_cerberus(challenge: Value, implementation: Implementation) -> anyhow::Result<Result> {
     let descriptor: CerberusChallenge =
         serde_json::from_value(challenge).context("invalid Cerberus challenge")?;
+    ensure!(
+        descriptor.difficulty().get() <= 16,
+        "Cerberus difficulty above 16 dubits is unsupported by upstream clients"
+    );
     let started = Instant::now();
     let mut solution = None;
     let mut attempted_nonces = 0_u64;
@@ -358,6 +362,10 @@ fn solve_goaway(challenge: Value, implementation: Implementation) -> anyhow::Res
     ensure!(
         config.challenge().len() == 64,
         "go-away challenge must be exactly 64 characters"
+    );
+    ensure!(
+        config.difficulty().get() <= 64,
+        "go-away difficulty above 64 bits is unsupported"
     );
     let challenge_bytes: [u8; 64] = config
         .challenge()
@@ -701,9 +709,11 @@ fn solve_haphash(challenge: Value, implementation: Implementation) -> anyhow::Re
 fn solve_mcaptcha(challenge: Value, implementation: Implementation) -> anyhow::Result<Result> {
     let request: McaptchaRequest =
         serde_json::from_value(challenge).context("invalid mCaptcha request")?;
+    let difficulty_factor = NonZeroU64::new(u64::from(request.config.difficulty_factor))
+        .context("mCaptcha difficulty factor must be positive")?;
     let mut prefix = Vec::new();
     build_mcaptcha_prefix(&mut prefix, &request.config.string, &request.config.salt);
-    let target = compute_target_mcaptcha(u64::from(request.config.difficulty_factor));
+    let target = compute_target_mcaptcha(difficulty_factor);
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
 
@@ -751,6 +761,10 @@ fn solve_altcha_official_only(challenge: Value, implementation: &str) -> anyhow:
         "ALTCHA {implementation} backend supports v2 only"
     );
     let counter_mode = altcha_counter_mode(&challenge)?;
+    ensure!(
+        counter_mode == AltchaCounterMode::Uint32,
+        "ALTCHA reference backend supports uint32 counter mode only"
+    );
     let challenge: AltchaChallenge =
         serde_json::from_value(challenge).context("invalid ALTCHA v2 challenge")?;
     solve_altcha_official(&challenge, counter_mode, implementation)
@@ -775,7 +789,7 @@ fn solve_altcha(challenge: Value, implementation: Implementation) -> anyhow::Res
     }
     ensure!(
         matches!(implementation, Implementation::Auto | Implementation::Safe),
-        "this ALTCHA algorithm supports auto/safe or altcha-rust implementations only"
+        "this ALTCHA algorithm supports auto/safe or reference implementations only"
     );
     solve_altcha_generic(&official, counter_mode)
 }
@@ -1188,6 +1202,10 @@ async fn solve_cerberus_gpu(
 ) -> anyhow::Result<Result> {
     let descriptor: CerberusChallenge =
         serde_json::from_value(challenge).context("invalid Cerberus challenge")?;
+    ensure!(
+        descriptor.difficulty().get() <= 16,
+        "Cerberus difficulty above 16 dubits is unsupported by upstream clients"
+    );
     let started = Instant::now();
     let mut solution = None;
     let mut attempted_nonces = 0_u64;
@@ -1225,6 +1243,10 @@ async fn solve_goaway_gpu(
 ) -> anyhow::Result<Result> {
     let config: GoAwayConfig =
         serde_json::from_value(challenge).context("invalid go-away challenge")?;
+    ensure!(
+        config.difficulty().get() <= 64,
+        "go-away difficulty above 64 bits is unsupported"
+    );
     let challenge_bytes: [u8; 64] = config
         .challenge()
         .as_bytes()
@@ -1422,9 +1444,11 @@ async fn solve_mcaptcha_gpu(
 ) -> anyhow::Result<Result> {
     let request: McaptchaRequest =
         serde_json::from_value(challenge).context("invalid mCaptcha request")?;
+    let difficulty_factor = NonZeroU64::new(u64::from(request.config.difficulty_factor))
+        .context("mCaptcha difficulty factor must be positive")?;
     let mut prefix = Vec::new();
     build_mcaptcha_prefix(&mut prefix, &request.config.string, &request.config.salt);
-    let target = compute_target_mcaptcha(u64::from(request.config.difficulty_factor));
+    let target = compute_target_mcaptcha(difficulty_factor);
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
     for bank in 0_u32.. {
@@ -1470,7 +1494,7 @@ async fn solve_altcha_gpu(
     let (message, target, mask, key_length) = altcha_fast_case(&challenge)?
         .context("ALTCHA challenge shape is unsupported by the WGPU fast path")?;
     let mut solver = pow_buster::gpu::AltchaSha256Solver::from(message);
-    solver.set_limit(DEFAULT_LIMIT);
+    solver.set_limit(u64::from(u32::MAX) + 1);
     let started = Instant::now();
     let solution = solver
         .solve::<SOLVE_TYPE_MASK>(gpu, target, mask)
@@ -1557,7 +1581,7 @@ mod tests {
         let salt = hex::decode(&parameters.salt).expect("fixed salt");
         let mut password = nonce;
         password.extend_from_slice(b"9007199254740991");
-        let derived = altcha_derive_string_key(&parameters, &salt, &password)
+        let derived = altcha_derive_key(&parameters, &salt, &password)
             .expect("derive max-safe-integer string counter");
         assert_eq!(
             hex::encode(derived),
@@ -1591,6 +1615,69 @@ mod tests {
             assert_eq!(result.answer["counter"], 0);
             assert_eq!(result.implementation, implementation);
         }
+    }
+
+    #[test]
+    fn altcha_reference_is_uint32_only_and_has_one_canonical_name() {
+        let error = solve(
+            "altcha",
+            json!({"parameters": {}, "counterMode": "string"}),
+            Some("reference"),
+        )
+        .expect_err("reference must not advertise partial string-counter coverage");
+        assert!(error.to_string().contains("uint32 counter mode only"));
+
+        let error = solve("altcha", json!({"parameters": {}}), Some("altcha-rust"))
+            .expect_err("obsolete ALTCHA reference alias must stay rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported classic implementation")
+        );
+    }
+
+    #[test]
+    fn cerberus_and_goaway_reject_unrepresentable_difficulties() {
+        let cerberus = solve_cerberus(
+            json!({
+                "challenge": "domain-test",
+                "difficulty": 17,
+                "nonce": 1,
+                "ts": 1,
+                "signature": "domain-test",
+                "version": "0.4.9"
+            }),
+            Implementation::Safe,
+        )
+        .expect_err("current Cerberus clients only define up to 16 dubits");
+        assert!(cerberus.to_string().contains("above 16 dubits"));
+
+        let goaway = solve_goaway(
+            json!({
+                "challenge": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "difficulty": 65
+            }),
+            Implementation::Safe,
+        )
+        .expect_err("go-away support must not silently truncate beyond 64 bits");
+        assert!(goaway.to_string().contains("above 64 bits"));
+    }
+
+    #[test]
+    fn mcaptcha_rejects_zero_difficulty_factor() {
+        let error = solve_mcaptcha(
+            json!({
+                "config": {
+                    "string": "schema-test",
+                    "difficulty_factor": 0,
+                    "salt": "schema-test-salt"
+                },
+                "key": "schema-test"
+            }),
+            Implementation::Auto,
+        )
+        .expect_err("zero mCaptcha difficulty must be rejected before target calculation");
+        assert!(error.to_string().contains("must be positive"));
     }
 
     #[test]

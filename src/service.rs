@@ -1147,6 +1147,10 @@ pub struct SolverCapability {
     difficulty_min: u32,
     difficulty_max: u32,
     router: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    counter_mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    counter_max: Option<u64>,
     implementations: Vec<&'static str>,
 }
 
@@ -1219,6 +1223,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 16,
             router: true,
+            counter_mode: None,
+            counter_max: None,
             implementations: Vec::new(),
         },
         SolverCapability {
@@ -1227,6 +1233,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 16,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: Vec::new(),
         },
         SolverCapability {
@@ -1235,6 +1243,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: anubis_sha_implementations,
         },
         SolverCapability {
@@ -1243,6 +1253,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: vec![anubis_wasm::ARGON2_IMPLEMENTATION],
         },
         SolverCapability {
@@ -1251,6 +1263,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: Vec::new(),
         },
         SolverCapability {
@@ -1259,6 +1273,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: true,
+            counter_mode: None,
+            counter_max: None,
             implementations: Vec::new(),
         },
     ];
@@ -1294,16 +1310,20 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             solver: "cerberus",
             algorithms: &["blake3"],
             difficulty_min: 1,
-            difficulty_max: 64,
+            difficulty_max: 16,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: classic_implementations(false, true),
         },
         SolverCapability {
             solver: "goaway",
             algorithms: &["sha256"],
             difficulty_min: 1,
-            difficulty_max: 32,
+            difficulty_max: 64,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: classic_implementations(true, true),
         },
         SolverCapability {
@@ -1312,6 +1332,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 16,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: classic_implementations(true, true),
         },
         SolverCapability {
@@ -1320,7 +1342,9 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: u32::MAX,
             router: false,
-            implementations: vec!["rsw"],
+            counter_mode: None,
+            counter_max: None,
+            implementations: vec!["auto"],
         },
         SolverCapability {
             solver: "capjs",
@@ -1328,14 +1352,18 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 1_000_000_000,
             router: false,
-            implementations: vec!["hashwx-wasmtime"],
+            counter_mode: None,
+            counter_max: None,
+            implementations: vec!["auto"],
         },
         SolverCapability {
             solver: "mcaptcha",
             algorithms: &["sha256"],
             difficulty_min: 1,
-            difficulty_max: 64,
+            difficulty_max: u32::MAX,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: classic_implementations(true, true),
         },
         SolverCapability {
@@ -1344,6 +1372,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 16,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: classic_implementations(true, true),
         },
         SolverCapability {
@@ -1352,9 +1382,11 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: false,
+            counter_mode: Some("uint32"),
+            counter_max: Some(u64::from(u32::MAX)),
             implementations: {
                 let mut implementations = classic_implementations(false, true);
-                implementations.push("altcha-rust");
+                implementations.push("reference");
                 implementations
             },
         },
@@ -1371,7 +1403,28 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: false,
-            implementations: vec!["auto", "safe", "altcha-rust"],
+            counter_mode: Some("uint32"),
+            counter_max: Some(u64::from(u32::MAX)),
+            implementations: vec!["auto", "safe", "reference"],
+        },
+        SolverCapability {
+            solver: "altcha",
+            algorithms: &[
+                "sha256",
+                "sha384",
+                "sha512",
+                "pbkdf2-sha256",
+                "pbkdf2-sha384",
+                "pbkdf2-sha512",
+                "argon2id",
+                "scrypt",
+            ],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: false,
+            counter_mode: Some("string"),
+            counter_max: Some(9_007_199_254_740_991),
+            implementations: vec!["auto", "safe"],
         },
         SolverCapability {
             solver: "altcha",
@@ -1379,6 +1432,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: vec!["auto", "safe"],
         },
     ]);
@@ -1389,6 +1444,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         difficulty_min: 16,
         difficulty_max: 16,
         router: false,
+        counter_mode: None,
+        counter_max: None,
         implementations: vec!["auto"],
     });
     if state.gpu_operational {
@@ -1399,6 +1456,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 16,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: Vec::new(),
         });
     }
@@ -1410,6 +1469,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: true,
+            counter_mode: None,
+            counter_max: None,
             implementations: state.hashx_gpu_implementations.clone(),
         });
     }
