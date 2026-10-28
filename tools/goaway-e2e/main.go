@@ -47,7 +47,7 @@ func contains(values []string, needle string) bool {
 	return false
 }
 
-func assertCapabilities(serviceURL string) error {
+func assertCapabilities(serviceURL, implementation string) error {
 	response, err := http.Get(serviceURL + "/stats")
 	if err != nil {
 		return err
@@ -60,26 +60,16 @@ func assertCapabilities(serviceURL string) error {
 	if err := json.NewDecoder(response.Body).Decode(&stats); err != nil {
 		return err
 	}
-	var full, fast *solverCapability
 	for i := range stats.SolverCapabilities {
 		row := &stats.SolverCapabilities[i]
-		if row.Solver != "goaway" {
-			continue
-		}
-		if row.DifficultyMin == 0 && row.DifficultyMax == 256 {
-			full = row
-		}
-		if row.DifficultyMin == 1 && row.DifficultyMax == 64 {
-			fast = row
+		if row.Solver == "goaway" && row.DifficultyMin == 0 && row.DifficultyMax == 256 {
+			if contains(row.Implementations, "auto") && contains(row.Implementations, "safe") && contains(row.Implementations, implementation) {
+				return nil
+			}
+			return fmt.Errorf("go-away full-domain capability omits implementation %q: %+v", implementation, row)
 		}
 	}
-	if full == nil || !contains(full.Implementations, "auto") || !contains(full.Implementations, "safe") {
-		return fmt.Errorf("missing go-away full-digest auto/safe capability: %+v", full)
-	}
-	if fast == nil || contains(fast.Implementations, "auto") || contains(fast.Implementations, "safe") {
-		return fmt.Errorf("go-away accelerated capability overlaps full-digest selectors: %+v", fast)
-	}
-	return nil
+	return fmt.Errorf("missing go-away 0..256 full-domain capability")
 }
 
 func main() {
@@ -97,15 +87,15 @@ func main() {
 	if err := runner.Compile("goaway-e2e", wasmData); err != nil {
 		panic(err)
 	}
-	if err := assertCapabilities(serviceURL); err != nil {
+	implementation := os.Getenv("CHALLENGE_IMPLEMENTATION")
+	if implementation == "" {
+		implementation = "auto"
+	}
+	if err := assertCapabilities(serviceURL, implementation); err != nil {
 		panic(err)
 	}
 
-	difficulties := []string{"8", "13", "20"}
-	implementation := os.Getenv("CHALLENGE_IMPLEMENTATION")
-	if implementation == "" || implementation == "auto" || implementation == "safe" {
-		difficulties = append([]string{"0"}, difficulties...)
-	}
+	difficulties := []string{"0", "8", "13", "20"}
 	for _, difficulty := range difficulties {
 		if err := runCase(runner, serviceURL, difficulty); err != nil {
 			panic(err)

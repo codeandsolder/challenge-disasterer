@@ -557,6 +557,7 @@ impl GpuContext {
             crate::solver::SOLVE_TYPE_LT
                 | crate::solver::SOLVE_TYPE_GT
                 | crate::solver::SOLVE_TYPE_MASK
+                | crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS
         ) {
             return Err(GpuError::new("unsupported solve type"));
         }
@@ -1515,6 +1516,12 @@ fn single_block_fast_compatible(message: &crate::message::SingleBlockMessage) ->
 }
 
 fn expected_work<const TYPE: u8>(target: u64, mask: u64) -> u64 {
+    if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+        return u32::try_from(target)
+            .ok()
+            .and_then(|bits| 1_u64.checked_shl(bits))
+            .unwrap_or(u64::MAX);
+    }
     let compare_mask = if cfg!(feature = "compare-64bit") {
         mask
     } else {
@@ -1597,6 +1604,9 @@ fn digest_single_block_message(
 }
 
 fn result_matches<const TYPE: u8>(hash: [u32; 8], target: u64, mask: u64) -> bool {
+    if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+        return crate::hash_has_leading_zero_bits(&hash, target);
+    }
     let value = (u64::from(hash[0]) << 32) | u64::from(hash[1]);
     if cfg!(feature = "compare-64bit") {
         if TYPE == crate::solver::SOLVE_TYPE_LT {
@@ -1909,11 +1919,18 @@ struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }}
 fn rotr(x:u32,n:u32)->u32{{return (x>>n)|(x<<(32u-n));}}
 fn less64(ah:u32,al:u32,bh:u32,bl:u32)->bool{{return ah<bh||(ah==bh&&al<bl);}}
 fn greater64(ah:u32,al:u32,bh:u32,bl:u32)->bool{{return ah>bh||(ah==bh&&al>bl);}}
-fn target_ok(h0:u32,h1:u32)->bool{{
- let full=(P[2]&1u)!=0u;let ty=P[1];
- if(ty==1u){{return select(h0<P[6],less64(h0,h1,P[6],P[7]),full);}}
- if(ty==2u){{return select(h0>P[6],greater64(h0,h1,P[6],P[7]),full);}}
- let hi=(h0&P[8])==(P[6]&P[8]);return hi&&select(true,(h1&P[9])==(P[7]&P[9]),full);
+fn target_ok(h:array<u32,8>)->bool{{
+ let ty=P[1];
+ if(ty==8u){{
+  let bits=P[7];if(P[6]!=0u||bits>256u){{return false;}}let full_words=bits>>5u;
+  for(var i=0u;i<8u;i=i+1u){{if(i<full_words&&h[i]!=0u){{return false;}}}}
+  let remaining=bits&31u;if(remaining==0u){{return true;}}
+  return (h[full_words]>>(32u-remaining))==0u;
+ }}
+ let full=(P[2]&1u)!=0u;
+ if(ty==1u){{return select(h[0]<P[6],less64(h[0],h[1],P[6],P[7]),full);}}
+ if(ty==2u){{return select(h[0]>P[6],greater64(h[0],h[1],P[6],P[7]),full);}}
+ let hi=(h[0]&P[8])==(P[6]&P[8]);return hi&&select(true,(h[1]&P[9])==(P[7]&P[9]),full);
 }}
 fn compress(s:array<u32,8>,block:array<u32,16>)->array<u32,8>{{
  var w0=block[0];var w1=block[1];var w2=block[2];var w3=block[3];var w4=block[4];var w5=block[5];var w6=block[6];var w7=block[7];
@@ -1936,7 +1953,7 @@ fn compress13(feed:array<u32,8>,s:array<u32,8>,block:array<u32,16>)->array<u32,8
  {rounds13}
  return array<u32,8>(feed[0]+a,feed[1]+b,feed[2]+c,feed[3]+d,feed[4]+e,feed[5]+f,feed[6]+g,feed[7]+h);
 }}
-fn publish(nlo:u32,nhi:u32,h:array<u32,8>){{if(target_ok(h[0],h[1])&&atomicExchange(&R.flag,1u)==0u){{R.nonce_lo=nlo;R.nonce_hi=nhi;for(var i=0u;i<8u;i=i+1u){{R.hash[i]=h[i];}}}}}}
+fn publish(nlo:u32,nhi:u32,h:array<u32,8>){{if(target_ok(h)&&atomicExchange(&R.flag,1u)==0u){{R.nonce_lo=nlo;R.nonce_hi=nhi;for(var i=0u;i<8u;i=i+1u){{R.hash[i]=h[i];}}}}}}
 @compute @workgroup_size({WG_SIZE})
 fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
  let first=gid.x*{STEPS}u;
@@ -2104,12 +2121,19 @@ struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }}
 fn rotr(x:u32,n:u32)->u32{{return (x>>n)|(x<<(32u-n));}}
 fn less64(ah:u32,al:u32,bh:u32,bl:u32)->bool{{return ah<bh||(ah==bh&&al<bl);}}
 fn greater64(ah:u32,al:u32,bh:u32,bl:u32)->bool{{return ah>bh||(ah==bh&&al>bl);}}
-fn target_ok(h0:u32,h1:u32)->bool{{
- let full=(P[33]&2u)!=0u; let ty=P[32];
- if(ty==1u){{return select(h0<P[28],less64(h0,h1,P[28],P[29]),full);}}
- if(ty==2u){{return select(h0>P[28],greater64(h0,h1,P[28],P[29]),full);}}
- let hi=(h0&P[30])==(P[28]&P[30]);
- return hi&&select(true,(h1&P[31])==(P[29]&P[31]),full);
+fn target_ok(h:array<u32,8>)->bool{{
+ let ty=P[32];
+ if(ty==8u){{
+  let bits=P[29];if(P[28]!=0u||bits>256u){{return false;}}let full_words=bits>>5u;
+  for(var i=0u;i<8u;i=i+1u){{if(i<full_words&&h[i]!=0u){{return false;}}}}
+  let remaining=bits&31u;if(remaining==0u){{return true;}}
+  return (h[full_words]>>(32u-remaining))==0u;
+ }}
+ let full=(P[33]&2u)!=0u;
+ if(ty==1u){{return select(h[0]<P[28],less64(h[0],h[1],P[28],P[29]),full);}}
+ if(ty==2u){{return select(h[0]>P[28],greater64(h[0],h[1],P[28],P[29]),full);}}
+ let hi=(h[0]&P[30])==(P[28]&P[30]);
+ return hi&&select(true,(h[1]&P[31])==(P[29]&P[31]),full);
 }}
 @compute @workgroup_size({WG_SIZE})
 fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
@@ -2131,10 +2155,10 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
    var w8=words[8];var w9=words[9];var w10=words[10];var w11=words[11];var w12=words[12];var w13=words[13];var w14=words[14];var w15=words[15];
    var a=P[0];var b=P[1];var c=P[2];var d=P[3];var e=P[4];var f=P[5];var g=P[6];var h=P[7];
    {rounds}
-   let r0=P[0]+a;let r1=P[1]+b;
-   if(target_ok(r0,r1)){{if(atomicExchange(&R.flag,1u)==0u){{
+   let out=array<u32,8>(P[0]+a,P[1]+b,P[2]+c,P[3]+d,P[4]+e,P[5]+f,P[6]+g,P[7]+h);
+   if(target_ok(out)){{if(atomicExchange(&R.flag,1u)==0u){{
     let nlo=P[26]+candidate;let carry=select(0u,1u,nlo<P[26]);R.nonce_lo=nlo;R.nonce_hi=P[27]+carry;
-    R.hash[0]=r0;R.hash[1]=r1;R.hash[2]=P[2]+c;R.hash[3]=P[3]+d;R.hash[4]=P[4]+e;R.hash[5]=P[5]+f;R.hash[6]=P[6]+g;R.hash[7]=P[7]+h;
+    for(var i=0u;i<8u;i=i+1u){{R.hash[i]=out[i];}}
    }}}}
   }}
   if(step+1u<{STEPS}u&&candidate+1u<P[34]){{
@@ -2202,5 +2226,21 @@ mod tests {
             1_000_000_000_001_234_567
         );
         assert!(counter_to_decimal_nonce(COUNTER_SPACE - 1) < u64::MAX);
+    }
+
+    #[test]
+    fn full_digest_result_match_checks_past_first_64_bits() {
+        let mut hash = [0_u32; 8];
+        hash[2] = 0x7fff_ffff;
+        assert!(result_matches::<
+            { crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS },
+        >(hash, 65, u64::MAX,));
+        hash[2] = 0x8000_0000;
+        assert!(!result_matches::<
+            { crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS },
+        >(hash, 65, u64::MAX,));
+        assert!(!result_matches::<
+            { crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS },
+        >([0; 8], 257, u64::MAX,));
     }
 }

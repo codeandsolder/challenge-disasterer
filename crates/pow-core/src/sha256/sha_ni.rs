@@ -66,6 +66,15 @@ pub(crate) fn extract_ab(state: __m128i) -> u64 {
     state.to_array()[1]
 }
 
+#[inline(always)]
+pub(crate) fn extract_state(state: [__m128i; 2]) -> [u32; 8] {
+    let abef: u32x4 = state[0].into();
+    let cdgh: u32x4 = state[1].into();
+    let [f, e, b, a] = abef.to_array();
+    let [h, g, d, c] = cdgh.to_array();
+    [a, b, c, d, e, f, g, h]
+}
+
 #[allow(unused_variables)]
 pub trait Plucker: Sized {
     #[inline(always)]
@@ -262,6 +271,7 @@ mod layout_tests {
 
         let state: __m128i = u32x4::from_array([1, 2, 3, 4]).into();
         assert_eq!(extract_ab(state), (4u64 << 32) | 3);
+        assert_eq!(extract_state(prepared), [0, 1, 2, 3, 4, 5, 6, 7]);
     }
 }
 
