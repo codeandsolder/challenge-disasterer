@@ -356,6 +356,34 @@ fn solve_cerberus(challenge: Value, implementation: Implementation) -> anyhow::R
     })
 }
 
+fn finish_goaway(
+    config: &GoAwayConfig,
+    implementation: &str,
+    solution: (u64, [u32; 8]),
+    attempted_nonces: u64,
+    started: Instant,
+) -> Result {
+    let (nonce, hash) = solution;
+    let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let token = format!("{}{:016x}", config.challenge(), nonce);
+    let id = hash
+        .into_iter()
+        .take(4)
+        .flat_map(u32::to_ne_bytes)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Result {
+        answer: json!({
+            "nonce": nonce.to_string(),
+            "token": token,
+            "id": id,
+            "attempted_nonces": attempted_nonces,
+        }),
+        solve_ms,
+        implementation: implementation.to_owned(),
+    }
+}
+
 fn solve_goaway(challenge: Value, implementation: Implementation) -> anyhow::Result<Result> {
     let config: GoAwayConfig =
         serde_json::from_value(challenge).context("invalid go-away challenge")?;
@@ -364,9 +392,31 @@ fn solve_goaway(challenge: Value, implementation: Implementation) -> anyhow::Res
         "go-away challenge must be exactly 64 characters"
     );
     ensure!(
-        config.difficulty().get() <= 64,
-        "go-away difficulty above 64 bits is unsupported"
+        config.difficulty() <= 256,
+        "go-away difficulty above the 256-bit SHA-256 digest width is unsatisfiable"
     );
+    let started = Instant::now();
+
+    if config.difficulty() == 0 || config.difficulty() > 64 {
+        ensure!(
+            matches!(implementation, Implementation::Auto | Implementation::Safe),
+            "go-away difficulty outside 1..=64 supports auto/safe implementations only"
+        );
+        let (solution, attempted_nonces) = config.solve_with_limit(DEFAULT_LIMIT);
+        let solution = solution.context("go-away search exhausted configured limit")?;
+        return Ok(finish_goaway(
+            &config,
+            implementation.name(),
+            solution,
+            attempted_nonces,
+            started,
+        ));
+    }
+
+    let difficulty = NonZeroU8::new(
+        u8::try_from(config.difficulty()).context("go-away difficulty does not fit u8")?,
+    )
+    .context("accelerated go-away difficulty must be positive")?;
     let challenge_bytes: [u8; 64] = config
         .challenge()
         .as_bytes()
@@ -376,38 +426,24 @@ fn solve_goaway(challenge: Value, implementation: Implementation) -> anyhow::Res
         GoAwayMessage::new_hex(&challenge_bytes, 0).context("invalid go-away hex challenge")?;
     let mut attempted_nonces = 0_u64;
     let mut solution = None;
-    let started = Instant::now();
     for high_word in 0_u32.. {
         message.set_high_word(high_word);
         let mut solver = goaway_solver(implementation, message.clone())?;
         solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
-        solution = solver.solve(0, SOLVE_TYPE_MASK, compute_mask_goaway(config.difficulty()));
+        solution = solver.solve(0, SOLVE_TYPE_MASK, compute_mask_goaway(difficulty));
         attempted_nonces = attempted_nonces.saturating_add(solver.attempted());
         if solution.is_some() || attempted_nonces >= DEFAULT_LIMIT {
             break;
         }
     }
-    let (nonce, hash) = solution.context("go-away search exhausted configured limit")?;
-    let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
-
-    let token = format!("{}{:016x}", config.challenge(), nonce);
-    let id = hash
-        .into_iter()
-        .take(4)
-        .flat_map(u32::to_ne_bytes)
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-
-    Ok(Result {
-        answer: json!({
-            "nonce": nonce.to_string(),
-            "token": token,
-            "id": id,
-            "attempted_nonces": attempted_nonces,
-        }),
-        solve_ms,
-        implementation: implementation.name().to_owned(),
-    })
+    let solution = solution.context("go-away search exhausted configured limit")?;
+    Ok(finish_goaway(
+        &config,
+        implementation.name(),
+        solution,
+        attempted_nonces,
+        started,
+    ))
 }
 
 fn solve_cap_decimal_cpu(
@@ -1239,9 +1275,13 @@ async fn solve_goaway_gpu(
     let config: GoAwayConfig =
         serde_json::from_value(challenge).context("invalid go-away challenge")?;
     ensure!(
-        config.difficulty().get() <= 64,
-        "go-away difficulty above 64 bits is unsupported"
+        (1..=64).contains(&config.difficulty()),
+        "go-away WGPU supports difficulty 1..=64 only"
     );
+    let difficulty = NonZeroU8::new(
+        u8::try_from(config.difficulty()).context("go-away WGPU difficulty does not fit u8")?,
+    )
+    .context("go-away WGPU difficulty must be positive")?;
     let challenge_bytes: [u8; 64] = config
         .challenge()
         .as_bytes()
@@ -1257,7 +1297,7 @@ async fn solve_goaway_gpu(
         let mut solver = pow_buster::gpu::GoAwaySolver::from(message.clone());
         solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
         solution = solver
-            .solve::<SOLVE_TYPE_MASK>(gpu, 0, compute_mask_goaway(config.difficulty()))
+            .solve::<SOLVE_TYPE_MASK>(gpu, 0, compute_mask_goaway(difficulty))
             .await?;
         attempted_nonces = attempted_nonces.saturating_add(solver.attempted_nonces());
         if solution.is_some() || attempted_nonces >= DEFAULT_LIMIT {
@@ -1265,25 +1305,13 @@ async fn solve_goaway_gpu(
         }
     }
     let solution = solution.context("go-away GPU search exhausted configured limit")?;
-    let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let token = format!("{}{:016x}", config.challenge(), solution.nonce);
-    let id = solution
-        .hash
-        .into_iter()
-        .take(4)
-        .flat_map(u32::to_ne_bytes)
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    Ok(Result {
-        answer: json!({
-            "nonce": solution.nonce.to_string(),
-            "token": token,
-            "id": id,
-            "attempted_nonces": attempted_nonces,
-        }),
-        solve_ms,
-        implementation: "wgpu".to_owned(),
-    })
+    Ok(finish_goaway(
+        &config,
+        "wgpu",
+        (solution.nonce, solution.hash),
+        attempted_nonces,
+        started,
+    ))
 }
 
 #[cfg(feature = "gpu")]
@@ -1650,12 +1678,12 @@ mod tests {
         let goaway = solve_goaway(
             json!({
                 "challenge": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                "difficulty": 65
+                "difficulty": 257
             }),
             Implementation::Safe,
         )
-        .expect_err("go-away support must not silently truncate beyond 64 bits");
-        assert!(goaway.to_string().contains("above 64 bits"));
+        .expect_err("go-away support must reject unsatisfiable difficulty above 256 bits");
+        assert!(goaway.to_string().contains("256-bit SHA-256 digest width"));
     }
 
     #[test]
