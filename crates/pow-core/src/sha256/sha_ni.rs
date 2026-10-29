@@ -89,11 +89,8 @@ pub trait Plucker: Sized {
 impl Plucker for () {}
 
 // ARX network using altered data layout
-#[expect(
-    unsafe_code,
-    reason = "isolated SHA-NI instruction kernel; callers require SHA and SSE4.1"
-)]
-#[inline(always)]
+#[inline]
+#[target_feature(enable = "sse4.1,sha")]
 pub(crate) fn multiway_arx_abef_cdgh<
     const BEGIN_ROUND_BY_4: usize,
     const LANES: usize,
@@ -103,140 +100,138 @@ pub(crate) fn multiway_arx_abef_cdgh<
     block_template: &[u32; 16],
     mut plucker: P,
 ) {
-    unsafe {
-        macro_rules! rounds4 {
-            ($abef:ident, $cdgh:ident, $rest:expr, $i:expr) => {{
-                let k = K32X4[$i];
-                let kv = u32x4::from_array([k[3], k[2], k[1], k[0]]);
-                let t1: [__m128i; LANES] = core::array::from_fn(|i| {
-                    let words: u32x4 = $rest[i].into();
-                    (words + kv).into()
-                });
-                $cdgh = core::array::from_fn(|i| _mm_sha256rnds2_epu32($cdgh[i], $abef[i], t1[i]));
-                let t2: [__m128i; LANES] = core::array::from_fn(|i| {
-                    let words: u32x4 = t1[i].into();
-                    simd_swizzle!(words, [2, 3, 0, 0]).into()
-                });
-                $abef = core::array::from_fn(|i| _mm_sha256rnds2_epu32($abef[i], $cdgh[i], t2[i]));
-            }};
-        }
+    macro_rules! rounds4 {
+        ($abef:ident, $cdgh:ident, $rest:expr, $i:expr) => {{
+            let k = K32X4[$i];
+            let kv = u32x4::from_array([k[3], k[2], k[1], k[0]]);
+            let t1: [__m128i; LANES] = core::array::from_fn(|i| {
+                let words: u32x4 = $rest[i].into();
+                (words + kv).into()
+            });
+            $cdgh = core::array::from_fn(|i| _mm_sha256rnds2_epu32($cdgh[i], $abef[i], t1[i]));
+            let t2: [__m128i; LANES] = core::array::from_fn(|i| {
+                let words: u32x4 = t1[i].into();
+                simd_swizzle!(words, [2, 3, 0, 0]).into()
+            });
+            $abef = core::array::from_fn(|i| _mm_sha256rnds2_epu32($abef[i], $cdgh[i], t2[i]));
+        }};
+    }
 
-        macro_rules! schedule_rounds4 {
-            (
-            $abef:ident, $cdgh:ident,
-            $w0:expr, $w1:expr, $w2:expr, $w3:expr, $w4:expr,
-            $i: expr
-        ) => {{
-                $w4 = core::array::from_fn(|i| schedule!($w0[i], $w1[i], $w2[i], $w3[i]));
-                rounds4!($abef, $cdgh, $w4, $i);
-            }};
-        }
+    macro_rules! schedule_rounds4 {
+        (
+        $abef:ident, $cdgh:ident,
+        $w0:expr, $w1:expr, $w2:expr, $w3:expr, $w4:expr,
+        $i: expr
+    ) => {{
+            $w4 = core::array::from_fn(|i| schedule!($w0[i], $w1[i], $w2[i], $w3[i]));
+            rounds4!($abef, $cdgh, $w4, $i);
+        }};
+    }
 
-        let mut abef: [_; LANES] = core::array::from_fn(|i| state[i][0]);
-        let mut cdgh: [_; LANES] = core::array::from_fn(|i| state[i][1]);
+    let mut abef: [_; LANES] = core::array::from_fn(|i| state[i][0]);
+    let mut cdgh: [_; LANES] = core::array::from_fn(|i| state[i][1]);
 
-        let w0_t: __m128i = u32x4::from_array([
-            block_template[0],
-            block_template[1],
-            block_template[2],
-            block_template[3],
-        ])
-        .into();
-        let w1_t: __m128i = u32x4::from_array([
-            block_template[4],
-            block_template[5],
-            block_template[6],
-            block_template[7],
-        ])
-        .into();
-        let w2_t: __m128i = u32x4::from_array([
-            block_template[8],
-            block_template[9],
-            block_template[10],
-            block_template[11],
-        ])
-        .into();
-        let w3_t: __m128i = u32x4::from_array([
-            block_template[12],
-            block_template[13],
-            block_template[14],
-            block_template[15],
-        ])
-        .into();
+    let w0_t: __m128i = u32x4::from_array([
+        block_template[0],
+        block_template[1],
+        block_template[2],
+        block_template[3],
+    ])
+    .into();
+    let w1_t: __m128i = u32x4::from_array([
+        block_template[4],
+        block_template[5],
+        block_template[6],
+        block_template[7],
+    ])
+    .into();
+    let w2_t: __m128i = u32x4::from_array([
+        block_template[8],
+        block_template[9],
+        block_template[10],
+        block_template[11],
+    ])
+    .into();
+    let w3_t: __m128i = u32x4::from_array([
+        block_template[12],
+        block_template[13],
+        block_template[14],
+        block_template[15],
+    ])
+    .into();
 
-        let mut w0: [_; LANES] = [w0_t; LANES];
-        let mut w1: [_; LANES] = [w1_t; LANES];
-        let mut w2: [_; LANES] = [w2_t; LANES];
-        let mut w3: [_; LANES] = [w3_t; LANES];
-        for i in 0..LANES {
-            w0[i] = plucker.pluck_qword0(i, w0[i].into()).into();
-            w1[i] = plucker.pluck_qword1(i, w1[i].into()).into();
-            w2[i] = plucker.pluck_qword2(i, w2[i].into()).into();
-            w3[i] = plucker.pluck_qword3(i, w3[i].into()).into();
-        }
-        let mut w4: [_; LANES] = core::array::from_fn(|i| schedule!(w0[i], w1[i], w2[i], w3[i]));
+    let mut w0: [_; LANES] = [w0_t; LANES];
+    let mut w1: [_; LANES] = [w1_t; LANES];
+    let mut w2: [_; LANES] = [w2_t; LANES];
+    let mut w3: [_; LANES] = [w3_t; LANES];
+    for i in 0..LANES {
+        w0[i] = plucker.pluck_qword0(i, w0[i].into()).into();
+        w1[i] = plucker.pluck_qword1(i, w1[i].into()).into();
+        w2[i] = plucker.pluck_qword2(i, w2[i].into()).into();
+        w3[i] = plucker.pluck_qword3(i, w3[i].into()).into();
+    }
+    let mut w4: [_; LANES] = core::array::from_fn(|i| schedule!(w0[i], w1[i], w2[i], w3[i]));
 
-        macro_rules! gate_rnds {
-            ($cutoff: literal, $($body:tt)*) => {
-                if $cutoff >= BEGIN_ROUND_BY_4 * 4 {
-                    $($body)*
-                }
-            };
-        }
+    macro_rules! gate_rnds {
+        ($cutoff: literal, $($body:tt)*) => {
+            if $cutoff >= BEGIN_ROUND_BY_4 * 4 {
+                $($body)*
+            }
+        };
+    }
 
-        gate_rnds!(0, {
-            rounds4!(abef, cdgh, w0, 0);
-        });
-        gate_rnds!(4, {
-            rounds4!(abef, cdgh, w1, 1);
-        });
-        gate_rnds!(8, {
-            rounds4!(abef, cdgh, w2, 2);
-        });
-        gate_rnds!(12, {
-            rounds4!(abef, cdgh, w3, 3);
-        });
-        gate_rnds!(16, {
-            schedule_rounds4!(abef, cdgh, w0, w1, w2, w3, w4, 4);
-        });
-        gate_rnds!(20, {
-            schedule_rounds4!(abef, cdgh, w1, w2, w3, w4, w0, 5);
-        });
-        gate_rnds!(24, {
-            schedule_rounds4!(abef, cdgh, w2, w3, w4, w0, w1, 6);
-        });
-        gate_rnds!(28, {
-            schedule_rounds4!(abef, cdgh, w3, w4, w0, w1, w2, 7);
-        });
-        gate_rnds!(32, {
-            schedule_rounds4!(abef, cdgh, w4, w0, w1, w2, w3, 8);
-        });
-        gate_rnds!(36, {
-            schedule_rounds4!(abef, cdgh, w0, w1, w2, w3, w4, 9);
-        });
-        gate_rnds!(40, {
-            schedule_rounds4!(abef, cdgh, w1, w2, w3, w4, w0, 10);
-        });
-        gate_rnds!(44, {
-            schedule_rounds4!(abef, cdgh, w2, w3, w4, w0, w1, 11);
-        });
-        gate_rnds!(48, {
-            schedule_rounds4!(abef, cdgh, w3, w4, w0, w1, w2, 12);
-        });
-        gate_rnds!(52, {
-            schedule_rounds4!(abef, cdgh, w4, w0, w1, w2, w3, 13);
-        });
-        gate_rnds!(56, {
-            schedule_rounds4!(abef, cdgh, w0, w1, w2, w3, w4, 14);
-        });
-        gate_rnds!(60, {
-            schedule_rounds4!(abef, cdgh, w1, w2, w3, w4, w0, 15);
-        });
+    gate_rnds!(0, {
+        rounds4!(abef, cdgh, w0, 0);
+    });
+    gate_rnds!(4, {
+        rounds4!(abef, cdgh, w1, 1);
+    });
+    gate_rnds!(8, {
+        rounds4!(abef, cdgh, w2, 2);
+    });
+    gate_rnds!(12, {
+        rounds4!(abef, cdgh, w3, 3);
+    });
+    gate_rnds!(16, {
+        schedule_rounds4!(abef, cdgh, w0, w1, w2, w3, w4, 4);
+    });
+    gate_rnds!(20, {
+        schedule_rounds4!(abef, cdgh, w1, w2, w3, w4, w0, 5);
+    });
+    gate_rnds!(24, {
+        schedule_rounds4!(abef, cdgh, w2, w3, w4, w0, w1, 6);
+    });
+    gate_rnds!(28, {
+        schedule_rounds4!(abef, cdgh, w3, w4, w0, w1, w2, 7);
+    });
+    gate_rnds!(32, {
+        schedule_rounds4!(abef, cdgh, w4, w0, w1, w2, w3, 8);
+    });
+    gate_rnds!(36, {
+        schedule_rounds4!(abef, cdgh, w0, w1, w2, w3, w4, 9);
+    });
+    gate_rnds!(40, {
+        schedule_rounds4!(abef, cdgh, w1, w2, w3, w4, w0, 10);
+    });
+    gate_rnds!(44, {
+        schedule_rounds4!(abef, cdgh, w2, w3, w4, w0, w1, 11);
+    });
+    gate_rnds!(48, {
+        schedule_rounds4!(abef, cdgh, w3, w4, w0, w1, w2, 12);
+    });
+    gate_rnds!(52, {
+        schedule_rounds4!(abef, cdgh, w4, w0, w1, w2, w3, 13);
+    });
+    gate_rnds!(56, {
+        schedule_rounds4!(abef, cdgh, w0, w1, w2, w3, w4, 14);
+    });
+    gate_rnds!(60, {
+        schedule_rounds4!(abef, cdgh, w1, w2, w3, w4, w0, 15);
+    });
 
-        for i in 0..LANES {
-            state[i][0] = abef[i];
-            state[i][1] = cdgh[i];
-        }
+    for i in 0..LANES {
+        state[i][0] = abef[i];
+        state[i][1] = cdgh[i];
     }
 }
 
