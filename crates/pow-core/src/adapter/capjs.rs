@@ -111,7 +111,7 @@ impl ChallengeDescriptor {
                         return;
                     };
                     attempted_nonces.fetch_add(
-                        solver.get_attempted_nonces(),
+                        solver.attempted_nonces(),
                         core::sync::atomic::Ordering::Relaxed,
                     );
                     let nonce_f64 = fixup_prefix.map(|x| x.fixup(nonce)).unwrap_or(nonce as f64);
@@ -162,7 +162,7 @@ impl ChallengeDescriptor {
             ) else {
                 return (None, attempted_nonces);
             };
-            attempted_nonces += solver.get_attempted_nonces();
+            attempted_nonces += solver.attempted_nonces();
             response
                 .solutions
                 .push(fixup_prefix.map(|x| x.fixup(nonce)).unwrap_or(nonce as f64));

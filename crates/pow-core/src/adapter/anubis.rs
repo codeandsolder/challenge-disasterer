@@ -124,8 +124,8 @@ impl ChallengeDescriptor {
             let mut solver = crate::DecimalSolver::from(message);
             solver.set_limit(remaining_limit);
             result = solver.solve::<{ SOLVE_TYPE_MASK }>(0, mask);
-            attempted_nonces += solver.get_attempted_nonces();
-            remaining_limit = remaining_limit.saturating_sub(solver.get_attempted_nonces());
+            attempted_nonces += solver.attempted_nonces();
+            remaining_limit = remaining_limit.saturating_sub(solver.attempted_nonces());
             if result.is_some() || remaining_limit == 0 {
                 break;
             }

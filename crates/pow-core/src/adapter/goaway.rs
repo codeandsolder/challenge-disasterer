@@ -62,7 +62,7 @@ impl GoAwayConfig {
             solver.set_limit(limit.saturating_sub(attempted_nonces));
 
             let res = solver.solve::<{ SOLVE_TYPE_MASK }>(0, mask);
-            attempted_nonces += solver.get_attempted_nonces();
+            attempted_nonces += solver.attempted_nonces();
 
             if let Some(res) = res {
                 return (Some(res), attempted_nonces);

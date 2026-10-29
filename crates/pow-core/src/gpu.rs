@@ -917,7 +917,7 @@ impl SingleBlockSolver {
     ///
     /// GPU workgroups cooperatively stop after a hit, so this is an upper bound on candidates
     /// actually executed by the device.
-    pub fn get_attempted_nonces(&self) -> u64 {
+    pub fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -975,7 +975,7 @@ impl DoubleBlockSolver {
         self.limit = limit;
     }
     /// Number of candidates dispatched so far.
-    pub fn get_attempted_nonces(&self) -> u64 {
+    pub fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -1084,10 +1084,10 @@ impl DecimalSolver {
         }
     }
     /// Number of candidates dispatched so far.
-    pub fn get_attempted_nonces(&self) -> u64 {
+    pub fn attempted_nonces(&self) -> u64 {
         match self {
-            Self::SingleBlock(s) => s.get_attempted_nonces(),
-            Self::DoubleBlock(s) => s.get_attempted_nonces(),
+            Self::SingleBlock(s) => s.attempted_nonces(),
+            Self::DoubleBlock(s) => s.attempted_nonces(),
         }
     }
     /// Solve a decimal SHA-256 message.
@@ -1127,7 +1127,7 @@ impl GoAwaySolver {
         self.limit = limit;
     }
     /// Number of candidates dispatched so far.
-    pub fn get_attempted_nonces(&self) -> u64 {
+    pub fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
     /// Solve a GoAway message on the GPU.
@@ -1214,7 +1214,7 @@ impl BinarySolver {
         self.limit = limit;
     }
     /// Number of candidates dispatched so far.
-    pub fn get_attempted_nonces(&self) -> u64 {
+    pub fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
     /// Solve a binary-nonce SHA-256 message on the GPU.
@@ -1306,7 +1306,7 @@ impl CerberusSolver {
     }
 
     /// Number of candidates dispatched so far.
-    pub fn get_attempted_nonces(&self) -> u64 {
+    pub fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -1419,7 +1419,7 @@ impl AltchaSha256Solver {
     }
 
     /// Number of candidates dispatched so far.
-    pub fn get_attempted_nonces(&self) -> u64 {
+    pub fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
