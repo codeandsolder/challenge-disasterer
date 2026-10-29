@@ -16,7 +16,7 @@ mod wasm_bench {
         let started = Instant::now();
         let solution = solver.solve::<SOLVE_TYPE_MASK>(0, u64::MAX);
         let elapsed = started.elapsed();
-        let attempted = solver.get_attempted_nonces();
+        let attempted = solver.attempted_nonces();
         assert!(
             solution.is_none(),
             "unexpected exact-64-bit benchmark solution in {name}"

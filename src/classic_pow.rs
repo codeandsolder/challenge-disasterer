@@ -117,7 +117,7 @@ where
         Solver::set_limit(self, limit);
     }
     fn attempted(&self) -> u64 {
-        Solver::get_attempted_nonces(self)
+        Solver::attempted_nonces(self)
     }
     fn solve(&mut self, target: u64, ty: u8, mask: u64) -> Option<(u64, [u32; 8])> {
         SolverDyn::solve_dyn(self, target, ty, mask)
@@ -605,7 +605,7 @@ async fn solve_cerberus_gpu(
         solution = solver
             .solve::<SOLVE_TYPE_MASK>(gpu, 0, descriptor.mask())
             .await?;
-        attempted_nonces = attempted_nonces.saturating_add(solver.get_attempted_nonces());
+        attempted_nonces = attempted_nonces.saturating_add(solver.attempted_nonces());
         if solution.is_some() || attempted_nonces >= DEFAULT_LIMIT {
             break;
         }
@@ -647,7 +647,7 @@ async fn solve_goaway_gpu(
         solution = solver
             .solve::<SOLVE_TYPE_MASK>(gpu, 0, compute_mask_goaway(config.difficulty()))
             .await?;
-        attempted_nonces = attempted_nonces.saturating_add(solver.get_attempted_nonces());
+        attempted_nonces = attempted_nonces.saturating_add(solver.attempted_nonces());
         if solution.is_some() || attempted_nonces >= DEFAULT_LIMIT {
             break;
         }
@@ -701,7 +701,7 @@ async fn solve_capjs_gpu(
             .solve::<SOLVE_TYPE_MASK>(gpu, target, mask)
             .await?
             .context("Cap.js GPU search exhausted configured limit")?;
-        attempted_nonces = attempted_nonces.saturating_add(solver.get_attempted_nonces());
+        attempted_nonces = attempted_nonces.saturating_add(solver.attempted_nonces());
         solutions.push(
             fixup
                 .map(|x| x.fixup(solution.nonce))
@@ -748,7 +748,7 @@ async fn solve_haphash_gpu(
         let mut solver = pow_buster::gpu::DecimalSolver::from(message);
         solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
         let result = solver.solve::<SOLVE_TYPE_MASK>(gpu, 0, mask).await?;
-        attempted_nonces = attempted_nonces.saturating_add(solver.get_attempted_nonces());
+        attempted_nonces = attempted_nonces.saturating_add(solver.attempted_nonces());
         if let Some(solution) = result {
             return Ok(Result {
                 answer: json!({
@@ -785,7 +785,7 @@ async fn solve_mcaptcha_gpu(
         let mut solver = pow_buster::gpu::DecimalSolver::from(message);
         solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
         let result = solver.solve::<SOLVE_TYPE_GT>(gpu, target, u64::MAX).await?;
-        attempted_nonces = attempted_nonces.saturating_add(solver.get_attempted_nonces());
+        attempted_nonces = attempted_nonces.saturating_add(solver.attempted_nonces());
         if let Some(solution) = result {
             let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
             return Ok(Result {
@@ -847,7 +847,7 @@ async fn solve_altcha_gpu(
             "counter": solution.nonce,
             "derivedKey": derived_key,
             "time": solve_ms,
-            "attempted_nonces": solver.get_attempted_nonces(),
+            "attempted_nonces": solver.attempted_nonces(),
         }),
         solve_ms,
         implementation: "wgpu".to_owned(),
