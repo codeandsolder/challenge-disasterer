@@ -58,7 +58,7 @@ impl crate::solver::Solver for SingleBlockSolver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
@@ -495,7 +495,7 @@ impl crate::solver::Solver for DoubleBlockSolver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
     #[expect(
@@ -756,7 +756,7 @@ impl crate::solver::Solver for GoAwaySolver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -898,7 +898,7 @@ mod tests {
                 .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
                 .is_none()
         );
-        assert_eq!(solver.get_attempted_nonces(), 1);
+        assert_eq!(solver.attempted_nonces(), 1);
 
         solver.set_limit(5);
         assert!(
@@ -906,7 +906,7 @@ mod tests {
                 .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
                 .is_none()
         );
-        assert_eq!(solver.get_attempted_nonces(), 5);
+        assert_eq!(solver.attempted_nonces(), 5);
 
         let mut fresh_solver = GoAwaySolver::from(GoAwayMessage::new_bytes(&challenge, 0));
         fresh_solver.set_limit(6);
@@ -915,7 +915,7 @@ mod tests {
                 .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
                 .is_none()
         );
-        assert_eq!(fresh_solver.get_attempted_nonces(), 6);
+        assert_eq!(fresh_solver.attempted_nonces(), 6);
 
         fresh_solver.set_limit(9);
         assert!(
@@ -923,7 +923,7 @@ mod tests {
                 .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
                 .is_none()
         );
-        assert_eq!(fresh_solver.get_attempted_nonces(), 9);
+        assert_eq!(fresh_solver.attempted_nonces(), 9);
     }
 
     #[test]
@@ -948,7 +948,7 @@ mod tests {
             .expect("tail candidate should match exact target");
         assert_eq!(found_nonce, nonce);
         assert_eq!(found_hash, expected);
-        assert_eq!(solver.get_attempted_nonces(), nonce + 1);
+        assert_eq!(solver.attempted_nonces(), nonce + 1);
     }
 
     #[test]
@@ -1054,7 +1054,7 @@ mod tests {
                 .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
                 .is_none()
         );
-        assert_eq!(solver.get_attempted_nonces(), INNER_STATES * 4);
+        assert_eq!(solver.attempted_nonces(), INNER_STATES * 4);
 
         for logical in (solver.message.digit_index + 2..).take(7) {
             assert_eq!(

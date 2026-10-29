@@ -108,7 +108,7 @@ pub fn calibrate_cpu(hash_limit: u64) -> anyhow::Result<f64> {
         let mut solver = SingleBlockSolver::from(message);
         solver.set_limit(hash_limit);
         let _ = solver.solve_nonce_only::<SOLVE_TYPE_MASK>(0, calibration_mask);
-        attempted_total = attempted_total.saturating_add(solver.get_attempted_nonces());
+        attempted_total = attempted_total.saturating_add(solver.attempted_nonces());
     }
     let elapsed = started.elapsed().as_secs_f64();
     anyhow::ensure!(

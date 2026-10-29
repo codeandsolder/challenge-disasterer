@@ -94,7 +94,7 @@ impl crate::solver::Solver for SingleBlockSolver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -227,7 +227,7 @@ impl crate::solver::Solver for DoubleBlockSolver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -334,7 +334,7 @@ impl crate::solver::Solver for BinarySolver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -519,7 +519,7 @@ impl crate::solver::Solver for GoAwaySolver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -578,7 +578,7 @@ impl CerberusSolver {
     }
 
     /// Get the attempted nonces.
-    pub fn get_attempted_nonces(&self) -> u64 {
+    pub fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 }
@@ -629,7 +629,7 @@ impl crate::solver::Solver for CerberusSolver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -870,7 +870,7 @@ impl crate::solver::Solver for AltchaSha256Solver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -906,7 +906,7 @@ mod tests {
                     .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
                     .is_none()
             );
-            assert_eq!(solver.get_attempted_nonces(), limit);
+            assert_eq!(solver.attempted_nonces(), limit);
         }
     }
 
@@ -919,7 +919,7 @@ mod tests {
                     .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
                     .is_none()
             );
-            assert_eq!(solver.get_attempted_nonces(), 1);
+            assert_eq!(solver.attempted_nonces(), 1);
 
             solver.set_limit(9);
             assert!(
@@ -927,7 +927,7 @@ mod tests {
                     .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
                     .is_none()
             );
-            assert_eq!(solver.get_attempted_nonces(), 9);
+            assert_eq!(solver.attempted_nonces(), 9);
         }
 
         let salt = [b'a'; 32];
@@ -1016,7 +1016,7 @@ mod tests {
                 .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(0, u64::MAX)
                 .is_none()
         );
-        assert_eq!(solver.get_attempted_nonces(), 17);
+        assert_eq!(solver.attempted_nonces(), 17);
     }
 
     #[test]

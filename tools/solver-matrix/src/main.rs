@@ -91,7 +91,7 @@ where
         self.set_limit(limit);
     }
     fn attempted(&self) -> u64 {
-        self.get_attempted_nonces()
+        self.attempted_nonces()
     }
     fn solve_dyn_local(&mut self, target: u64, ty: u8, mask: u64) -> Option<(u64, [u32; 8])> {
         self.solve_dyn(target, ty, mask)
@@ -792,7 +792,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             0,
             mask,
             SOLVE_TYPE_MASK,
-            solver.get_attempted_nonces(),
+            solver.attempted_nonces(),
             elapsed,
             solved.map(|x| (x.nonce, x.hash)),
             &adapter,
@@ -829,7 +829,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
                 0,
                 mask,
                 SOLVE_TYPE_MASK,
-                solver.get_attempted_nonces(),
+                solver.attempted_nonces(),
                 elapsed,
                 solved.map(|x| (x.nonce, x.hash)),
                 &adapter,
@@ -863,7 +863,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             0,
             anubis_sha_mask,
             SOLVE_TYPE_MASK,
-            solver.get_attempted_nonces(),
+            solver.attempted_nonces(),
             elapsed,
             solved.map(|x| (x.nonce, x.hash)),
             &adapter,
@@ -904,7 +904,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             target,
             u64::MAX,
             SOLVE_TYPE_GT,
-            solver.get_attempted_nonces(),
+            solver.attempted_nonces(),
             elapsed,
             solved.map(|x| (x.nonce, x.hash)),
             &adapter,
@@ -939,7 +939,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             cap_target,
             cap_mask,
             SOLVE_TYPE_MASK,
-            solver.get_attempted_nonces(),
+            solver.attempted_nonces(),
             elapsed,
             solved.map(|x| (x.nonce, x.hash)),
             &adapter,
@@ -971,7 +971,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             0,
             mask,
             SOLVE_TYPE_MASK,
-            solver.get_attempted_nonces(),
+            solver.attempted_nonces(),
             elapsed,
             solved.map(|x| (x.nonce, x.hash)),
             &adapter,
@@ -1003,7 +1003,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             0,
             legacy_mask,
             SOLVE_TYPE_MASK,
-            solver.get_attempted_nonces(),
+            solver.attempted_nonces(),
             elapsed,
             solved.map(|x| (x.nonce, x.hash)),
             &adapter,
@@ -1034,7 +1034,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             0,
             mask,
             SOLVE_TYPE_MASK,
-            solver.get_attempted_nonces(),
+            solver.attempted_nonces(),
             elapsed,
             solved.map(|x| (x.nonce, x.hash)),
             &adapter,
@@ -1071,7 +1071,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
                 0,
                 mask,
                 SOLVE_TYPE_MASK,
-                solver.get_attempted_nonces(),
+                solver.attempted_nonces(),
                 elapsed,
                 solved.map(|x| (x.nonce, x.hash)),
                 &adapter,

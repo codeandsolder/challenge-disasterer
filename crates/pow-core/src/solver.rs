@@ -42,10 +42,10 @@ macro_rules! impl_decimal_solver {
                 }
             }
 
-            fn get_attempted_nonces(&self) -> u64 {
+            fn attempted_nonces(&self) -> u64 {
                 match self {
-                    Self::SingleBlock(solver) => solver.get_attempted_nonces(),
-                    Self::DoubleBlock(solver) => solver.get_attempted_nonces(),
+                    Self::SingleBlock(solver) => solver.attempted_nonces(),
+                    Self::DoubleBlock(solver) => solver.attempted_nonces(),
                 }
             }
 
@@ -162,11 +162,11 @@ impl<O: Copy, T: CpuIDToken, M, S: Solver<Output = O> + From<M>, F: Solver<Outpu
             Self::Fallback { solver, .. } => solver.set_limit(limit),
         }
     }
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         match self {
             #[cfg(feature = "runtime-dispatch")]
-            Self::Taken { solver, .. } => solver.get_attempted_nonces(),
-            Self::Fallback { solver, .. } => solver.get_attempted_nonces(),
+            Self::Taken { solver, .. } => solver.attempted_nonces(),
+            Self::Fallback { solver, .. } => solver.attempted_nonces(),
         }
     }
 
@@ -222,7 +222,7 @@ pub trait Solver {
     fn set_limit(&mut self, limit: u64);
 
     /// Get the attempted nonces.
-    fn get_attempted_nonces(&self) -> u64;
+    fn attempted_nonces(&self) -> u64;
 }
 
 /// A dyn-dispatching wrapper for Solver
@@ -902,7 +902,7 @@ pub(crate) mod tests {
                 .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(target, mask)
                 .is_none()
         );
-        assert_eq!(solver.get_attempted_nonces(), 1);
+        assert_eq!(solver.attempted_nonces(), 1);
 
         solver.set_limit(u64::from(target_nonce) + 1);
         let (nonce, hash) = solver
@@ -918,6 +918,6 @@ pub(crate) mod tests {
             ])
         });
         assert_eq!(hash, expected);
-        assert_eq!(solver.get_attempted_nonces(), u64::from(target_nonce) + 1);
+        assert_eq!(solver.attempted_nonces(), u64::from(target_nonce) + 1);
     }
 }

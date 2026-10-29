@@ -72,11 +72,11 @@ macro_rules! timed_current {
             $variant
         );
         anyhow::ensure!(
-            solver.get_attempted_nonces() == $limit,
+            solver.attempted_nonces() == $limit,
             "current {} {} attempted {} != {}",
             $protocol,
             $variant,
-            solver.get_attempted_nonces(),
+            solver.attempted_nonces(),
             $limit
         );
         emit("current", $protocol, $variant, "auto", $sample, $limit, ns);
@@ -106,11 +106,11 @@ macro_rules! timed_legacy {
             $variant
         );
         anyhow::ensure!(
-            solver.get_attempted_nonces() == $limit,
+            solver.attempted_nonces() == $limit,
             "legacy {} {} attempted {} != {}",
             $protocol,
             $variant,
-            solver.get_attempted_nonces(),
+            solver.attempted_nonces(),
             $limit
         );
         emit(

@@ -94,7 +94,7 @@ impl crate::solver::Solver for SingleBlockSolver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -227,7 +227,7 @@ impl crate::solver::Solver for DoubleBlockSolver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -334,7 +334,7 @@ impl crate::solver::Solver for BinarySolver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -519,7 +519,7 @@ impl crate::solver::Solver for GoAwaySolver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -617,7 +617,7 @@ impl crate::solver::Solver for CerberusSolver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -855,7 +855,7 @@ impl crate::solver::Solver for AltchaSha256Solver {
         self.limit = limit;
     }
 
-    fn get_attempted_nonces(&self) -> u64 {
+    fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -980,6 +980,6 @@ mod feature_guard_tests {
                 .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
                 .is_none()
         );
-        assert_eq!(solver.get_attempted_nonces(), 0);
+        assert_eq!(solver.attempted_nonces(), 0);
     }
 }
