@@ -19,7 +19,8 @@ const WORKSPACE_SCRATCH_OFFSET: u64 = 16;
 const SCRATCH_BYTES: u32 = 16_392;
 const SCRATCH_TRACE_BYTES: u32 = 16_384;
 
-// Register allocation.  The inherited cubin advertises 35 GPRs, R0..R34.
+// Register allocation. The current HashWX shell advertises 38 GPRs; generated
+// code intentionally stays within R0..R34, leaving three registers of metadata headroom.
 const WORKSPACE_LO: u8 = 0;
 const WORKSPACE_HI: u8 = 1;
 const NONCE_LO: u8 = 2;
@@ -36,6 +37,7 @@ const SCRATCH_HI: u8 = 31;
 const R8_LO: u8 = 32;
 const R8_HI: u8 = 33;
 const SHIFT: u8 = 34;
+const WORKSPACE_UR: u8 = 4;
 
 const P_BRANCH: Pred = Pred::P2;
 
@@ -103,22 +105,49 @@ fn shf_imm(
     code
 }
 
-fn ldg64(rd: u8, addr: u8, offset: u32, write_barrier: u8) -> u128 {
+fn uldc64_c0(rd: u8, offset: u32) -> u128 {
+    debug_assert_eq!(offset & 3, 0);
     let mut code = base(
-        0x381,
+        0xab9,
         Pred::PT,
+        Ctrl {
+            wait: 0,
+            read: 7,
+            write: 7,
+            yield_hint: true,
+            stall: 4,
+        },
+    );
+    code |= u128::from(rd) << 80;
+    code |= u128::from(offset / 4) << 104;
+    code | 0x0a00
+}
+
+fn ldg64_u32_uniform(
+    rd: u8,
+    index: u8,
+    base_ur: u8,
+    offset: u32,
+    guard: Pred,
+    write_barrier: u8,
+    stall: u8,
+) -> u128 {
+    let mut code = base(
+        0x981,
+        guard,
         Ctrl {
             wait: 0,
             read: 7,
             write: write_barrier,
             yield_hint: false,
-            stall: 4,
+            stall,
         },
     );
     code |= u128::from(rd) << 80;
-    code |= u128::from(addr) << 88;
+    code |= u128::from(index) << 88;
+    code |= u128::from(base_ur) << 96;
     code |= u128::from(offset) << 104;
-    code | 0x001e_eb00
+    code | 0x081e_eb00
 }
 
 fn stg64(addr: u8, src: u8, offset: u32) -> u128 {
@@ -292,32 +321,35 @@ impl Emitter {
     }
 
     fn hashwx_load_source(&mut self, src_lo: u8) {
-        // byte offset within the 16 KiB trace
+        // Byte offset within the 16 KiB trace and its aligned-down address.
         self.lop(SHIFT, src_lo, Src1::Imm(16_383), 0xc0, Pred::PT);
-        // aligned offset for the first load
         self.lop(ADDR_LO, SHIFT, Src1::Imm(0xffff_fff8), 0xc0, Pred::PT);
-        self.hashwx_addr_from_u32(ADDR_LO);
-        // The GPR-pair address is consumed by LDG immediately afterwards.  Keep
-        // an explicit dependency gap here while the prototype scheduler is still
-        // hand-authored; sanitizer otherwise masks a real at-speed address hazard.
-        for _ in 0..6 {
-            self.emit(nop(1));
-        }
-        self.emit(ldg64(MEM_LO, ADDR_LO, 0, 2));
-        self.emit(ldg64(24, ADDR_LO, 8, 3));
-        self.emit(base(
-            0x918,
+
+        // Match ptxas's robust SM75 addressing shape for a dynamic unaligned
+        // u64 load: 32-bit byte offset + uniform 64-bit base.  The previous
+        // GPR-pair IADD3/IADD3.X -> LDG path needed six artificial NOPs and
+        // still showed at-speed dependency failures hidden by sanitizer.
+        self.emit(ldg64_u32_uniform(
+            MEM_LO,
+            ADDR_LO,
+            WORKSPACE_UR,
+            WORKSPACE_SCRATCH_OFFSET as u32,
             Pred::PT,
-            Ctrl {
-                wait: 0b1100,
-                read: 7,
-                write: 7,
-                yield_hint: false,
-                stall: 1,
-            },
+            2,
+            4,
+        ));
+        self.emit(ldg64_u32_uniform(
+            24,
+            ADDR_LO,
+            WORKSPACE_UR,
+            WORKSPACE_SCRATCH_OFFSET as u32 + 8,
+            Pred::PT,
+            3,
+            1,
         ));
 
-        // shift count in bits, 0..56
+        // Shift count in bits, 0..56.  This independent arithmetic fills load
+        // latency; the first consumers below wait on the exact LDG barriers.
         self.lop(SHIFT, SHIFT, Src1::Imm(7), 0xc0, Pred::PT);
         self.emit(imad(
             false,
@@ -337,9 +369,9 @@ impl Emitter {
                 stall: 4,
             },
         ));
+
         // Keep the alignment predicate out of the funnel itself.  Compute both
         // halves unconditionally, then select the original aligned load for s=0.
-        // This avoids predicate -> guarded-SHF scheduling sensitivity on SM75.
         self.mov(ADDR_HI, Src1::Reg(r(SHIFT)), Pred::PT);
         self.emit(isetp(
             Cmp::Ne,
@@ -374,7 +406,13 @@ impl Emitter {
             r(ADDR_HI),
             r(MEM_HI),
             Pred::PT,
-            Ctrl::standard(5),
+            Ctrl {
+                wait: 0b000100,
+                read: 7,
+                write: 7,
+                yield_hint: false,
+                stall: 2,
+            },
         ));
         self.emit(shf_reg(
             ShiftMode::RightU32Hi,
@@ -383,7 +421,7 @@ impl Emitter {
             r(ADDR_HI),
             r(MEM_HI),
             Pred::PT,
-            Ctrl::standard(5),
+            Ctrl::standard(2),
         ));
         self.emit(shf_reg(
             ShiftMode::LeftU64Hi,
@@ -392,7 +430,13 @@ impl Emitter {
             r(SHIFT),
             r(25),
             Pred::PT,
-            Ctrl::standard(5),
+            Ctrl {
+                wait: 0b001000,
+                read: 7,
+                write: 7,
+                yield_hint: false,
+                stall: 2,
+            },
         ));
         // ADDR_HI is dead as the saved right-shift amount after the two SHF.Rs.
         self.emit(shf_reg(
@@ -402,7 +446,7 @@ impl Emitter {
             r(SHIFT),
             Reg::Z,
             Pred::PT,
-            Ctrl::standard(5),
+            Ctrl::standard(2),
         ));
         self.lop(26, 26, Src1::Reg(r(ADDR_HI)), 0xfc, Pred::PT);
         self.lop(27, 27, Src1::Reg(r(ADDR_LO)), 0xfc, Pred::PT);
@@ -646,6 +690,9 @@ fn generate(set: &ProgramSet, mode: BuildMode) -> anyhow::Result<Vec<u128>> {
         },
         Pred::PT,
     );
+    // Uniform copy of the same kernel parameter for scratch reads. ptxas uses
+    // this U32-offset + UR-base form for dynamic unaligned global loads on SM75.
+    e.emit(uldc64_c0(WORKSPACE_UR, 0x160));
     e.mov(
         NONCE_LO,
         Src1::Const {
@@ -815,6 +862,58 @@ mod tests {
     fn membar_cta_encoding_matches_ptxas_sm75() {
         let expected = (0x0000_0000_0000_7992_u128 << 64) | 0x000f_ea00_0000_0000_u128;
         assert_eq!(membar_cta(), expected);
+    }
+
+    #[test]
+    fn uniform_scratch_load_encodings_match_ptxas_sm75() {
+        let uldc = (0x0000_5800_0004_7ab9_u128 << 64) | 0x000f_c800_0000_0a00_u128;
+        assert_eq!(uldc64_c0(4, 0x160), uldc);
+
+        let first = (0x0000_1004_0008_7981_u128 << 64) | 0x000e_a800_081e_eb00_u128;
+        assert_eq!(ldg64_u32_uniform(8, 0, 4, 0x10, Pred::PT, 2, 4), first);
+
+        let second = (0x0000_1804_0002_0981_u128 << 64) | 0x000e_e200_081e_eb00_u128;
+        assert_eq!(ldg64_u32_uniform(2, 0, 4, 0x18, Pred::P0, 3, 1), second);
+
+        let right = (0x0000_0004_0807_0219_u128 << 64) | 0x004f_e400_0000_1209_u128;
+        assert_eq!(
+            shf_reg(
+                ShiftMode::RightU64,
+                r(7),
+                r(8),
+                r(4),
+                r(9),
+                Pred::P0,
+                Ctrl {
+                    wait: 0b000100,
+                    read: 7,
+                    write: 7,
+                    yield_hint: false,
+                    stall: 2,
+                },
+            ),
+            right
+        );
+
+        let left = (0x0000_0005_0203_0219_u128 << 64) | 0x008f_e400_0001_0203_u128;
+        assert_eq!(
+            shf_reg(
+                ShiftMode::LeftU64Hi,
+                r(3),
+                r(2),
+                r(5),
+                r(3),
+                Pred::P0,
+                Ctrl {
+                    wait: 0b001000,
+                    read: 7,
+                    write: 7,
+                    yield_hint: false,
+                    stall: 2,
+                },
+            ),
+            left
+        );
     }
 
     #[test]
