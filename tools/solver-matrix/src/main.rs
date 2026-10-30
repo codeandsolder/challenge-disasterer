@@ -7,8 +7,8 @@ use std::{
 use anyhow::Context as _;
 use anyhow::Result;
 use argon2::Argon2;
-use challenge_hashwx::{HashWx, Runtime as HashWxRuntime};
 use clap::{Parser, ValueEnum};
+use hashwx::HashWx;
 use pow_core::{
     build_mcaptcha_prefix, compute_mask_cerberus, compute_mask_goaway, compute_mask_zero_nibbles,
     compute_target_mcaptcha,
@@ -466,15 +466,9 @@ fn hashwx_seed(challenge: &[u8; 32], block: u64) -> [u8; 32] {
     digest.finalize().into()
 }
 
-fn run_hashwx_case(meta: &Meta, sample: u32, runtime: HashWxRuntime, args: &Args) -> Result<()> {
+fn run_hashwx_case(meta: &Meta, sample: u32, args: &Args) -> Result<()> {
     const NONCES_PER_HASH: u64 = 65_536;
     const DIFFICULTY: u64 = 1_000_000;
-    let implementation = match runtime {
-        HashWxRuntime::Compiled => "wasmtime-jit",
-        HashWxRuntime::Interpreted => "interpreted",
-    };
-    let mut hashwx =
-        HashWx::with_runtime(runtime).context("create HashWX runtime for solver matrix")?;
 
     let mut challenge = [0_u8; 32];
     challenge[..4].copy_from_slice(&sample.to_le_bytes());
@@ -489,19 +483,18 @@ fn run_hashwx_case(meta: &Meta, sample: u32, runtime: HashWxRuntime, args: &Args
     let started = Instant::now();
     let mut attempted = 0_u64;
     let mut found = None;
-    let mut current_block = u64::MAX;
+    let mut current_block = 0_u64;
+    let mut hashwx = HashWx::compile(&hashwx_seed(&challenge, current_block))
+        .context("compile HashWX matrix program")?;
     while attempted < args.limit {
         let nonce = attempted;
         let block = nonce / NONCES_PER_HASH;
         if block != current_block {
-            hashwx
-                .make(&hashwx_seed(&challenge, block))
-                .context("generate HashWX matrix function")?;
+            hashwx = HashWx::compile(&hashwx_seed(&challenge, block))
+                .context("compile HashWX matrix program")?;
             current_block = block;
         }
-        let hash = hashwx
-            .hash(nonce)
-            .context("execute HashWX matrix function")?;
+        let hash = hashwx.hash(nonce);
         attempted += 1;
         if hash <= benchmark_target {
             found = Some(nonce);
@@ -535,7 +528,7 @@ fn run_hashwx_case(meta: &Meta, sample: u32, runtime: HashWxRuntime, args: &Args
         commit: meta.commit.clone(),
         protocol: "capjs",
         variant: "hashwx-format2",
-        implementation: implementation.to_owned(),
+        implementation: "native-jit".to_owned(),
         accelerator: "cpu",
         sample,
         parameters: json!({
@@ -548,7 +541,7 @@ fn run_hashwx_case(meta: &Meta, sample: u32, runtime: HashWxRuntime, args: &Args
         work_per_second: rate(attempted, solve_ns),
         found: found.is_some(),
         nonce: found,
-        target_condition_ok: true,
+        target_condition_ok: matches!(args.mode, Mode::Throughput) || found.is_some(),
         gpu_adapter: None,
     })
 }
@@ -714,8 +707,7 @@ fn run_cpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
 
         // Cap.js format-2 HashWX at the production default reuse window. Include
         // per-seed program generation/JIT cost rather than benchmarking only exec().
-        run_hashwx_case(meta, sample, HashWxRuntime::Compiled, args)?;
-        run_hashwx_case(meta, sample, HashWxRuntime::Interpreted, args)?;
+        run_hashwx_case(meta, sample, args)?;
 
         // go-away: actual 32-byte challenge message, d20 ~= 2^20 expected candidates.
         let mut go_bytes = [0_u8; 32];

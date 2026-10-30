@@ -10,7 +10,7 @@ gpu = ["pow-core/gpu"]
 
 [dependencies]
 argon2 = { path = "../../crates/argon2-fast" }
-challenge-hashwx = { path = "../../crates/hashwx" }
+hashwx = { workspace = true }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 pow-core = { package = "challenge-pow-core", path = "../../crates/pow-core", features = ["json", "compare-64bit"] }

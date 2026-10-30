@@ -1328,7 +1328,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 1_000_000_000,
             router: false,
-            implementations: vec!["hashwx-wasmtime"],
+            implementations: vec!["hashwx-native"],
         },
         SolverCapability {
             solver: "mcaptcha",

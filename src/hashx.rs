@@ -1,7 +1,7 @@
 use anyhow::Context;
 #[cfg(feature = "gpu")]
 use anyhow::anyhow;
-use hashx::{HashX, HashXBuilder, RuntimeOption};
+use hashwx::{HashX, HashXError, HashXInstruction, HashXProgram};
 use serde::Deserialize;
 
 use crate::anubis::Answer;
@@ -186,14 +186,17 @@ pub(crate) fn difficulty_masks(difficulty: u32) -> (u32, u32) {
     (low, high)
 }
 
-pub(crate) fn build_compiled_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX)> {
+pub(crate) fn build_compiled_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX, HashXProgram)> {
     let mut candidate = seed.to_vec();
     let mut counter = 0_u32;
     loop {
-        let mut builder = HashXBuilder::new();
-        builder.runtime(RuntimeOption::CompileOnly);
-        if let Ok(hashx) = builder.build(&candidate) {
-            return Ok((candidate, hashx));
+        match HashXProgram::generate(&candidate) {
+            Ok(program) => {
+                let compiled = HashX::compile_program(&program).context("compile HashX program")?;
+                return Ok((candidate, compiled, program));
+            }
+            Err(HashXError::ProgramConstraints) => {}
+            Err(error) => return Err(error).context("generate HashX program"),
         }
         candidate.clear();
         candidate.extend_from_slice(seed);
@@ -205,134 +208,98 @@ pub(crate) fn build_compiled_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX
 
 #[cfg(feature = "gpu")]
 pub(crate) fn describe(seed: &[u8]) -> anyhow::Result<(HashX, GpuProgram)> {
-    let (usable_seed, compiled) = build_compiled_seed(seed)?;
-    let mut builder = HashXBuilder::new();
-    builder.runtime(RuntimeOption::InterpretOnly);
-    let interpreted = builder
-        .build(&usable_seed)
-        .context("build interpretable HashX")?;
-    let text = format!("{interpreted:?}");
-    let key_text = after(&text, "SipState[")?;
-    let key_end = key_text.find(']').context("HashX debug key terminator")?;
-    let mut key = [0_u64; 4];
-    for (index, value) in key_text[..key_end].split(',').enumerate() {
-        if index >= key.len() {
-            break;
-        }
-        key[index] = u64::from_str_radix(value.trim().trim_start_matches("0x"), 16)
-            .context("parse HashX key")?;
-    }
-    let mut program = Vec::with_capacity(512);
-    for line in text.lines().skip(1) {
-        let Some((_, rhs)) = line.split_once("]: ") else {
-            continue;
-        };
-        let s = rhs.trim();
-        let instr = if s.starts_with("Mul {") {
-            binary(s, 0)?
-        } else if s.starts_with("UMulH {") {
-            binary(s, 1)?
-        } else if s.starts_with("SMulH {") {
-            binary(s, 2)?
-        } else if s.starts_with("AddShift {") {
-            Instr {
-                op: 3,
-                dst: reg(s, "dst: R")?,
-                src: reg(s, "src: R")?,
-                imm: number::<u32>(s, "left_shift: ")?,
-            }
-        } else if s.starts_with("AddConst {") {
-            Instr {
-                op: 4,
-                dst: reg(s, "dst: R")?,
+    let (_usable_seed, compiled, generated) = build_compiled_seed(seed)?;
+    let mut instructions = Vec::with_capacity(generated.instructions().len());
+    for instruction in generated.instructions() {
+        let instruction = match instruction {
+            HashXInstruction::Mul { dst, src } => Instr {
+                op: GpuOp::Mul as u32,
+                dst: u32::from(dst.index()),
+                src: u32::from(src.index()),
+                imm: 0,
+            },
+            HashXInstruction::UMulH { dst, src } => Instr {
+                op: GpuOp::UMulH as u32,
+                dst: u32::from(dst.index()),
+                src: u32::from(src.index()),
+                imm: 0,
+            },
+            HashXInstruction::SMulH { dst, src } => Instr {
+                op: GpuOp::SMulH as u32,
+                dst: u32::from(dst.index()),
+                src: u32::from(src.index()),
+                imm: 0,
+            },
+            HashXInstruction::AddShift {
+                dst,
+                src,
+                left_shift,
+            } => Instr {
+                op: GpuOp::AddShift as u32,
+                dst: u32::from(dst.index()),
+                src: u32::from(src.index()),
+                imm: u32::from(*left_shift),
+            },
+            HashXInstruction::AddConst { dst, src } => Instr {
+                op: GpuOp::AddConst as u32,
+                dst: u32::from(dst.index()),
                 src: 0,
-                imm: number::<i32>(s, "src: ")? as u32,
-            }
-        } else if s.starts_with("Sub {") {
-            binary(s, 5)?
-        } else if s.starts_with("Xor {") {
-            binary(s, 6)?
-        } else if s.starts_with("XorConst {") {
-            Instr {
-                op: 7,
-                dst: reg(s, "dst: R")?,
+                imm: *src as u32,
+            },
+            HashXInstruction::Sub { dst, src } => Instr {
+                op: GpuOp::Sub as u32,
+                dst: u32::from(dst.index()),
+                src: u32::from(src.index()),
+                imm: 0,
+            },
+            HashXInstruction::Xor { dst, src } => Instr {
+                op: GpuOp::Xor as u32,
+                dst: u32::from(dst.index()),
+                src: u32::from(src.index()),
+                imm: 0,
+            },
+            HashXInstruction::XorConst { dst, src } => Instr {
+                op: GpuOp::XorConst as u32,
+                dst: u32::from(dst.index()),
                 src: 0,
-                imm: number::<i32>(s, "src: ")? as u32,
-            }
-        } else if s.starts_with("Rotate {") {
-            Instr {
-                op: 8,
-                dst: reg(s, "dst: R")?,
+                imm: *src as u32,
+            },
+            HashXInstruction::Rotate { dst, right_rotate } => Instr {
+                op: GpuOp::Rotate as u32,
+                dst: u32::from(dst.index()),
                 src: 0,
-                imm: number::<u32>(s, "right_rotate: ")?,
-            }
-        } else if s == "Target" {
-            Instr {
-                op: 9,
+                imm: u32::from(*right_rotate),
+            },
+            HashXInstruction::Target => Instr {
+                op: GpuOp::Target as u32,
                 dst: 0,
                 src: 0,
                 imm: 0,
-            }
-        } else if s.starts_with("Branch {") {
-            Instr {
-                op: 10,
+            },
+            HashXInstruction::Branch { mask } => Instr {
+                op: GpuOp::Branch as u32,
                 dst: 0,
                 src: 0,
-                imm: number::<u32>(s, "mask: ")?,
-            }
-        } else {
-            return Err(anyhow!("unparsed HashX instruction: {s}"));
+                imm: *mask,
+            },
         };
-        program.push(instr);
+        instructions.push(instruction);
     }
-    Ok((compiled, GpuProgram::new(key, program)?))
-}
-
-#[cfg(feature = "gpu")]
-fn after<'a>(text: &'a str, key: &str) -> anyhow::Result<&'a str> {
-    text.find(key)
-        .map(|offset| &text[offset + key.len()..])
-        .with_context(|| format!("missing {key} in HashX debug output"))
-}
-
-#[cfg(feature = "gpu")]
-fn reg(text: &str, key: &str) -> anyhow::Result<u32> {
-    after(text, key)?
-        .chars()
-        .next()
-        .and_then(|c| c.to_digit(10))
-        .context("parse HashX register")
-}
-
-#[cfg(feature = "gpu")]
-fn number<T: std::str::FromStr>(text: &str, key: &str) -> anyhow::Result<T>
-where
-    T::Err: std::error::Error + Send + Sync + 'static,
-{
-    let tail = after(text, key)?;
-    let end = tail.find([',', ' ', '}']).unwrap_or(tail.len());
-    tail[..end].parse().context("parse HashX immediate")
-}
-
-#[cfg(feature = "gpu")]
-fn binary(text: &str, op: u32) -> anyhow::Result<Instr> {
-    Ok(Instr {
-        op,
-        dst: reg(text, "dst: R")?,
-        src: reg(text, "src: R")?,
-        imm: 0,
-    })
+    Ok((
+        compiled,
+        GpuProgram::new(generated.register_key(), instructions)?,
+    ))
 }
 
 pub(crate) fn verify(challenge: &Challenge, answer: &Answer) -> anyhow::Result<bool> {
     challenge.validate()?;
     let seed = hex::decode(&challenge.data).context("decode HashX challenge")?;
-    let (_usable_seed, verifier) = build_compiled_seed(&seed)?;
+    let (_usable_seed, verifier, _program) = build_compiled_seed(&seed)?;
     let nonce = answer
         .nonce
         .parse::<u64>()
         .context("parse HashX answer nonce")?;
-    let hash = verifier.hash_to_bytes(nonce);
+    let hash = verifier.hash_bytes(nonce);
     Ok(hex::encode(hash) == answer.hash && valid_prefix(&hash, challenge.difficulty))
 }
 

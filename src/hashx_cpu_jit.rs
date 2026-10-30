@@ -21,7 +21,7 @@ pub fn solve(challenge: &Challenge, workers: usize) -> anyhow::Result<BackendRes
     anyhow::ensure!(workers > 0, "HashX JIT needs at least one worker");
     let seed = hex::decode(&challenge.data).context("decode HashX challenge")?;
     let started = Instant::now();
-    let (_usable_seed, verifier) = build_compiled_seed(&seed)?;
+    let (_usable_seed, verifier, _program) = build_compiled_seed(&seed)?;
     let verifier = Arc::new(verifier);
     let found = AtomicU64::new(u64::MAX);
     let worker_count = u64::try_from(workers).context("too many HashX JIT workers")?;
@@ -40,7 +40,7 @@ pub fn solve(challenge: &Challenge, workers: usize) -> anyhow::Result<BackendRes
                         if nonce >= SEARCH_LIMIT {
                             break;
                         }
-                        let word = hashx.hash_to_u64(nonce);
+                        let word = hashx.hash(nonce);
                         if word.swap_bytes().leading_zeros() >= challenge.difficulty {
                             if found
                                 .compare_exchange(
@@ -53,7 +53,7 @@ pub fn solve(challenge: &Challenge, workers: usize) -> anyhow::Result<BackendRes
                             {
                                 // Validate the winning nonce through the independently compiled
                                 // upstream instance before publishing it to the service.
-                                let hash = hashx.hash_to_bytes(nonce);
+                                let hash = hashx.hash_bytes(nonce);
                                 anyhow::ensure!(
                                     valid_prefix(&hash, challenge.difficulty),
                                     "HashX JIT returned nonce with invalid difficulty"
@@ -77,7 +77,7 @@ pub fn solve(challenge: &Challenge, workers: usize) -> anyhow::Result<BackendRes
 
     let nonce = found.load(Ordering::Relaxed);
     anyhow::ensure!(nonce != u64::MAX, "HashX JIT exhausted u32 nonce space");
-    let hash = verifier.hash_to_bytes(nonce);
+    let hash = verifier.hash_bytes(nonce);
     anyhow::ensure!(
         valid_prefix(&hash, challenge.difficulty),
         "HashX JIT result failed final validation"
@@ -98,6 +98,6 @@ mod tests {
     #[test]
     fn upstream_jit_is_shareable_for_validation() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<hashx::HashX>();
+        assert_send_sync::<hashwx::HashX>();
     }
 }

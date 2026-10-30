@@ -14,14 +14,13 @@ anyhow = "1"
 argon2 = { path = "crates/argon2-fast" }
 anubis-argon2 = { path = "crates/anubis-argon2" }
 altcha = { version = "=1.1.0", features = ["argon2", "scrypt"] }
-challenge-hashwx = { path = "crates/hashwx" }
 axum = "0.8"
 bytemuck = { version = "1", features = ["derive"], optional = true }
 clap = { version = "4", features = ["derive"] }
 cudarc = { version = "0.19.10", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-13040"], optional = true }
 hex = "0.4"
 itoa = "1"
-hashx = "0.10"
+hashwx = { workspace = true }
 num-bigint = "0.4"
 num_cpus = "1.17"
 pbkdf2 = "0.13"
@@ -51,6 +50,9 @@ unsafe_code = "deny"
 all = { level = "deny", priority = -1 }
 
 [workspace]
-members = ["crates/anubis-argon2", "crates/hashwx", "crates/pow-core", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench"]
+members = ["crates/anubis-argon2", "crates/pow-core", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench"]
 resolver = "3"
 exclude = ["crates/argon2-fast"]
+
+[workspace.dependencies]
+hashwx = { git = "https://github.com/codeandsolder/hashwx-rs", rev = "c6c010e255907012ca45f78a6c7973628d726338", default-features = false, features = ["native", "hashx"] }

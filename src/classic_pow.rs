@@ -11,7 +11,7 @@ use anyhow::{Context, anyhow, bail, ensure};
 use argon2::{
     Algorithm as Argon2Algorithm, Argon2, Params as Argon2Params, Version as Argon2Version,
 };
-use challenge_hashwx::HashWx;
+use hashwx::HashWx;
 use num_bigint::BigUint;
 use pbkdf2::pbkdf2_hmac;
 use pow_buster::{
@@ -442,7 +442,7 @@ async fn solve_cap_decimal_gpu(
         let mut solver = pow_buster::gpu::DecimalSolver::from(message);
         solver.set_limit(u64::MAX);
         let result = solver.solve::<SOLVE_TYPE_MASK>(gpu, target, mask).await?;
-        attempted = attempted.saturating_add(solver.get_attempted_nonces());
+        attempted = attempted.saturating_add(solver.attempted_nonces());
         if let Some(solution) = result {
             let nonce = fixup
                 .map(|value| value.fixup(solution.nonce))
@@ -560,25 +560,20 @@ fn solve_cap_v2_hashwx(payload: &CapV2HashWx) -> anyhow::Result<(Value, u64)> {
         .map_err(|_| anyhow!("Cap.js HashWX challenge must be 32 bytes"))?;
     let target = u64::MAX / payload.d;
     let per_seed = u64::from(payload.n);
-    let mut hashwx = HashWx::new()
-        .map_err(|source| anyhow!("HashWX runtime unavailable on this platform: {source}"))?;
+    let mut current_block = 0_u64;
+    let mut hashwx = HashWx::compile(&hashwx_seed(&challenge, current_block))
+        .context("compile Cap.js HashWX program")?;
     let mut attempted = 0_u64;
     let mut nonce = 0_u64;
-    let mut current_block = u64::MAX;
     loop {
         let block = nonce / per_seed;
         if block != current_block {
-            hashwx
-                .make(&hashwx_seed(&challenge, block))
-                .context("generate Cap.js HashWX function")?;
+            hashwx = HashWx::compile(&hashwx_seed(&challenge, block))
+                .context("compile Cap.js HashWX program")?;
             current_block = block;
         }
         attempted = attempted.saturating_add(1);
-        if hashwx
-            .hash(nonce)
-            .context("execute Cap.js HashWX function")?
-            <= target
-        {
+        if hashwx.hash(nonce) <= target {
             return Ok((json!({ "nonce": nonce.to_string() }), attempted));
         }
         if nonce == u64::MAX {
@@ -595,7 +590,7 @@ fn cap_v2_backend_name(sha_backend: Option<&str>, used_hashwx: bool, used_rsw: b
         backends.push(sha_backend);
     }
     if used_hashwx {
-        backends.push("hashwx-wasmtime");
+        backends.push("hashwx-native");
     }
     if used_rsw {
         backends.push("rsw");
@@ -1557,7 +1552,7 @@ mod tests {
         let salt = hex::decode(&parameters.salt).expect("fixed salt");
         let mut password = nonce;
         password.extend_from_slice(b"9007199254740991");
-        let derived = altcha_derive_string_key(&parameters, &salt, &password)
+        let derived = altcha_derive_key(&parameters, &salt, &password)
             .expect("derive max-safe-integer string counter");
         assert_eq!(
             hex::encode(derived),
