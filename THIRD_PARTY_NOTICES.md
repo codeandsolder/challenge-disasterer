@@ -32,4 +32,4 @@ SOFTWARE.
 Challenge-disasterer uses `codeandsolder/hashwx-rs` for the production HashWX and HashX native JIT implementations and for the immutable generated HashX IR consumed by accelerator backends:
 https://github.com/codeandsolder/hashwx-rs
 
-The crate combines original Rust backend work with compatibility code derived from tevador HashWX and the Tor Project Arti HashX implementation. It is distributed under LGPL-3.0-only; detailed provenance and the license text are maintained in the dependency repository.
+The crate combines original Rust backend work with compatibility code derived from tevador HashWX and the Tor Project Arti HashX implementation. It is distributed under LGPL-3.0-only; the corresponding license text is included at `THIRD_PARTY_LICENSES/hashwx-rs-LGPL-3.0-only.txt`, and detailed provenance is maintained in the dependency repository.
