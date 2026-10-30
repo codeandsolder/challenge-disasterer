@@ -45,6 +45,7 @@ const P_BRANCH: Pred = Pred::P2;
 enum BuildMode {
     InitOnly,
     WriteOnly,
+    FirstRead,
     Full,
 }
 
@@ -346,16 +347,15 @@ impl Emitter {
         self.mov(hi, Src1::Reg(r(25)), Pred::PT);
     }
 
-    fn hashwx_load_source(&mut self, src_lo: u8) {
-        // Byte offset within the 16 KiB trace and its aligned-down address.
-        self.lop(SHIFT, src_lo, Src1::Imm(16_383), 0xc0, Pred::PT);
-        // ptxas gives this GPR-index producer stall 8 before the dependent LDG.
-        // A generic stall-5 LOP here can feed a stale byte offset to the memory pipe
-        // at full speed; compute-sanitizer hides that timing bug by serializing work.
+    fn hashwx_load_source_impl(&mut self, src_lo: u8, capture: bool) {
+        // Aligned byte offset within the 16 KiB trace.  Compute it directly
+        // from the source register so the memory pipe never depends on a
+        // freshly-written temporary.  ptxas uses the same U32-index + UR-base
+        // address form on SM75.
         self.emit(lop3(
             r(ADDR_LO),
-            r(SHIFT),
-            Src1::Imm(0xffff_fff8),
+            r(src_lo),
+            Src1::Imm(0x3ff8),
             Reg::Z,
             0xc0,
             Pred::NPT,
@@ -363,10 +363,6 @@ impl Emitter {
             8,
         ));
 
-        // Match ptxas's robust SM75 addressing shape for a dynamic unaligned
-        // u64 load: 32-bit byte offset + uniform 64-bit base.  The previous
-        // GPR-pair IADD3/IADD3.X -> LDG path needed six artificial NOPs and
-        // still showed at-speed dependency failures hidden by sanitizer.
         self.emit(ldg64_u32_uniform(
             MEM_LO,
             ADDR_LO,
@@ -386,15 +382,18 @@ impl Emitter {
             1,
         ));
 
-        // Shift count in bits, 0..56.  This independent arithmetic fills load
-        // latency; the first consumers below wait on the exact LDG barriers.
-        self.lop(SHIFT, SHIFT, Src1::Imm(7), 0xc0, Pred::PT);
+        // Build the bit shift without a self-write -> MOV dependency.  This is
+        // the ptxas scheduling shape: multiply the original byte address by 8,
+        // fill that latency with the independent low-three-bit extraction, then
+        // mask the multiplied value to 0..56.  The previous sequence multiplied
+        // R34 in place and immediately MOVed it, so the MOV observed the old
+        // byte offset (3 rather than 24 in the reference case).
         self.emit(imad(
             false,
             false,
-            r(SHIFT),
+            r(ADDR_HI),
             None,
-            r(SHIFT),
+            r(src_lo),
             Src1::Imm(8),
             Reg::Z,
             None,
@@ -404,25 +403,32 @@ impl Emitter {
                 read: 7,
                 write: 7,
                 yield_hint: false,
-                stall: 4,
+                stall: 2,
             },
         ));
-
-        // Keep the alignment predicate out of the funnel itself.  Compute both
-        // halves unconditionally, then select the original aligned load for s=0.
-        self.mov(ADDR_HI, Src1::Reg(r(SHIFT)), Pred::PT);
+        self.lop(SHIFT, src_lo, Src1::Imm(7), 0xc0, Pred::PT);
+        self.emit(lop3(
+            r(ADDR_HI),
+            r(ADDR_HI),
+            Src1::Imm(0x38),
+            Reg::Z,
+            0xc0,
+            Pred::NPT,
+            Pred::PT,
+            4,
+        ));
         self.emit(isetp(
             Cmp::Ne,
             true,
             P_BRANCH,
             Pred::PT,
-            r(ADDR_HI),
+            r(SHIFT),
             Src1::Imm(0),
             Pred::PT,
             Pred::PT,
             4,
         ));
-        // SHIFT = 64 - s; ADDR_HI retains s until the right-shift pair is done.
+        // SHIFT = 64 - bit_shift; ADDR_HI retains bit_shift for SHF.R.
         self.emit(iadd3(
             r(SHIFT),
             None,
@@ -461,12 +467,15 @@ impl Emitter {
             Pred::PT,
             Ctrl::standard(2),
         ));
+        // Match ptxas's GPR funnel order exactly: left-low first (and wait
+        // for B's LDG barrier), then left-high.  This gives each SHF result an
+        // independent instruction of issue distance before its OR consumer.
         self.emit(shf_reg(
-            ShiftMode::LeftU64Hi,
-            r(ADDR_LO),
+            ShiftMode::LeftU32,
+            r(ADDR_HI),
             r(24),
             r(SHIFT),
-            r(25),
+            Reg::Z,
             Pred::PT,
             Ctrl {
                 wait: 0b001000,
@@ -476,18 +485,29 @@ impl Emitter {
                 stall: 2,
             },
         ));
-        // ADDR_HI is dead as the saved right-shift amount after the two SHF.Rs.
         self.emit(shf_reg(
-            ShiftMode::LeftU32,
-            r(ADDR_HI),
+            ShiftMode::LeftU64Hi,
+            r(ADDR_LO),
             r(24),
             r(SHIFT),
-            Reg::Z,
+            r(25),
             Pred::PT,
             Ctrl::standard(2),
         ));
         self.lop(26, 26, Src1::Reg(r(ADDR_HI)), 0xfc, Pred::PT);
         self.lop(27, 27, Src1::Reg(r(ADDR_LO)), 0xfc, Pred::PT);
+
+        if capture {
+            // Observe the production-timing first read only after both funnel
+            // ORs have issued, so the probe cannot hide an SHF->OR RAW hazard.
+            self.emit(nop(2));
+            self.emit(nop(2));
+            self.emit(stg64(WORKSPACE_LO, MEM_LO, 0));
+            self.emit(stg64(WORKSPACE_LO, 24, 8));
+            self.emit(stg64(WORKSPACE_LO, 26, 16));
+            self.emit(exit(2));
+        }
+
         self.emit(sel(
             r(MEM_LO),
             r(26),
@@ -504,6 +524,10 @@ impl Emitter {
             Pred::PT,
             5,
         ));
+    }
+
+    fn hashwx_load_source(&mut self, src_lo: u8) {
+        self.hashwx_load_source_impl(src_lo, false);
     }
 
     fn hashwx_op(&mut self, x: Instruction, memory: bool) {
@@ -687,11 +711,7 @@ impl Emitter {
     }
 }
 
-fn finish_debug(mut e: Emitter) -> anyhow::Result<Vec<u128>> {
-    // R8 is a convenient deterministic initialized value; debug stages only need
-    // to prove the control/memory prefix reaches EXIT without a GPU fault.
-    e.emit(stg64(WORKSPACE_LO, R8_LO, 0));
-    e.emit(exit(2));
+fn pad_debug(mut e: Emitter) -> anyhow::Result<Vec<u128>> {
     let natural_len = e.words.len();
     anyhow::ensure!(
         natural_len < HASHWX_TEXT_WORDS - 5,
@@ -705,6 +725,14 @@ fn finish_debug(mut e: Emitter) -> anyhow::Result<Vec<u128>> {
         e.emit(tail_nop());
     }
     Ok(e.words)
+}
+
+fn finish_debug(mut e: Emitter) -> anyhow::Result<Vec<u128>> {
+    // R8 is a convenient deterministic initialized value; debug stages only need
+    // to prove the control/memory prefix reaches EXIT without a GPU fault.
+    e.emit(stg64(WORKSPACE_LO, R8_LO, 0));
+    e.emit(exit(2));
+    pad_debug(e)
 }
 
 fn generate(set: &ProgramSet, mode: BuildMode) -> anyhow::Result<Vec<u128>> {
@@ -731,6 +759,7 @@ fn generate(set: &ProgramSet, mode: BuildMode) -> anyhow::Result<Vec<u128>> {
     // Uniform copy of the same kernel parameter for scratch reads. ptxas uses
     // this U32-offset + UR-base form for dynamic unaligned global loads on SM75.
     e.emit(uldc64_c0(WORKSPACE_UR, 0x160));
+
     e.mov(
         NONCE_LO,
         Src1::Const {
@@ -824,6 +853,20 @@ fn generate(set: &ProgramSet, mode: BuildMode) -> anyhow::Result<Vec<u128>> {
         }
         return Ok(e.words);
     }
+    if mode == BuildMode::FirstRead {
+        let first = &set.programs[0];
+        for &x in &first.body {
+            if matches!(x.op, Op::Rmcg) {
+                e.hashwx_op(x, true);
+                continue;
+            }
+            let (src_lo, _) = pair(x.src);
+            e.hashwx_load_source_impl(src_lo, true);
+            return pad_debug(e);
+        }
+        anyhow::bail!("first HashWX program has no memory-source instruction");
+    }
+
     e.hashwx_phase(&set.programs, true, false);
 
     e.sip([0, 1, 2, 3], Pred::PT);
@@ -869,6 +912,7 @@ pub(crate) fn build_debug_cubin(set: &ProgramSet, stage: u8) -> anyhow::Result<V
     let mode = match stage {
         0 => BuildMode::InitOnly,
         1 => BuildMode::WriteOnly,
+        2 => BuildMode::FirstRead,
         _ => BuildMode::Full,
     };
     let words = generate(set, mode)?;

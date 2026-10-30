@@ -7,6 +7,8 @@ use cudarc::{
 };
 use hashwx_core::ProgramSet;
 
+#[cfg(test)]
+use crate::hashx_sm75::hashwx::build_debug_cubin;
 use crate::hashx_sm75::hashwx::{build_solve_cubin, workspace_bytes};
 
 pub(crate) struct HashWxSm75Cuda {
@@ -59,6 +61,38 @@ impl HashWxSm75Cuda {
         Ok(u64::from_le_bytes(bytes))
     }
 
+    #[cfg(test)]
+    fn debug_first_read(&mut self, set: &ProgramSet, nonce: u64) -> anyhow::Result<[u64; 3]> {
+        let cubin = build_debug_cubin(set, 2)?;
+        let module = self
+            .context
+            .load_module(Ptx::from_binary(cubin))
+            .context("load generated SM75 HashWX first-read cubin")?;
+        let function = module
+            .load_function("kern")
+            .context("load SM75 HashWX first-read kernel")?;
+        let config = LaunchConfig {
+            grid_dim: (1, 1, 1),
+            block_dim: (1, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        self.launch(&function, nonce as u32, (nonce >> 32) as u32, 0, config)?;
+
+        let output = self.workspace.slice(..24);
+        let mut bytes = [0_u8; 24];
+        self.stream
+            .memcpy_dtoh(&output, &mut bytes)
+            .context("queue SM75 HashWX first-read probe")?;
+        self.stream
+            .synchronize()
+            .context("synchronize SM75 HashWX first-read probe")?;
+        Ok([
+            u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
+            u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+            u64::from_le_bytes(bytes[16..24].try_into().unwrap()),
+        ])
+    }
+
     #[allow(unsafe_code)]
     fn launch(
         &mut self,
@@ -89,6 +123,32 @@ impl HashWxSm75Cuda {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires an SM75 NVIDIA GPU"]
+    fn first_read_matches_reference() -> anyhow::Result<()> {
+        let context = CudaContext::new(0).context("open CUDA device 0")?;
+        anyhow::ensure!(
+            context.compute_capability()? == (7, 5),
+            "test requires SM75, got {:?}",
+            context.compute_capability()?
+        );
+        let mut gpu = HashWxSm75Cuda::create(context)?;
+        let text = b"This is a test seed for hashwx";
+        let mut seed = [0_u8; 32];
+        seed[..text.len()].copy_from_slice(text);
+        let set = hashwx_core::generate(&seed);
+        let actual = gpu.debug_first_read(&set, 0)?;
+        assert_eq!(
+            actual,
+            [
+                0x4307_e762_ae27_a940,
+                0xe8f4_bb9b_593e_a2cd,
+                0x3ea2_cd43_07e7_62ae,
+            ]
+        );
+        Ok(())
+    }
 
     #[test]
     #[ignore = "requires an SM75 NVIDIA GPU"]
