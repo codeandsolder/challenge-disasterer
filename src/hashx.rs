@@ -1,7 +1,9 @@
 use anyhow::Context;
 #[cfg(feature = "gpu")]
 use anyhow::anyhow;
-use hashwx::{HashX, HashXError, HashXInstruction, HashXProgram};
+#[cfg(feature = "gpu")]
+use hashwx::HashXInstruction;
+use hashwx::{HashX, HashXError, HashXProgram};
 use serde::Deserialize;
 
 use crate::anubis::Answer;

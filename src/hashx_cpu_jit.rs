@@ -51,8 +51,8 @@ pub fn solve(challenge: &Challenge, workers: usize) -> anyhow::Result<BackendRes
                                 )
                                 .is_ok()
                             {
-                                // Validate the winning nonce through the independently compiled
-                                // upstream instance before publishing it to the service.
+                                // Validate the winning nonce through the full-digest entry point
+                                // before publishing it to the service.
                                 let hash = hashx.hash_bytes(nonce);
                                 anyhow::ensure!(
                                     valid_prefix(&hash, challenge.difficulty),
@@ -96,7 +96,7 @@ pub fn solve(challenge: &Challenge, workers: usize) -> anyhow::Result<BackendRes
 mod tests {
 
     #[test]
-    fn upstream_jit_is_shareable_for_validation() {
+    fn native_jit_is_shareable_for_validation() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<hashwx::HashX>();
     }
