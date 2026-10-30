@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 
 [features]
 default = ["gpu"]
-gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "pow-buster/gpu", "pow-buster/compare-64bit"]
+gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "dep:hashwx-core", "pow-buster/gpu", "pow-buster/compare-64bit"]
 
 [dependencies]
 anyhow = "1"
@@ -21,6 +21,7 @@ cudarc = { version = "0.19.10", default-features = false, features = ["std", "dr
 hex = "0.4"
 itoa = "1"
 hashx = "0.10"
+hashwx-core = { package = "hashwx", git = "https://github.com/codeandsolder/hashwx-rs", rev = "cccff9f86541f49201b3f9b27b542b4f2213a4de", default-features = false, optional = true }
 num-bigint = "0.4"
 num_cpus = "1.17"
 pbkdf2 = "0.13"

@@ -5,6 +5,8 @@ mod anubis_wasm;
 mod classic_pow;
 #[cfg(feature = "gpu")]
 mod gpu;
+#[cfg(feature = "gpu")]
+mod hashwx_sm75_cuda;
 mod hashx;
 mod hashx_cpu_jit;
 #[cfg(feature = "gpu")]

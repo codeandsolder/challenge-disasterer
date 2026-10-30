@@ -4,6 +4,9 @@
 use crate::hashx::{GpuOp, GpuProgram, Instr};
 use anyhow::Context;
 
+#[path = "hashx_sm75/hashwx.rs"]
+pub(crate) mod hashwx;
+
 const TEXT_OFFSET: usize = 0x380;
 const TEXT_SIZE: usize = 0x20000;
 const TEXT_WORDS: usize = TEXT_SIZE / 16;

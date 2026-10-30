@@ -468,6 +468,7 @@ dependencies = [
  "challenge-pow-core",
  "clap",
  "cudarc",
+ "hashwx",
  "hashx",
  "hex",
  "itoa",
@@ -1435,6 +1436,11 @@ dependencies = [
  "serde",
  "serde_core",
 ]
+
+[[package]]
+name = "hashwx"
+version = "0.1.0"
+source = "git+https://github.com/codeandsolder/hashwx-rs?rev=cccff9f86541f49201b3f9b27b542b4f2213a4de#cccff9f86541f49201b3f9b27b542b4f2213a4de"
 
 [[package]]
 name = "hashx"
