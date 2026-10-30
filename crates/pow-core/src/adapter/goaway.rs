@@ -75,7 +75,7 @@ impl GoAwayConfig {
             } else {
                 solver.solve::<{ SOLVE_TYPE_LEADING_ZERO_BITS }>(self.difficulty, u64::MAX)
             };
-            attempted_nonces += solver.get_attempted_nonces();
+            attempted_nonces += solver.attempted_nonces();
             if let Some(res) = res {
                 return (Some(res), attempted_nonces);
             }

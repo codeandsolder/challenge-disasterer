@@ -1258,7 +1258,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             cap_v2_target,
             cap_v2_mask,
             SOLVE_TYPE_MASK,
-            solver.get_attempted_nonces(),
+            solver.attempted_nonces(),
             elapsed,
             solved.map(|x| (x.nonce, x.hash)),
             &adapter,
