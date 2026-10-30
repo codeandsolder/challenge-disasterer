@@ -57,6 +57,22 @@ enum ShiftMode {
     LeftU32,
 }
 
+fn assert_even_pair_start(reg: u8, role: &str) {
+    assert_eq!(
+        reg & 1,
+        0,
+        "{role} must start at an even register, got R{reg}"
+    );
+}
+
+fn assert_gpr_pair(lo: Reg, hi: Reg, role: &str) {
+    let (Reg::R(lo), Reg::R(hi)) = (lo, hi) else {
+        panic!("{role} must use a GPR pair");
+    };
+    assert_even_pair_start(lo, role);
+    assert_eq!(hi, lo + 1, "{role} must be adjacent, got R{lo}:R{hi}");
+}
+
 impl ShiftMode {
     const fn bits(self) -> u128 {
         match self {
@@ -78,6 +94,9 @@ fn shf_reg(
     guard: Pred,
     ctrl: Ctrl,
 ) -> u128 {
+    if matches!(mode, ShiftMode::RightU64 | ShiftMode::LeftU64Hi) {
+        assert_gpr_pair(rs0, rs2, "64-bit SHF source");
+    }
     let mut code = base(0x219, guard, ctrl);
     code |= u128::from(rd.bits()) << 80;
     code |= u128::from(rs0.bits()) << 88;
@@ -106,7 +125,8 @@ fn shf_imm(
 }
 
 fn uldc64_c0(rd: u8, offset: u32) -> u128 {
-    debug_assert_eq!(offset & 3, 0);
+    assert_even_pair_start(rd, "ULDC.64 destination");
+    assert_eq!(offset & 7, 0, "ULDC.64 offset must be 8-byte aligned");
     let mut code = base(
         0xab9,
         Pred::PT,
@@ -132,6 +152,9 @@ fn ldg64_u32_uniform(
     write_barrier: u8,
     stall: u8,
 ) -> u128 {
+    assert_even_pair_start(rd, "LDG.E.64 destination");
+    assert_even_pair_start(base_ur, "LDG.E.64 uniform base");
+    assert_eq!(offset & 7, 0, "LDG.E.64 offset must be 8-byte aligned");
     let mut code = base(
         0x981,
         guard,
@@ -151,6 +174,9 @@ fn ldg64_u32_uniform(
 }
 
 fn stg64(addr: u8, src: u8, offset: u32) -> u128 {
+    assert_even_pair_start(addr, "STG.E.64 address");
+    assert_even_pair_start(src, "STG.E.64 source");
+    assert_eq!(offset & 7, 0, "STG.E.64 offset must be 8-byte aligned");
     let mut code = base(0x386, Pred::PT, Ctrl::standard(4));
     code |= u128::from(addr) << 88;
     code |= u128::from(src) << 96;
@@ -323,7 +349,19 @@ impl Emitter {
     fn hashwx_load_source(&mut self, src_lo: u8) {
         // Byte offset within the 16 KiB trace and its aligned-down address.
         self.lop(SHIFT, src_lo, Src1::Imm(16_383), 0xc0, Pred::PT);
-        self.lop(ADDR_LO, SHIFT, Src1::Imm(0xffff_fff8), 0xc0, Pred::PT);
+        // ptxas gives this GPR-index producer stall 8 before the dependent LDG.
+        // A generic stall-5 LOP here can feed a stale byte offset to the memory pipe
+        // at full speed; compute-sanitizer hides that timing bug by serializing work.
+        self.emit(lop3(
+            r(ADDR_LO),
+            r(SHIFT),
+            Src1::Imm(0xffff_fff8),
+            Reg::Z,
+            0xc0,
+            Pred::NPT,
+            Pred::PT,
+            8,
+        ));
 
         // Match ptxas's robust SM75 addressing shape for a dynamic unaligned
         // u64 load: 32-bit byte offset + uniform 64-bit base.  The previous
@@ -862,6 +900,12 @@ mod tests {
     fn membar_cta_encoding_matches_ptxas_sm75() {
         let expected = (0x0000_0000_0000_7992_u128 << 64) | 0x000f_ea00_0000_0000_u128;
         assert_eq!(membar_cta(), expected);
+    }
+
+    #[test]
+    #[should_panic(expected = "STG.E.64 source must start at an even register")]
+    fn stg64_rejects_odd_source_register_pair() {
+        let _ = stg64(0, 7, 8);
     }
 
     #[test]
