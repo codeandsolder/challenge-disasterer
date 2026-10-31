@@ -73,9 +73,12 @@ async function runLegacy(challengeCount, challengeDifficulty, challengeSize) {
   console.log(`Cap.js format1: PASS count=${challengeCount} difficulty=${challengeDifficulty} solve_ms=${body.solve_ms.toFixed(3)}`);
 }
 
-async function runV2(name, options) {
+async function runV2(name, options, expectedImplementation = null) {
   const issued = await generateChallenge(secret, { format: 2, scope, ...options });
   const body = await solve(issued);
+  if (expectedImplementation !== null && body.implementation !== expectedImplementation) {
+    throw new Error(`expected ${expectedImplementation} for ${name}, got ${body.implementation}`);
+  }
   const solutions = body.answer.solutions;
   if (!Array.isArray(solutions) || solutions.length !== issued.challenges.length) {
     throw new Error(`bad ${name} solution count: ${JSON.stringify(body.answer)}`);
@@ -100,13 +103,13 @@ await runV2("sha256-pow", {
   challengeDifficulty: 3,
   challengeSize: 24,
 });
-await runV2("rsw", { protocols: ["rsw"], keypair, t: 512 });
+await runV2("rsw", { protocols: ["rsw"], keypair, t: 512 }, "rsw");
 await runV2("hashwx", {
   protocols: ["hashwx"],
   hashwxDifficulty: 64,
   hashwxChallengeCount: 2,
   hashwxNoncesPerHash: 16,
-});
+}, "hashwx-native");
 await runV2("mixed", {
   protocols: ["sha256-pow", "rsw", "hashwx"],
   keypair,
@@ -117,7 +120,7 @@ await runV2("mixed", {
   hashwxDifficulty: 32,
   hashwxChallengeCount: 1,
   hashwxNoncesPerHash: 16,
-});
+}, `${implementation}+hashwx-native+rsw`);
 
 if (process.env.CAPJS_PRODUCTION_SHAPE === "1") {
   // Keep this out of the hosted backend matrix: the point is to validate the
