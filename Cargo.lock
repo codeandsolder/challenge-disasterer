@@ -1190,7 +1190,7 @@ dependencies = [
 [[package]]
 name = "hashwx"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/hashwx-rs?rev=a77d0e89fdfef5e36fc65081a620139fa1ddb08f#a77d0e89fdfef5e36fc65081a620139fa1ddb08f"
+source = "git+https://github.com/codeandsolder/hashwx-rs?rev=ab3750ccd3106c1122d2c8cc8c6c8cfc8e47a210#ab3750ccd3106c1122d2c8cc8c6c8cfc8e47a210"
 dependencies = [
  "arrayvec",
  "blake2 0.10.6",

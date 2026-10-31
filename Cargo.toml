@@ -55,4 +55,4 @@ resolver = "3"
 exclude = ["crates/argon2-fast"]
 
 [workspace.dependencies]
-hashwx = { git = "https://github.com/codeandsolder/hashwx-rs", rev = "a77d0e89fdfef5e36fc65081a620139fa1ddb08f", default-features = false, features = ["native", "hashx"] }
+hashwx = { git = "https://github.com/codeandsolder/hashwx-rs", rev = "ab3750ccd3106c1122d2c8cc8c6c8cfc8e47a210", default-features = false, features = ["native", "hashx"] }
