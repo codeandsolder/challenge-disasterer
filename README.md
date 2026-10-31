@@ -234,8 +234,9 @@ target/release/challenge-disasterer \
 
 External answers are not trusted merely because calibration selected them:
 automatic routes validate them locally before returning them. HashX is checked
-against the upstream HashX implementation and SHA answers against the local
-Anubis verifier. Concrete routes are kept in calibrated fastest-first order; if
+with the same audited `hashwx-rs` program/verifier used by the local solver, and
+SHA answers against the local Anubis verifier. Concrete routes are kept in
+calibrated fastest-first order; if
 an external provider or local backend fails, the router tries the next calibrated
 candidate before falling back to the legacy policy.
 
