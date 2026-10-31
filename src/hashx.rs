@@ -210,7 +210,7 @@ pub(crate) fn build_compiled_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX
 
 #[cfg(feature = "gpu")]
 pub(crate) fn describe(seed: &[u8]) -> anyhow::Result<(HashX, GpuProgram)> {
-    let (_usable_seed, compiled, generated) = build_compiled_seed(seed)?;
+    let (_usable_seed, compiled, generated) = build_compiled_seed(&seed)?;
     let mut instructions = Vec::with_capacity(generated.instructions().len());
     for instruction in generated.instructions() {
         let instruction = match instruction {
@@ -310,4 +310,29 @@ pub(crate) fn valid_prefix(hash: &[u8; 32], difficulty: u32) -> bool {
     let rem = difficulty % 8;
     hash[..whole].iter().all(|&byte| byte == 0)
         && (rem == 0 || hash[whole] & (0xff_u8 << (8 - rem)) == 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_seed_retries_with_one_authoritative_program() -> anyhow::Result<()> {
+        let seed = [0xf9_u8, 0x05, 0x00, 0x00];
+        assert!(matches!(
+            HashXProgram::generate(&seed),
+            Err(HashXError::ProgramConstraints)
+        ));
+
+        let (usable_seed, compiled, program) = build_compiled_seed(&seed)?;
+        assert_ne!(usable_seed.as_slice(), seed);
+        assert!(usable_seed.starts_with(&seed));
+        assert_eq!(usable_seed.len(), seed.len() + size_of::<u32>());
+
+        let interpreted = HashX::interpret_program(&program);
+        for nonce in [0, 1, 123_456, u64::MAX] {
+            assert_eq!(compiled.hash_bytes(nonce), interpreted.hash_bytes(nonce));
+        }
+        Ok(())
+    }
 }
