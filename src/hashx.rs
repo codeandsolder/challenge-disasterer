@@ -210,7 +210,7 @@ pub(crate) fn build_compiled_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX
 
 #[cfg(feature = "gpu")]
 pub(crate) fn describe(seed: &[u8]) -> anyhow::Result<(HashX, GpuProgram)> {
-    let (_usable_seed, compiled, generated) = build_compiled_seed(&seed)?;
+    let (_usable_seed, compiled, generated) = build_compiled_seed(seed)?;
     let mut instructions = Vec::with_capacity(generated.instructions().len());
     for instruction in generated.instructions() {
         let instruction = match instruction {
