@@ -9,7 +9,7 @@ default = ["gpu"]
 gpu = ["pow-core/gpu"]
 
 [dependencies]
-argon2 = { path = "../../crates/argon2-fast" }
+argon2 = { path = "../../vendor/argon2-fast" }
 hashwx = { workspace = true }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
