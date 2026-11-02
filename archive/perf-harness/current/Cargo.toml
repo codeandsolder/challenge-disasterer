@@ -1,0 +1,11 @@
+[package]
+name="pow-perf-current"
+version="0.1.0"
+edition="2024"
+[dependencies]
+pow_core={package="challenge-pow-core",path="/home/jan/projects/challenge-disasterer-pow-matrix/crates/pow-core",features=["gpu","compare-64bit"]}
+anyhow="1"
+pollster="0.4"
+[features]
+gpu=[]
+full=[]
