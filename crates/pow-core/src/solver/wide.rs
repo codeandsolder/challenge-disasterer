@@ -12,6 +12,7 @@ fn usize_u32(value: usize) -> u32 {
 }
 
 #[inline]
+#[cfg(target_arch = "x86_64")]
 fn usize_u64(value: usize) -> u64 {
     let Ok(value) = u64::try_from(value) else {
         unreachable!("SIMD/search index exceeds u64");
@@ -369,10 +370,20 @@ pub fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
             } else {
                 target_match::<LANES, TYPE>(state[0], state[1], target, mask)
             };
+            let valid_lanes = usize::try_from(
+                limit
+                    .saturating_sub(*attempted_nonces)
+                    .min(u64::try_from(LANES).ok()?),
+            )
+            .ok()?;
+            if valid_lanes == 0 {
+                return None;
+            }
             if met_target.any() {
                 crate::unlikely();
                 let lanes = met_target.to_array();
-                if let Some(success_lane_idx) = lanes.iter().position(|&hit| hit) {
+                if let Some(success_lane_idx) = (0..valid_lanes).find(|&lane| lanes[lane]) {
+                    *attempted_nonces += u64::try_from(success_lane_idx + 1).ok()?;
                     let nonce_prefix = 10 + LANES * prefix_set_index + success_lane_idx;
                     message.message[14] = cum0;
                     message.message[15] = cum1;
@@ -409,7 +420,7 @@ pub fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
                 }
             }
 
-            *attempted_nonces += u64::try_from(LANES).ok()?;
+            *attempted_nonces += u64::try_from(valid_lanes).ok()?;
             if *attempted_nonces >= limit {
                 return None;
             }
@@ -565,12 +576,12 @@ pub fn solve_single_block_impl<
                     .min(u64::try_from(LANES).ok()?),
             )
             .ok()?;
-            *attempted_nonces += u64::try_from(valid_lanes).ok()?;
 
             if met_target.any() {
                 let lanes = met_target.to_array();
                 if let Some(success_lane_idx) = (0..valid_lanes).find(|&lane| lanes[lane]) {
                     crate::unlikely();
+                    *attempted_nonces += u64::try_from(success_lane_idx + 1).ok()?;
                     let nonce_prefix = prefix_base + success_lane_idx;
 
                     if aligned {
@@ -606,6 +617,7 @@ pub fn solve_single_block_impl<
                 }
             }
 
+            *attempted_nonces += u64::try_from(valid_lanes).ok()?;
             if *attempted_nonces >= limit {
                 return None;
             }

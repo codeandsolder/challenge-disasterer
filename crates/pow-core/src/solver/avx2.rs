@@ -1,7 +1,3 @@
-#![expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "AVX2 solver kernels are architecture-gated intrinsic blocks audited at the module boundary"
-)]
 use crate::message::{
     AltchaMessage, BinaryMessage, CerberusMessage, DecimalMessage, DoubleBlockMessage,
     GoAwayMessage, SingleBlockMessage,
@@ -126,6 +122,7 @@ impl crate::solver::Solver for SingleBlockSolver {
 
         macro_rules! dispatch {
             ($idx0:literal, $idx1_inc:literal) => {
+                // SAFETY: Solver::solve checked AVX2 before entering this dispatch.
                 unsafe {
                     if self.message.digit_index % 4 == 2 {
                         // if we have to much search space it doesn't matter
@@ -416,6 +413,7 @@ impl crate::solver::Solver for BinarySolver {
 
         macro_rules! dispatch {
             ($skipped_rounds:expr) => {
+                // SAFETY: Solver::solve checked AVX2 before entering this dispatch.
                 unsafe {
                     if cur_block == 1 {
                         if let Some(nonce) = self.solve_impl::<TYPE, { $skipped_rounds }, true>(
@@ -661,6 +659,7 @@ impl crate::solver::Solver for CerberusSolver {
             return None;
         }
         match &self.message {
+            // SAFETY: the RequiredFeatures gate above proves AVX2 before dispatch.
             CerberusMessage::Binary(_) => unsafe { self.solve_binary_impl(target, mask) },
             CerberusMessage::Decimal(message) => {
                 // two digits as lane ID, N=\x00, ? is prefix
@@ -709,6 +708,7 @@ impl crate::solver::Solver for CerberusSolver {
 
                         macro_rules! dispatch {
                             ($center_word_idx:literal) => {
+                                // SAFETY: the RequiredFeatures gate above proves AVX2 before dispatch.
                                 if position_mod < 2 {
                                     unsafe {
                                         self.solve_decimal_impl::<$center_word_idx, { $center_word_idx - 1 }, {$center_word_idx - 1}>(
@@ -716,6 +716,7 @@ impl crate::solver::Solver for CerberusSolver {
                                         )
                                     }
                                 } else {
+                                    // SAFETY: same AVX2 runtime gate as the branch above.
                                     unsafe {
                                         self.solve_decimal_impl::<$center_word_idx, { $center_word_idx + 1 }, $center_word_idx>(
                                         msg, target, mask,
