@@ -1,13 +1,13 @@
 use std::{
-    num::{NonZeroU8, NonZeroU32},
+    num::{NonZeroU8, NonZeroU32, NonZeroU64},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-#[cfg(feature = "gpu")]
-use anyhow::Context as _;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use argon2::Argon2;
 use clap::{Parser, ValueEnum};
+use hashwx::HashWx;
+use num_bigint::BigUint;
 use pow_core::{
     build_mcaptcha_prefix, compute_mask_cerberus, compute_mask_goaway, compute_mask_zero_nibbles,
     compute_target_mcaptcha,
@@ -19,6 +19,8 @@ use pow_core::{
 };
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha1::Sha1;
+use sha2::{Digest, Sha256, Sha512};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Mode {
@@ -457,6 +459,243 @@ fn altcha_backends(message: impl Fn() -> AltchaMessage) -> Vec<(&'static str, Bo
     out
 }
 
+fn hashwx_seed(challenge: &[u8; 32], block: u64) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(challenge);
+    digest.update(block.to_le_bytes());
+    digest.finalize().into()
+}
+
+const CAP_RSW_T: u32 = 75_000;
+const CAP_RSW_MODULUS_HEX: &str = concat!(
+    "bdbf80c89a6616ba09da637cb6c5199dbea3ad7fddeb56847a8a89dcf097e464",
+    "bf7e1ab4aee4827fdcb00e1aa3096caaeba5e68eac491ddd0b79a0d2baf2efdc",
+    "353479cbb74478408a0a2a7fcccd39ddd4f8702aaba08e049411706c16f57d004",
+    "4f2c4ad3a6d6db86ce2ccfdcf869e17ab8e6438a4adda41629c98a2e2b4e2b8",
+    "38a66114bb17f23dc353cdaa10d1dd2d957ec6d893ddc725276e23c9c02eaab0b",
+    "2ab92a30ceccb695a305877eada3b02157cdcce2412b9dc8db76de114da843dad7",
+    "16960625b15ddceb69c6a30375223e05c2e08287c274b851e1bca3a940edb0086",
+    "2f16146ce27d8814951b87de48f03d9df639c950fafb2ad6807396b5741d",
+);
+
+fn cap_rsw_input(sample: u32) -> Result<(BigUint, BigUint)> {
+    let modulus = BigUint::parse_bytes(CAP_RSW_MODULUS_HEX.as_bytes(), 16)
+        .context("parse fixed Cap RSW modulus")?;
+    let mut material = Vec::with_capacity(256);
+    for block in 0..4_u32 {
+        let mut digest = Sha512::new();
+        digest.update(format!("challenge-disasterer-cap-rsw:{sample}:{block}"));
+        material.extend_from_slice(&digest.finalize());
+    }
+    let x =
+        BigUint::from_bytes_be(&material) % (&modulus - BigUint::from(3_u8)) + BigUint::from(2_u8);
+    Ok((modulus, x))
+}
+
+fn run_cap_rsw_case(meta: &Meta, sample: u32, args: &Args) -> Result<()> {
+    let (modulus, mut y) = cap_rsw_input(sample)?;
+    let started = Instant::now();
+    for _ in 0..CAP_RSW_T {
+        y = (&y * &y) % &modulus;
+    }
+    let solve_ns = started.elapsed().as_nanos();
+    // Keep the final value observable so an optimizer can never erase the fixed-work loop.
+    let final_low64 = y.to_u64_digits().first().copied().unwrap_or(0);
+    emit(Record {
+        schema: 1,
+        phase: phase_name(args.mode),
+        timestamp_unix_ms: timestamp_ms(),
+        host: meta.host.clone(),
+        cpu_model: meta.cpu_model.clone(),
+        commit: meta.commit.clone(),
+        protocol: "capjs",
+        variant: "rsw-format2-2048-t75000",
+        implementation: "num-bigint-sequential-square".to_owned(),
+        accelerator: "cpu",
+        sample,
+        parameters: json!({
+            "modulus_bits": modulus.bits(),
+            "squarings": CAP_RSW_T,
+            "final_low64": final_low64,
+        }),
+        attempted_work: u64::from(CAP_RSW_T),
+        solve_ns,
+        work_per_second: rate(u64::from(CAP_RSW_T), solve_ns),
+        found: true,
+        nonce: None,
+        target_condition_ok: true,
+        gpu_adapter: None,
+    })
+}
+
+fn decimal_u64_bytes(mut value: u64) -> ([u8; 20], usize) {
+    let mut bytes = [0_u8; 20];
+    let mut start = bytes.len();
+    loop {
+        start -= 1;
+        bytes[start] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    (bytes, start)
+}
+
+fn run_linear_case(meta: &Meta, sample: u32, args: &Args) -> Result<()> {
+    const TARGET: [u8; 2] = [0xb0, 0x0b];
+    const LIVE_SEED: &str = "72BBE3B063367AB2F323D46D2ADA8A8A29BB5B58";
+    let mut seed = LIVE_SEED.as_bytes().to_vec();
+    // Preserve a legal first nibble (and therefore digest offset) while varying
+    // the remaining seed bytes deterministically between samples.
+    for (index, byte) in seed.iter_mut().enumerate().skip(1) {
+        let nibble = ((sample as usize + index) & 0xf) as u8;
+        *byte = if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'A' + nibble - 10
+        };
+    }
+    let offset = usize::from(seed[0] - b'0');
+    let started = Instant::now();
+    let mut attempted = 0_u64;
+    let mut found = None;
+    let mut sink = 0_u8;
+    for nonce in 0..args.limit {
+        let mut hasher = Sha1::new();
+        hasher.update(&seed);
+        let (decimal, start) = decimal_u64_bytes(nonce);
+        hasher.update(&decimal[start..]);
+        let digest = hasher.finalize();
+        sink ^= digest[0];
+        attempted += 1;
+        if matches!(args.mode, Mode::Correctness)
+            && digest[offset] == TARGET[0]
+            && digest[offset + 1] == TARGET[1]
+        {
+            found = Some(nonce);
+            break;
+        }
+    }
+    let solve_ns = started.elapsed().as_nanos();
+    if matches!(args.mode, Mode::Correctness) {
+        anyhow::ensure!(
+            found.is_some(),
+            "Linear.pub correctness search exhausted candidate limit"
+        );
+    } else {
+        anyhow::ensure!(
+            attempted == args.limit,
+            "Linear.pub throughput did not exhaust exact work budget"
+        );
+    }
+    emit(Record {
+        schema: 1,
+        phase: phase_name(args.mode),
+        timestamp_unix_ms: timestamp_ms(),
+        host: meta.host.clone(),
+        cpu_model: meta.cpu_model.clone(),
+        commit: meta.commit.clone(),
+        protocol: "linear",
+        variant: "sha1-fixed-work",
+        implementation: "rustcrypto-auto".to_owned(),
+        accelerator: "cpu",
+        sample,
+        parameters: json!({
+            "digest_offset": offset,
+            "target": "b00b",
+            "sink": sink,
+        }),
+        attempted_work: attempted,
+        solve_ns,
+        work_per_second: rate(attempted, solve_ns),
+        found: found.is_some(),
+        nonce: found,
+        target_condition_ok: matches!(args.mode, Mode::Throughput) || found.is_some(),
+        gpu_adapter: None,
+    })
+}
+
+fn run_hashwx_case(meta: &Meta, sample: u32, args: &Args) -> Result<()> {
+    const NONCES_PER_HASH: u64 = 65_536;
+    const DIFFICULTY: u64 = 1_000_000;
+
+    let mut challenge = [0_u8; 32];
+    challenge[..4].copy_from_slice(&sample.to_le_bytes());
+    for (index, byte) in challenge[4..].iter_mut().enumerate() {
+        *byte = (index as u8).wrapping_mul(17).wrapping_add(0x5a);
+    }
+    let correctness_target = u64::MAX / DIFFICULTY;
+    let benchmark_target = match args.mode {
+        Mode::Correctness => correctness_target,
+        Mode::Throughput => 0,
+    };
+    let started = Instant::now();
+    let mut attempted = 0_u64;
+    let mut found = None;
+    let mut current_block = 0_u64;
+    let mut hashwx = HashWx::compile(&hashwx_seed(&challenge, current_block))
+        .context("compile HashWX matrix program")?;
+    while attempted < args.limit {
+        let nonce = attempted;
+        let block = nonce / NONCES_PER_HASH;
+        if block != current_block {
+            hashwx = HashWx::compile(&hashwx_seed(&challenge, block))
+                .context("compile HashWX matrix program")?;
+            current_block = block;
+        }
+        let hash = hashwx.hash(nonce);
+        attempted += 1;
+        if hash <= benchmark_target {
+            found = Some(nonce);
+            break;
+        }
+    }
+    let solve_ns = started.elapsed().as_nanos();
+    match args.mode {
+        Mode::Correctness => anyhow::ensure!(
+            found.is_some(),
+            "HashWX correctness search exhausted candidate limit"
+        ),
+        Mode::Throughput => {
+            anyhow::ensure!(
+                found.is_none(),
+                "HashWX throughput target unexpectedly found a proof"
+            );
+            anyhow::ensure!(
+                attempted == args.limit,
+                "HashWX throughput run attempted {attempted} candidates, expected exactly {}",
+                args.limit
+            );
+        }
+    }
+    emit(Record {
+        schema: 1,
+        phase: phase_name(args.mode),
+        timestamp_unix_ms: timestamp_ms(),
+        host: meta.host.clone(),
+        cpu_model: meta.cpu_model.clone(),
+        commit: meta.commit.clone(),
+        protocol: "capjs",
+        variant: "hashwx-format2",
+        implementation: "native-jit".to_owned(),
+        accelerator: "cpu",
+        sample,
+        parameters: json!({
+            "difficulty": DIFFICULTY,
+            "nonces_per_hash": NONCES_PER_HASH,
+            "challenge_count": 1,
+        }),
+        attempted_work: attempted,
+        solve_ns,
+        work_per_second: rate(attempted, solve_ns),
+        found: found.is_some(),
+        nonce: found,
+        target_condition_ok: matches!(args.mode, Mode::Throughput) || found.is_some(),
+        gpu_adapter: None,
+    })
+}
+
 fn run_cpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
     for sample in 0..args.samples {
         let sample_bytes = sample.to_le_bytes();
@@ -562,7 +801,7 @@ fn run_cpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             &format!("matrix-salt-{sample:08x}"),
         );
         let mcaptcha_factor = 1_000_000_u64;
-        let mcaptcha_target = compute_target_mcaptcha(mcaptcha_factor);
+        let mcaptcha_target = compute_target_mcaptcha(NonZeroU64::new(mcaptcha_factor).unwrap());
         for (implementation, solver) in
             decimal_backends(|| DecimalMessage::new(&mcaptcha_prefix, 0).unwrap())
         {
@@ -615,6 +854,52 @@ fn run_cpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
                 args.mode,
             )?;
         }
+
+        // Cap.js format-2 SHA-256 uses a direct salt + hexadecimal prefix target.
+        // Keep a first-class row even though it shares the decimal solver engine with
+        // format 1: this prevents protocol coverage from disappearing behind a primitive alias.
+        let cap_v2_salt = format!("challenge-disasterer-cap-v2-{sample:08x}");
+        let cap_v2_target_hex = "abcde";
+        let cap_v2_target = 0xabcde_u64 << (64 - 20);
+        let cap_v2_mask = u64::MAX << (64 - 20);
+        for (implementation, solver) in decimal_backends(|| {
+            DecimalMessage::new_f64(cap_v2_salt.as_bytes(), 0)
+                .unwrap()
+                .0
+        }) {
+            emit_cpu(
+                meta,
+                Case {
+                    protocol: "capjs",
+                    variant: "format2-sha256-pow",
+                    implementation,
+                    accelerator: "cpu",
+                    sample,
+                    parameters: json!({
+                        "target": cap_v2_target_hex,
+                        "salt_len": cap_v2_salt.len(),
+                    }),
+                    target: cap_v2_target,
+                    mask: cap_v2_mask,
+                    ty: SOLVE_TYPE_MASK,
+                },
+                solver,
+                args.limit,
+                args.mode,
+            )?;
+        }
+
+        // Cap.js format-2 HashWX at the production default reuse window. Include
+        // per-seed program generation/JIT cost rather than benchmarking only exec().
+        run_hashwx_case(meta, sample, args)?;
+
+        // Cap.js RSW default production shape: a fixed 2048-bit modulus and 75,000
+        // sequential modular squarings. The external matrix runs the same input through
+        // the pinned official Cap worker and GMP.
+        run_cap_rsw_case(meta, sample, args)?;
+
+        // Linear.pub: current deployed SHA-1 gate, exact seed + decimal nonce shape.
+        run_linear_case(meta, sample, args)?;
 
         // go-away: actual 32-byte challenge message, d20 ~= 2^20 expected candidates.
         let mut go_bytes = [0_u8; 32];
@@ -878,7 +1163,7 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             &format!("matrix-salt-{sample:08x}"),
         );
         let factor = 1_000_000_u64;
-        let target = compute_target_mcaptcha(factor);
+        let target = compute_target_mcaptcha(NonZeroU64::new(factor).unwrap());
         let mut solver =
             pow_core::gpu::DecimalSolver::from(DecimalMessage::new(&mcaptcha_prefix, 0).unwrap());
         solver.set_limit(args.limit);
@@ -938,6 +1223,40 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
             json!({"difficulty":cap_difficulty,"salt_len":cap_salt.len()}),
             cap_target,
             cap_mask,
+            SOLVE_TYPE_MASK,
+            solver.attempted_nonces(),
+            elapsed,
+            solved.map(|x| (x.nonce, x.hash)),
+            &adapter,
+            args.mode,
+            args.limit,
+        )?;
+
+        let cap_v2_salt = format!("challenge-disasterer-cap-v2-{sample:08x}");
+        let cap_v2_target_hex = "abcde";
+        let cap_v2_target = 0xabcde_u64 << (64 - 20);
+        let cap_v2_mask = u64::MAX << (64 - 20);
+        let mut solver = pow_core::gpu::DecimalSolver::from(
+            DecimalMessage::new_f64(cap_v2_salt.as_bytes(), 0)
+                .unwrap()
+                .0,
+        );
+        solver.set_limit(args.limit);
+        let started = Instant::now();
+        let (bench_target, bench_mask, _) =
+            benchmark_condition(args.mode, cap_v2_target, cap_v2_mask, SOLVE_TYPE_MASK);
+        let solved = solver
+            .solve::<SOLVE_TYPE_MASK>(&mut gpu, bench_target, bench_mask)
+            .await?;
+        let elapsed = started.elapsed().as_nanos();
+        emit_gpu(
+            meta,
+            "capjs",
+            "format2-sha256-pow",
+            sample,
+            json!({"target":cap_v2_target_hex,"salt_len":cap_v2_salt.len()}),
+            cap_v2_target,
+            cap_v2_mask,
             SOLVE_TYPE_MASK,
             solver.attempted_nonces(),
             elapsed,
@@ -1178,6 +1497,19 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cap_rsw_fixed_vector_matches_external_reference() -> Result<()> {
+        let (modulus, mut y) = cap_rsw_input(0)?;
+        for _ in 0..CAP_RSW_T {
+            y = (&y * &y) % &modulus;
+        }
+        assert_eq!(
+            y.to_u64_digits().first().copied().unwrap_or(0),
+            0x92a2_5a0a_9175_dee7
+        );
+        Ok(())
+    }
 
     #[test]
     fn throughput_condition_preserves_comparison_type() {

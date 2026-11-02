@@ -94,12 +94,15 @@ pub(crate) fn increment_ascii_decimal(digits: &mut [u8]) -> bool {
     true
 }
 
-/// Less than test (such as Anubis and GoAway)
+/// Less than test (such as Anubis)
 pub const SOLVE_TYPE_LT: u8 = 1;
 /// Greater than test (such as mCaptcha)
 pub const SOLVE_TYPE_GT: u8 = 2;
 /// Mask test (such as Cap.js)
 pub const SOLVE_TYPE_MASK: u8 = 4;
+/// Full-digest leading-zero-bit test. `target` is the required bit count and
+/// `mask` is ignored.
+pub const SOLVE_TYPE_LEADING_ZERO_BITS: u8 = 8;
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub(crate) const HMAC_IPAD: u8 = 0x36;
@@ -198,9 +201,11 @@ pub trait Solver {
     ///
     /// Supported schemes:
     ///
-    /// - `SOLVE_TYPE_LT`: Less than test (such as Anubis and GoAway)
+    /// - `SOLVE_TYPE_LT`: Less than test (such as Anubis)
     /// - `SOLVE_TYPE_GT`: Greater than test (such as mCaptcha)
     /// - `SOLVE_TYPE_MASK`: Mask test (such as Cap.js)
+    /// - `SOLVE_TYPE_LEADING_ZERO_BITS`: full SHA-256 leading-zero-bit test;
+    ///   `target` contains the required bit count and `mask` is ignored
     ///
     /// Currently bitmasking `SOLVE_TYPE_MASK` with `SOLVE_TYPE_GT` or `SOLVE_TYPE_LT` is not supported and may result in unexpected behavior.
     ///
@@ -244,6 +249,9 @@ impl<S: Solver> SolverDyn for S {
         match ty {
             SOLVE_TYPE_LT => self.solve::<SOLVE_TYPE_LT>(target, mask),
             SOLVE_TYPE_GT => self.solve::<SOLVE_TYPE_GT>(target, mask),
+            SOLVE_TYPE_LEADING_ZERO_BITS => {
+                self.solve::<SOLVE_TYPE_LEADING_ZERO_BITS>(target, mask)
+            }
             _ => self.solve::<SOLVE_TYPE_MASK>(target, mask),
         }
     }
@@ -253,6 +261,9 @@ impl<S: Solver> SolverDyn for S {
         match ty {
             SOLVE_TYPE_LT => self.solve_nonce_only::<SOLVE_TYPE_LT>(target, mask),
             SOLVE_TYPE_GT => self.solve_nonce_only::<SOLVE_TYPE_GT>(target, mask),
+            SOLVE_TYPE_LEADING_ZERO_BITS => {
+                self.solve_nonce_only::<SOLVE_TYPE_LEADING_ZERO_BITS>(target, mask)
+            }
             _ => self.solve_nonce_only::<SOLVE_TYPE_MASK>(target, mask),
         }
     }
@@ -322,10 +333,37 @@ pub(crate) mod tests {
                     );
                     break;
                 };
+                let Some(mut full_digest_solver) = factory(&concatenated_prefix, search_space)
+                else {
+                    assert_ne!(
+                        search_space, 0,
+                        "full-digest solver is None for search_space: {}",
+                        search_space
+                    );
+                    break;
+                };
 
-                let target_bytes = compute_target_mcaptcha(DIFFICULTY as u64).to_be_bytes();
+                let target_bytes =
+                    compute_target_mcaptcha(core::num::NonZeroU64::new(DIFFICULTY as u64).unwrap())
+                        .to_be_bytes();
                 let target_u64 = u64::from_be_bytes(target_bytes[..8].try_into().unwrap());
                 let mask_anubis = compute_mask_zero_nibbles(ANUBIS_DIFFICULTY);
+                const FULL_DIGEST_TEST_BITS: u64 = 4;
+                let (full_nonce, full_result) = full_digest_solver
+                    .solve::<SOLVE_TYPE_LEADING_ZERO_BITS>(FULL_DIGEST_TEST_BITS, u64::MAX)
+                    .expect("full-digest solver failed");
+                let mut full_message = concatenated_prefix.clone();
+                write!(full_message, "{full_nonce}").unwrap();
+                let full_expected = sha2::Sha256::digest(&full_message);
+                let full_expected_words: [u32; 8] = core::array::from_fn(|i| {
+                    u32::from_be_bytes(full_expected[i * 4..i * 4 + 4].try_into().unwrap())
+                });
+                assert_eq!(full_result, full_expected_words);
+                assert!(crate::hash_has_leading_zero_bits(
+                    &full_result,
+                    FULL_DIGEST_TEST_BITS,
+                ));
+
                 let (nonce, result) = solver
                     .solve::<SOLVE_TYPE_GT>(target_u64, !0)
                     .expect("solver failed");
@@ -373,7 +411,7 @@ pub(crate) mod tests {
                     config.is_sufficient_difficulty(&test_response, DIFFICULTY),
                     "{:016x} is not sufficient difficulty, expected {:016x} (solver: {})",
                     result_u128,
-                    compute_target_mcaptcha(DIFFICULTY as u64),
+                    compute_target_mcaptcha(core::num::NonZeroU64::new(DIFFICULTY as u64).unwrap()),
                     core::any::type_name::<S>()
                 );
 
@@ -441,7 +479,8 @@ pub(crate) mod tests {
                 let mut msg = Vec::from_iter(b"abc".iter().cloned().cycle().take(prefix_len));
                 let mut solver = factory(&msg, NonZeroU8::new(nonce_byte_count).unwrap());
                 const DIFFICULTY: u64 = 100_000;
-                let target = compute_target_mcaptcha(DIFFICULTY);
+                let target =
+                    compute_target_mcaptcha(core::num::NonZeroU64::new(DIFFICULTY).unwrap());
                 let (nonce, result) = solver
                     .solve::<SOLVE_TYPE_GT>(target, !0)
                     .expect("solver failed");
@@ -478,53 +517,65 @@ pub(crate) mod tests {
         mut factory: F,
     ) {
         use std::io::Write;
+        let mut tested_by_search_space = [0_u32; 3];
         for c in b'a'..=b'c' {
             let salts = [c; 64];
             for len in 1..=64 {
-                let u64_target = 0b10111 << (64 - 5);
-                let u64_mask = !0 << (64 - 5);
-                let (mut solver, fixup_prefix) = factory(&salts[..len], 0).unwrap();
+                for search_space in 0..=2 {
+                    let u64_target = 0b10111 << (64 - 5);
+                    let u64_mask = !0 << (64 - 5);
+                    let Some((mut solver, fixup_prefix)) = factory(&salts[..len], search_space)
+                    else {
+                        assert_ne!(search_space, 0, "baseline f64 shape must remain supported");
+                        continue;
+                    };
+                    tested_by_search_space[search_space as usize] += 1;
 
-                let (nonce, result) = solver
-                    .solve::<SOLVE_TYPE_MASK>(u64_target, u64_mask)
-                    .expect("solver failed");
-                let mut final_message = salts[..len].to_vec();
-                let mut final_message_f64 = final_message.clone();
-                let mut final_nonce = nonce as f64;
-                if let Some(ref fixup_prefix) = fixup_prefix {
-                    final_message.extend_from_slice(fixup_prefix.as_ref());
-                    final_nonce = fixup_prefix.fixup(nonce);
+                    let (nonce, result) = solver
+                        .solve::<SOLVE_TYPE_MASK>(u64_target, u64_mask)
+                        .expect("solver failed");
+                    let mut final_message = salts[..len].to_vec();
+                    let mut final_message_f64 = final_message.clone();
+                    let mut final_nonce = nonce as f64;
+                    if let Some(ref fixup_prefix) = fixup_prefix {
+                        final_message.extend_from_slice(fixup_prefix.as_ref());
+                        final_nonce = fixup_prefix.fixup(nonce);
+                    }
+                    if fixup_prefix.is_some() {
+                        assert_ne!(nonce % 10, 0);
+                    }
+                    write!(final_message, "{:09}", nonce).unwrap();
+                    write!(final_message_f64, "{}", final_nonce).unwrap();
+                    assert_eq!(
+                        final_message_f64,
+                        final_message,
+                        "final_nonce: {}, final_nonce_f64: {} (fixup_prefix: {:?})",
+                        String::from_utf8_lossy(&final_message),
+                        String::from_utf8_lossy(&final_message_f64),
+                        fixup_prefix,
+                    );
+                    let hash_result = sha2::Sha256::digest(&final_message);
+                    let hash_result_u64 = u64::from_be_bytes(hash_result[..8].try_into().unwrap());
+                    assert_eq!(
+                        hash_result_u64 & u64_mask,
+                        u64_target,
+                        "hash_result_u64: {:016x} (solver: {}, len: {}, message: {:?})",
+                        hash_result_u64,
+                        core::any::type_name::<S>(),
+                        len,
+                        String::from_utf8_lossy(&final_message)
+                    );
+                    assert_eq!(
+                        hash_result_u64,
+                        ((result[0] as u64) << 32 | (result[1] as u64))
+                    );
                 }
-                if fixup_prefix.is_some() {
-                    assert_ne!(nonce % 10, 0);
-                }
-                write!(final_message, "{:09}", nonce).unwrap();
-                write!(final_message_f64, "{}", final_nonce).unwrap();
-                assert_eq!(
-                    final_message_f64,
-                    final_message,
-                    "final_nonce: {}, final_nonce_f64: {} (fixup_prefix: {:?})",
-                    String::from_utf8_lossy(&final_message),
-                    String::from_utf8_lossy(&final_message_f64),
-                    fixup_prefix,
-                );
-                let hash_result = sha2::Sha256::digest(&final_message);
-                let hash_result_u64 = u64::from_be_bytes(hash_result[..8].try_into().unwrap());
-                assert_eq!(
-                    hash_result_u64 & u64_mask,
-                    u64_target,
-                    "hash_result_u64: {:016x} (solver: {}, len: {}, message: {:?})",
-                    hash_result_u64,
-                    core::any::type_name::<S>(),
-                    len,
-                    String::from_utf8_lossy(&final_message)
-                );
-                assert_eq!(
-                    hash_result_u64,
-                    ((result[0] as u64) << 32 | (result[1] as u64))
-                );
             }
         }
+        assert!(
+            tested_by_search_space.into_iter().all(|count| count > 0),
+            "each requested f64 working-set value must exercise at least one supported shape"
+        );
     }
 
     pub(crate) fn test_cerberus_decimal_validator<
@@ -652,6 +703,27 @@ pub(crate) mod tests {
 
         let mut solver = factory(&test_prefix);
         let mut eq_solver = factory(&test_prefix);
+        let mut full_digest_solver = factory(&test_prefix);
+
+        const FULL_DIGEST_TEST_BITS: u64 = 4;
+        let (full_nonce, full_result) = full_digest_solver
+            .solve::<SOLVE_TYPE_LEADING_ZERO_BITS>(FULL_DIGEST_TEST_BITS, u64::MAX)
+            .expect("full-digest solver failed");
+        let mut full_hasher = Sha256::default();
+        full_hasher.update(test_prefix);
+        full_hasher.update(full_nonce.to_be_bytes());
+        let full_hash = full_hasher.finalize();
+        let full_expected = core::array::from_fn(|i| {
+            u32::from_be_bytes(full_hash[i * 4..i * 4 + 4].try_into().unwrap())
+        });
+        assert_eq!(
+            full_result, full_expected,
+            "full-digest GoAway result mismatch"
+        );
+        assert!(crate::hash_has_leading_zero_bits(
+            &full_result,
+            FULL_DIGEST_TEST_BITS,
+        ));
 
         let (nonce, result) = solver
             .solve::<SOLVE_TYPE_MASK>(0, mask)

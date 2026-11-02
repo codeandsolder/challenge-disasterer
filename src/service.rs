@@ -1147,6 +1147,10 @@ pub struct SolverCapability {
     difficulty_min: u32,
     difficulty_max: u32,
     router: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    counter_mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    counter_max: Option<u64>,
     implementations: Vec<&'static str>,
 }
 
@@ -1219,6 +1223,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 16,
             router: true,
+            counter_mode: None,
+            counter_max: None,
             implementations: Vec::new(),
         },
         SolverCapability {
@@ -1227,6 +1233,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 16,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: Vec::new(),
         },
         SolverCapability {
@@ -1235,6 +1243,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: anubis_sha_implementations,
         },
         SolverCapability {
@@ -1243,6 +1253,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: vec![anubis_wasm::ARGON2_IMPLEMENTATION],
         },
         SolverCapability {
@@ -1251,6 +1263,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: Vec::new(),
         },
         SolverCapability {
@@ -1259,22 +1273,12 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: true,
+            counter_mode: None,
+            counter_max: None,
             implementations: Vec::new(),
         },
     ];
-    for (solver, algorithms, difficulty_max, sha_ni) in [
-        (
-            "cerberus",
-            &["blake3"] as &'static [&'static str],
-            64,
-            false,
-        ),
-        ("goaway", &["sha256"], 32, true),
-        ("capjs", &["sha256"], 64, true),
-        ("mcaptcha", &["sha256"], 64, true),
-        ("haphash", &["sha256"], 16, true),
-        ("altcha", &["sha256", "pbkdf2-sha256"], 64, false),
-    ] {
+    let classic_implementations = |sha_ni: bool, wgpu: bool| {
         let mut implementations = vec!["auto", "safe"];
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
@@ -1289,19 +1293,150 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         if std::arch::is_x86_feature_detected!("avx512f") {
             implementations.push("avx512");
         }
-        if state.general_gpu_operational {
+        if wgpu && state.general_gpu_operational {
             implementations.push("wgpu");
         }
+        implementations
+    };
+
+    for solver in [
+        "cerberus", "goaway", "capjs", "mcaptcha", "haphash", "altcha",
+    ] {
         available_solvers.push(solver);
-        solver_capabilities.push(SolverCapability {
-            solver,
-            algorithms,
-            difficulty_min: 1,
-            difficulty_max,
-            router: false,
-            implementations,
-        });
     }
+
+    solver_capabilities.extend([
+        SolverCapability {
+            solver: "cerberus",
+            algorithms: &["blake3"],
+            difficulty_min: 1,
+            difficulty_max: 16,
+            router: false,
+            counter_mode: None,
+            counter_max: None,
+            implementations: classic_implementations(false, true),
+        },
+        SolverCapability {
+            solver: "goaway",
+            algorithms: &["sha256"],
+            difficulty_min: 0,
+            difficulty_max: 256,
+            router: false,
+            counter_mode: None,
+            counter_max: None,
+            implementations: classic_implementations(true, true),
+        },
+        SolverCapability {
+            solver: "capjs",
+            algorithms: &["sha256", "sha256-pow"],
+            difficulty_min: 1,
+            difficulty_max: 16,
+            router: false,
+            counter_mode: None,
+            counter_max: None,
+            implementations: classic_implementations(true, true),
+        },
+        SolverCapability {
+            solver: "capjs",
+            algorithms: &["rsw"],
+            difficulty_min: 1,
+            difficulty_max: u32::MAX,
+            router: false,
+            counter_mode: None,
+            counter_max: None,
+            implementations: vec!["auto"],
+        },
+        SolverCapability {
+            solver: "capjs",
+            algorithms: &["hashwx"],
+            difficulty_min: 1,
+            difficulty_max: 1_000_000_000,
+            router: false,
+            counter_mode: None,
+            counter_max: None,
+            implementations: vec!["auto"],
+        },
+        SolverCapability {
+            solver: "mcaptcha",
+            algorithms: &["sha256"],
+            difficulty_min: 1,
+            difficulty_max: u32::MAX,
+            router: false,
+            counter_mode: None,
+            counter_max: None,
+            implementations: classic_implementations(true, true),
+        },
+        SolverCapability {
+            solver: "haphash",
+            algorithms: &["sha256"],
+            difficulty_min: 0,
+            difficulty_max: 64,
+            router: false,
+            counter_mode: None,
+            counter_max: None,
+            implementations: classic_implementations(true, true),
+        },
+        SolverCapability {
+            solver: "altcha",
+            algorithms: &["sha256", "pbkdf2-sha256"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: false,
+            counter_mode: Some("uint32"),
+            counter_max: Some(u64::from(u32::MAX)),
+            implementations: {
+                let mut implementations = classic_implementations(false, true);
+                implementations.push("reference");
+                implementations
+            },
+        },
+        SolverCapability {
+            solver: "altcha",
+            algorithms: &[
+                "sha384",
+                "sha512",
+                "pbkdf2-sha384",
+                "pbkdf2-sha512",
+                "argon2id",
+                "scrypt",
+            ],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: false,
+            counter_mode: Some("uint32"),
+            counter_max: Some(u64::from(u32::MAX)),
+            implementations: vec!["auto", "safe", "reference"],
+        },
+        SolverCapability {
+            solver: "altcha",
+            algorithms: &[
+                "sha256",
+                "sha384",
+                "sha512",
+                "pbkdf2-sha256",
+                "pbkdf2-sha384",
+                "pbkdf2-sha512",
+                "argon2id",
+                "scrypt",
+            ],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: false,
+            counter_mode: Some("string"),
+            counter_max: Some(9_007_199_254_740_991),
+            implementations: vec!["auto", "safe"],
+        },
+        SolverCapability {
+            solver: "altcha",
+            algorithms: &["sha1-v1", "sha256-v1", "sha512-v1"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: false,
+            counter_mode: None,
+            counter_max: None,
+            implementations: vec!["auto", "safe"],
+        },
+    ]);
     available_solvers.push("linear");
     solver_capabilities.push(SolverCapability {
         solver: "linear",
@@ -1309,6 +1444,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         difficulty_min: 16,
         difficulty_max: 16,
         router: false,
+        counter_mode: None,
+        counter_max: None,
         implementations: vec!["auto"],
     });
     if state.gpu_operational {
@@ -1319,6 +1456,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 16,
             router: false,
+            counter_mode: None,
+            counter_max: None,
             implementations: Vec::new(),
         });
     }
@@ -1330,6 +1469,8 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             difficulty_min: 1,
             difficulty_max: 64,
             router: true,
+            counter_mode: None,
+            counter_max: None,
             implementations: state.hashx_gpu_implementations.clone(),
         });
     }

@@ -16,7 +16,7 @@ import (
 
 type challengeConfig struct {
 	Challenge  string `json:"challenge"`
-	Difficulty uint8  `json:"difficulty"`
+	Difficulty uint64 `json:"difficulty"`
 }
 
 type solveResponse struct {
@@ -25,6 +25,51 @@ type solveResponse struct {
 	Answer         struct {
 		Token string `json:"token"`
 	} `json:"answer"`
+}
+
+type solverCapability struct {
+	Solver          string   `json:"solver"`
+	DifficultyMin   uint64   `json:"difficulty_min"`
+	DifficultyMax   uint64   `json:"difficulty_max"`
+	Implementations []string `json:"implementations"`
+}
+
+type statsResponse struct {
+	SolverCapabilities []solverCapability `json:"solver_capabilities"`
+}
+
+func contains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func assertCapabilities(serviceURL, implementation string) error {
+	response, err := http.Get(serviceURL + "/stats")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("stats status=%d", response.StatusCode)
+	}
+	var stats statsResponse
+	if err := json.NewDecoder(response.Body).Decode(&stats); err != nil {
+		return err
+	}
+	for i := range stats.SolverCapabilities {
+		row := &stats.SolverCapabilities[i]
+		if row.Solver == "goaway" && row.DifficultyMin == 0 && row.DifficultyMax == 256 {
+			if contains(row.Implementations, "auto") && contains(row.Implementations, "safe") && contains(row.Implementations, implementation) {
+				return nil
+			}
+			return fmt.Errorf("go-away full-domain capability omits implementation %q: %+v", implementation, row)
+		}
+	}
+	return fmt.Errorf("missing go-away 0..256 full-domain capability")
 }
 
 func main() {
@@ -42,8 +87,16 @@ func main() {
 	if err := runner.Compile("goaway-e2e", wasmData); err != nil {
 		panic(err)
 	}
+	implementation := os.Getenv("CHALLENGE_IMPLEMENTATION")
+	if implementation == "" {
+		implementation = "auto"
+	}
+	if err := assertCapabilities(serviceURL, implementation); err != nil {
+		panic(err)
+	}
 
-	for _, difficulty := range []string{"8", "13", "20"} {
+	difficulties := []string{"0", "8", "13", "20"}
+	for _, difficulty := range difficulties {
 		if err := runCase(runner, serviceURL, difficulty); err != nil {
 			panic(err)
 		}
@@ -124,10 +177,16 @@ func runCase(runner *wasm.Runner, serviceURL, difficulty string) error {
 	}
 
 	corrupted := []byte(solved.Answer.Token)
-	if corrupted[len(corrupted)-1] == '0' {
-		corrupted[len(corrupted)-1] = '1'
+	corruptIndex := len(corrupted) - 1
+	if difficulty == "0" {
+		// Every nonce is valid at difficulty zero, so changing only the nonce
+		// cannot be a negative test. Corrupt the challenge binding instead.
+		corruptIndex = 0
+	}
+	if corrupted[corruptIndex] == '0' {
+		corrupted[corruptIndex] = '1'
 	} else {
-		corrupted[len(corrupted)-1] = '0'
+		corrupted[corruptIndex] = '0'
 	}
 	got, err = verify(corrupted)
 	if err != nil {

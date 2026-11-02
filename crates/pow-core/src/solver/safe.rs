@@ -58,7 +58,9 @@ impl SingleBlockSolver {
                 sha2::block_api::compress256(&mut state, core::array::from_ref(&message_be));
                 self.attempted_nonces += 1;
 
-                let pass = if TYPE == crate::solver::SOLVE_TYPE_GT {
+                let pass = if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                    crate::hash_has_leading_zero_bits(&state, target)
+                } else if TYPE == crate::solver::SOLVE_TYPE_GT {
                     (state[0] as u64) << 32 | (state[1] as u64) > target
                 } else if TYPE == crate::solver::SOLVE_TYPE_LT {
                     (state[0] as u64) << 32 | (state[1] as u64) < target
@@ -174,31 +176,36 @@ impl crate::solver::Solver for DoubleBlockSolver {
             let mut state = self.message.prefix_state;
             sha2::block_api::compress256(&mut state, &[buffer]);
 
-            let save_a = state[0];
-            let save_b = state[1];
+            let feedforward = state;
 
             crate::sha256::sha2_arx_without_constants::<0, 64>(
                 &mut state,
                 terminal_message_schedule,
             );
 
-            state[0] = state[0].wrapping_add(save_a);
-            state[1] = state[1].wrapping_add(save_b);
+            if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                for (word, saved) in state.iter_mut().zip(feedforward) {
+                    *word = word.wrapping_add(saved);
+                }
+            } else {
+                state[0] = state[0].wrapping_add(feedforward[0]);
+                state[1] = state[1].wrapping_add(feedforward[1]);
+            }
 
             let ab = (state[0] as u64) << 32 | (state[1] as u64);
 
             self.attempted_nonces += 1;
 
-            let cmp_fn = |x: &u64, y: &u64| {
-                if TYPE == crate::solver::SOLVE_TYPE_GT {
-                    x > y
-                } else if TYPE == crate::solver::SOLVE_TYPE_LT {
-                    x < y
-                } else {
-                    x & mask == y & mask
-                }
+            let pass = if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                crate::hash_has_leading_zero_bits(&state, target)
+            } else if TYPE == crate::solver::SOLVE_TYPE_GT {
+                ab > target
+            } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                ab < target
+            } else {
+                ab & mask == target & mask
             };
-            if cmp_fn(&ab, &target) {
+            if pass {
                 crate::unlikely();
 
                 let mut state = self.message.prefix_state;
@@ -284,16 +291,16 @@ impl crate::solver::Solver for GoAwaySolver {
             let state_ab = (state[0] as u64) << 32 | (state[1] as u64);
             self.attempted_nonces += 1;
 
-            let cmp_fn = |x: &u64, y: &u64| {
-                if TYPE == crate::solver::SOLVE_TYPE_GT {
-                    x > y
-                } else if TYPE == crate::solver::SOLVE_TYPE_LT {
-                    x < y
-                } else {
-                    x & mask == y & mask
-                }
+            let pass = if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                crate::hash_has_leading_zero_bits(&state, target)
+            } else if TYPE == crate::solver::SOLVE_TYPE_GT {
+                state_ab > target
+            } else if TYPE == crate::solver::SOLVE_TYPE_LT {
+                state_ab < target
+            } else {
+                state_ab & mask == target & mask
             };
-            if cmp_fn(&state_ab, &target) {
+            if pass {
                 crate::unlikely();
 
                 return Some((

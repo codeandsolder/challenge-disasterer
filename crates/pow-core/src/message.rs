@@ -271,7 +271,8 @@ impl SingleBlockMessage {
             let mut padding_buf = padding.buf;
             padding_buf[1] = b'1' + working_set_msb as u8;
             padding_buf[2] = b'0' + working_set_lsb as u8;
-            let pad = &padding_buf.as_slice()[padding.cut..];
+            padding.buf = padding_buf;
+            let pad = &padding.buf.as_slice()[padding.cut..];
             let (pad_left, pad_right) = pad.split_at(space);
             tmp_block[prefix.len()..].copy_from_slice(pad_left);
             sha256::digest_block(

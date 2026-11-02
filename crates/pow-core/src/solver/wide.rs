@@ -44,6 +44,29 @@ fn target_match<const LANES: usize, const TYPE: u8>(
     }
 }
 
+#[inline(always)]
+fn leading_zero_match<const LANES: usize>(
+    state: &[Simd<u32, LANES>; 8],
+    bits: u64,
+) -> core::simd::Mask<i32, LANES> {
+    if bits > 256 {
+        return core::simd::Mask::splat(false);
+    }
+
+    let full_words = (bits / 32) as usize;
+    let mut matched = core::simd::Mask::splat(true);
+    for word in &state[..full_words] {
+        matched &= word.simd_eq(Simd::splat(0));
+    }
+
+    let remaining = (bits % 32) as u32;
+    if remaining != 0 {
+        let mask = u32::MAX << (32 - remaining);
+        matched &= (state[full_words] & Simd::splat(mask)).simd_eq(Simd::splat(0));
+    }
+    matched
+}
+
 #[cfg(target_arch = "x86_64")]
 pub(crate) struct BinaryWork<'a> {
     pub(crate) attempted_nonces: &'a mut u64,
@@ -207,13 +230,23 @@ pub(crate) fn solve_goaway_impl<const LANES: usize, const TYPE: u8>(
             Simd::splat(MSG_LEN),
         ];
         crate::sha256::portable::multiway_arx::<LANES, 9>(&mut state, &mut message);
-        state[0] += Simd::splat(crate::sha256::IV[0]);
-        #[cfg(feature = "compare-64bit")]
-        {
-            state[1] += Simd::splat(crate::sha256::IV[1]);
+        if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+            for (word, iv) in state.iter_mut().zip(crate::sha256::IV) {
+                *word += Simd::splat(iv);
+            }
+        } else {
+            state[0] += Simd::splat(crate::sha256::IV[0]);
+            #[cfg(feature = "compare-64bit")]
+            {
+                state[1] += Simd::splat(crate::sha256::IV[1]);
+            }
         }
 
-        let met_target = target_match::<LANES, TYPE>(state[0], state[1], target, mask);
+        let met_target = if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+            leading_zero_match(&state, target)
+        } else {
+            target_match::<LANES, TYPE>(state[0], state[1], target, mask)
+        };
         low_word += valid_lanes as u64;
         *attempted_nonces = low_word;
 
@@ -290,20 +323,28 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
                 state[i] += Simd::splat(message.prefix_state[i]);
             }
 
-            let save_a = state[0];
-            #[cfg(feature = "compare-64bit")]
-            let save_b = state[1];
+            let feedforward = state;
             crate::sha256::portable::bcst_multiway_arx::<LANES, 14>(
                 &mut state,
                 &terminal_message_schedule,
             );
-            state[0] += save_a;
-            #[cfg(feature = "compare-64bit")]
-            {
-                state[1] += save_b;
+            if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                for (word, saved) in state.iter_mut().zip(feedforward) {
+                    *word += saved;
+                }
+            } else {
+                state[0] += feedforward[0];
+                #[cfg(feature = "compare-64bit")]
+                {
+                    state[1] += feedforward[1];
+                }
             }
 
-            let met_target = target_match::<LANES, TYPE>(state[0], state[1], target, mask);
+            let met_target = if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                leading_zero_match(&state, target)
+            } else {
+                target_match::<LANES, TYPE>(state[0], state[1], target, mask)
+            };
             if met_target.any() {
                 crate::unlikely();
                 let lanes = met_target.to_array();
@@ -472,13 +513,23 @@ pub(crate) fn solve_single_block_impl<
                 &mut state,
                 &mut blocks,
             );
-            state[0] += Simd::splat(message.prefix_state[0]);
-            #[cfg(feature = "compare-64bit")]
-            {
-                state[1] += Simd::splat(message.prefix_state[1]);
+            if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                for (word, saved) in state.iter_mut().zip(message.prefix_state) {
+                    *word += Simd::splat(saved);
+                }
+            } else {
+                state[0] += Simd::splat(message.prefix_state[0]);
+                #[cfg(feature = "compare-64bit")]
+                {
+                    state[1] += Simd::splat(message.prefix_state[1]);
+                }
             }
 
-            let met_target = target_match::<LANES, TYPE>(state[0], state[1], target, mask);
+            let met_target = if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
+                leading_zero_match(&state, target)
+            } else {
+                target_match::<LANES, TYPE>(state[0], state[1], target, mask)
+            };
             let valid_lanes = limit.saturating_sub(*attempted_nonces).min(LANES as u64) as usize;
             *attempted_nonces += valid_lanes as u64;
 
@@ -1243,4 +1294,27 @@ pub(crate) fn solve_cerberus_binary_wide4(
         target,
         mask,
     )
+}
+
+#[cfg(test)]
+mod full_digest_tests {
+    use super::*;
+
+    #[test]
+    fn leading_zero_match_checks_words_beyond_first_64_bits() {
+        let mut state = core::array::from_fn(|_| Simd::<u32, 4>::splat(0));
+        state[2] = Simd::from_array([0x7fff_ffff, 0x8000_0000, 0, 0]);
+        assert_eq!(
+            leading_zero_match(&state, 65).to_array(),
+            [true, false, true, true]
+        );
+        assert_eq!(
+            leading_zero_match(&state, 256).to_array(),
+            [false, false, true, true]
+        );
+        assert_eq!(
+            leading_zero_match(&state, 257).to_array(),
+            [false, false, false, false]
+        );
+    }
 }

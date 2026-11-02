@@ -7,6 +7,7 @@ HAPHASH_PORT="${HAPHASH_E2E_PORT:-17431}"
 SOLVER_PORT="${HAPHASH_SOLVER_PORT:-17432}"
 CHALLENGE_IMPLEMENTATION="${CHALLENGE_IMPLEMENTATION:-auto}"
 HAPHASH_REF="${HAPHASH_REF:-main}"
+HAPHASH_DIFFICULTY="${HAPHASH_DIFFICULTY:-4}"
 
 cleanup() {
   [[ -n "${SOLVER_PID:-}" ]] && kill "$SOLVER_PID" 2>/dev/null || true
@@ -45,7 +46,7 @@ frontend www
   acl protected_ua hdr(User-Agent) -m beg Mozilla/
   acl protected acl(protected_path,protected_ua)
   acl accepted sc_get_gpt(1,0) gt 0
-  http-request set-var(txn.diff) int(4)
+  http-request set-var(txn.diff) int(${HAPHASH_DIFFICULTY})
   http-request return status 200 content-type "text/html; charset=UTF-8" hdr "Cache-control" "max-age=0, no-cache" lf-file $TMP/haphash/challenge.html if protected !challenge_path !accepted
   http-request return status 200 content-type text/plain string "challenge-disasterer-haphash-e2e-ok" if protected accepted
   http-request return status 404 content-type text/plain string "not found" if !challenge_path

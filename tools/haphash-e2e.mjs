@@ -48,6 +48,17 @@ function invalidNonce(prefix, start, difficulty) {
   return nonce.toString();
 }
 
+async function assertCapabilities() {
+  const response = await fetch(`${serviceUrl}/stats`);
+  if (!response.ok) throw new Error(`haphash stats failed: ${response.status}`);
+  const stats = await response.json();
+  const rows = stats.solver_capabilities.filter((row) => row.solver === "haphash");
+  const full = rows.find((row) => row.difficulty_min === 0 && row.difficulty_max === 64);
+  if (!full || !full.implementations.includes("auto") || !full.implementations.includes("safe") || !full.implementations.includes(implementation)) {
+    throw new Error(`haphash full-domain capability omits ${implementation}: ${JSON.stringify(rows)}`);
+  }
+}
+
 async function localHaproxy() {
   const page = await fetch(haphashUrl, { headers, redirect: "manual" });
   if (!page.ok) throw new Error(`haphash challenge page status ${page.status}`);
@@ -62,13 +73,15 @@ async function localHaproxy() {
   if (!valid(prefix, nonce, difficulty)) throw new Error("solver returned invalid local haphash nonce");
 
   const answerUrl = new URL("/_challenge", haphashUrl);
-  const bad = await fetch(answerUrl, {
-    method: "POST",
-    headers: { ...headers, "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ tries: invalidNonce(prefix, nonce, difficulty), ts }),
-    redirect: "manual",
-  });
-  if (bad.status < 400) throw new Error(`HAProxy accepted corrupted haphash proof: ${bad.status}`);
+  if (difficulty > 0) {
+    const bad = await fetch(answerUrl, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ tries: invalidNonce(prefix, nonce, difficulty), ts }),
+      redirect: "manual",
+    });
+    if (bad.status < 400) throw new Error(`HAProxy accepted corrupted haphash proof: ${bad.status}`);
+  }
 
   const accepted = await fetch(answerUrl, {
     method: "POST",
@@ -132,5 +145,6 @@ async function debianVarnish() {
   console.log(`haphash-debian-varnish: PASS implementation=${implementation} difficulty=${difficulty} solve_ms=${solved.solve_ms.toFixed(3)}`);
 }
 
+await assertCapabilities();
 await localHaproxy();
 await debianVarnish();

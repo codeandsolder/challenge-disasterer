@@ -1,7 +1,7 @@
 use std::{borrow::Cow, sync::mpsc, time::Instant};
 
 use anyhow::{Context, anyhow};
-use hashx::HashX;
+use hashwx::HashX;
 
 use crate::{
     anubis::Answer,
@@ -552,7 +552,7 @@ fn validated_result(
     started: Instant,
     implementation: &'static str,
 ) -> anyhow::Result<GpuResult> {
-    let hash = hashx.hash_to_bytes(u64::from(nonce));
+    let hash = hashx.hash_bytes(u64::from(nonce));
     anyhow::ensure!(
         valid_prefix(&hash, difficulty),
         "HashX GPU solver returned nonce with invalid difficulty"
