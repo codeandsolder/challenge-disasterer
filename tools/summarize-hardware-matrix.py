@@ -72,6 +72,16 @@ def load(run: Path):
     external_path = run / "external-baselines.jsonl"
     if external_path.is_file():
         external = [json.loads(line) for line in external_path.read_text().splitlines() if line.strip()]
+    altcha_path = run / "altcha-current.jsonl"
+    if altcha_path.is_file():
+        for line in altcha_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.pop("row_kind", None) == "external":
+                external.append(row)
+            else:
+                rows.append(row)
     return meta, rows, paired, benches, baselines, external
 
 
@@ -136,14 +146,17 @@ def main() -> int:
 
     external_grouped = defaultdict(list)
     for row in external_rows:
-        external_grouped[(row["host"], row["baseline"], row["protocol"], row["variant"], row["implementation"], row["accelerator"], row.get("gpu_adapter"), row["comparison_scope"])].append(row)
+        external_grouped[(
+            row["host"], row["baseline"], row["protocol"], row["variant"], row["implementation"],
+            row["accelerator"], row.get("gpu_adapter"), row["comparison_scope"], row["attempted_work"],
+        )].append(row)
     external_summary = []
     for key, rows in sorted(external_grouped.items(), key=lambda item: str(item[0])):
-        host, baseline, protocol, variant, implementation, accelerator, gpu_adapter, scope = key
+        host, baseline, protocol, variant, implementation, accelerator, gpu_adapter, scope, work_budget = key
         external_summary.append({
             "host": host, "baseline": baseline, "protocol": protocol, "variant": variant,
             "implementation": implementation, "accelerator": accelerator, "gpu_adapter": gpu_adapter,
-            "comparison_scope": scope, "samples": len(rows),
+            "comparison_scope": scope, "work_budget": work_budget, "samples": len(rows),
             "median_work_per_second": statistics.median(row["work_per_second"] for row in rows),
             "median_solve_ms": statistics.median(row["solve_ns"] for row in rows) / 1e6,
             "median_attempted_work": statistics.median(row["attempted_work"] for row in rows),

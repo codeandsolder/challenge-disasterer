@@ -34,3 +34,7 @@ done
 curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null
 
 node "$ROOT/tools/altcha-e2e.mjs" "$TMP/altcha-lib" "http://127.0.0.1:$PORT"
+
+if [[ -n "${ALTCHA_BENCH_OUT:-}" ]]; then
+  node "$ROOT/tools/altcha-bench.mjs" "$TMP/altcha-lib" "http://127.0.0.1:$PORT" "${ALTCHA_BENCH_SAMPLES:-1}" >"$ALTCHA_BENCH_OUT"
+fi
