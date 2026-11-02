@@ -990,7 +990,6 @@ fn altcha_derive_key(
                 u8::try_from(log_n).context("ALTCHA scrypt log2(N) exceeds u8")?,
                 parameters.memory_cost.unwrap_or(8),
                 parameters.parallelism.unwrap_or(1),
-                key_length,
             )
             .context("invalid ALTCHA scrypt parameters")?;
             let mut out = vec![0_u8; key_length];
