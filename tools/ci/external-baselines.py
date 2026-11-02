@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -21,7 +22,9 @@ import subprocess
 import sys
 import time
 import tomllib
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pyopencl as cl
@@ -68,7 +71,7 @@ OPENCL_WARMUP_RUNS = 3
 
 def run(
     argv: list[str], *, cwd: Path | None = None, capture: bool = False
-) -> subprocess.CompletedProcess:
+) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(argv), file=sys.stderr, flush=True)
     return subprocess.run(
         argv,
@@ -649,7 +652,7 @@ def bench_cap_rsw(samples: int, squarings: int) -> None:
 
 
 def mcaptcha_crate_version() -> str:
-    lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
+    lock = tomllib.loads((ROOT / "Cargo.lock").read_text(encoding="utf-8"))
     versions = [
         package["version"]
         for package in lock["package"]
@@ -659,7 +662,10 @@ def mcaptcha_crate_version() -> str:
         raise RuntimeError(
             f"expected exactly one locked mcaptcha_pow_sha256 package, got {versions}"
         )
-    return versions[0]
+    version = versions[0]
+    if not isinstance(version, str):
+        raise TypeError("locked mCaptcha package version is not a string")
+    return version
 
 
 def bench_mcaptcha(samples: int, limit: int) -> None:
@@ -805,7 +811,7 @@ def x86_64_microarch_level() -> str | None:
         return None
     flags = set()
     try:
-        for line in Path("/proc/cpuinfo").read_text().splitlines():
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
             if line.startswith("flags"):
                 flags.update(line.split(":", 1)[1].split())
                 break
@@ -828,9 +834,9 @@ def build_argon2(src: Path) -> Path:
         make_args.append(f"OPTTARGET={opttarget}")
     # The source selection (ref.c vs opt.c) is decided at make parse time, so
     # clean before rebuilding with a possibly different deterministic target.
-    subprocess.run(make_args + ["clean"], check=True, stdout=sys.stderr, env=make_env)
+    subprocess.run([*make_args, "clean"], check=True, stdout=sys.stderr, env=make_env)
     subprocess.run(
-        make_args + ["-j", "libargon2.a"], check=True, stdout=sys.stderr, env=make_env
+        [*make_args, "-j", "libargon2.a"], check=True, stdout=sys.stderr, env=make_env
     )
     adapter = build / "argon2-fixed.c"
     adapter.write_text(ARGON2_ADAPTER)
@@ -893,7 +899,7 @@ def bench_argon2(samples: int, limit: int) -> None:
         )
 
 
-def load_sha256_prefix(src: Path):
+def _load_sha256_prefix(src: Path) -> Callable[[bytes], Sequence[int]]:
     spec = importlib.util.spec_from_file_location(
         "anubis_offload_sha256", src / "sha256.py"
     )
@@ -901,16 +907,14 @@ def load_sha256_prefix(src: Path):
         raise RuntimeError("failed to load anubis_offload sha256.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.sha256_prefix
+    return cast(Callable[[bytes], Sequence[int]], module.sha256_prefix)
 
 
 def opencl_gpu_devices() -> list[cl.Device]:
     devices: list[cl.Device] = []
     for platform in cl.get_platforms():
-        try:
+        with contextlib.suppress(cl.LogicError):
             devices.extend(platform.get_devices(device_type=cl.device_type.GPU))
-        except cl.LogicError:
-            pass
     return devices
 
 
@@ -918,7 +922,7 @@ def bench_anubis_offload(samples: int, limit: int) -> None:
     if limit % STEPS_PER_TASK:
         raise ValueError(f"OpenCL limit must be a multiple of {STEPS_PER_TASK}")
     src = ensure_checkout("anubis_offload")
-    prefix_state = load_sha256_prefix(src)
+    prefix_state = _load_sha256_prefix(src)
     kernel_src = (src / "sha256.cl").read_text()
     challenge = b"A" * 64
     initial_h = np.array(prefix_state(challenge), dtype=np.uint32)

@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import IO
 
 ROOT = Path(__file__).resolve().parents[2]
 LIVE = (
@@ -32,8 +33,12 @@ PREEXISTING_BASELINE_QUANTUM = 160_000
 
 
 def run(
-    argv: list[str], *, env: dict[str, str] | None = None, stdout=None, stderr=None
-) -> subprocess.CompletedProcess:
+    argv: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    stdout: int | IO[bytes] | None = None,
+    stderr: int | IO[bytes] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
     print("+", shlex.join(argv), file=sys.stderr, flush=True)
     return subprocess.run(
         argv, cwd=ROOT, env=env, stdout=stdout, stderr=stderr, check=False
@@ -52,7 +57,7 @@ def text(argv: list[str]) -> str:
     return result.stdout.strip()
 
 
-def metadata() -> dict:
+def metadata() -> dict[str, object]:
     return {
         "schema": 1,
         "timestamp_unix_ms": time.time_ns() // 1_000_000,
@@ -63,7 +68,7 @@ def metadata() -> dict:
             (
                 line.split(":", 1)[1].strip()
                 for line in Path("/proc/cpuinfo")
-                .read_text(errors="replace")
+                .read_text(encoding="utf-8", errors="replace")
                 .splitlines()
                 if line.startswith("model name") and ":" in line
             ),
@@ -73,7 +78,7 @@ def metadata() -> dict:
         "git_status": text(["git", "status", "--short"]),
         "rustc": text(["rustc", "-Vv"]),
         "kernel": text(["uname", "-a"]),
-        "loadavg": Path("/proc/loadavg").read_text().strip(),
+        "loadavg": Path("/proc/loadavg").read_text(encoding="utf-8").strip(),
         "vulkan": text(
             [
                 "bash",
@@ -102,7 +107,9 @@ def metadata() -> dict:
 
 
 def cpu_flags() -> set[str]:
-    for line in Path("/proc/cpuinfo").read_text(errors="replace").splitlines():
+    for line in (
+        Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace").splitlines()
+    ):
         if line.startswith("flags") and ":" in line:
             return set(line.split(":", 1)[1].split())
     return set()
@@ -256,8 +263,12 @@ def main() -> int:
         )
         statuses["gpu-adapter-discovery"] = discovered.returncode
         if discovered.returncode == 0:
-            gpu_adapters = json.loads(discovered.stdout)
-            if not gpu_adapters:
+            decoded_adapters = json.loads(discovered.stdout)
+            if isinstance(decoded_adapters, list):
+                gpu_adapters = [
+                    adapter for adapter in decoded_adapters if isinstance(adapter, str)
+                ]
+            if not gpu_adapters or len(gpu_adapters) != len(decoded_adapters):
                 statuses["gpu-adapter-discovery"] = 1
     meta["gpu_adapters"] = gpu_adapters
     (out / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
@@ -271,6 +282,9 @@ def main() -> int:
                 (out / f"solver-{phase}.jsonl").open("wb") as matrix_stdout,
                 (out / f"solver-{phase}.stderr.log").open("wb") as matrix_stderr,
             ):
+                git_sha = meta["git_sha"]
+                if not isinstance(git_sha, str):
+                    raise TypeError("hardware-matrix metadata git_sha is not a string")
                 common = [
                     str(matrix_bin),
                     "--samples",
@@ -282,7 +296,7 @@ def main() -> int:
                     "--mode",
                     phase,
                     "--commit",
-                    meta["git_sha"],
+                    git_sha,
                 ]
                 if args.cpu:
                     cpu = run(

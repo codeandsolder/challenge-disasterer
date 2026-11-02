@@ -8,15 +8,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import operator
 import re
 import statistics
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 PAIRED_RE = re.compile(
     r"^PAIRED_HASHX difficulty=(?P<difficulty>\d+) implementation=(?P<implementation>\S+) "
     r"n=(?P<n>\d+) mean_solver_ms=(?P<mean_solver_ms>[0-9.]+)$"
 )
+type JsonObject = dict[str, Any]
+
+
 BENCH_RE = re.compile(
     r"^BENCH algorithm=(?P<algorithm>\S+) solver=(?P<solver>\S+) backend=(?P<backend>\S+) "
     r"implementation=(?P<implementation>\S+) difficulty=(?P<difficulty>\d+) n=(?P<n>\d+) "
@@ -25,7 +30,16 @@ BENCH_RE = re.compile(
 )
 
 
-def load(run: Path):
+def _load(
+    run: Path,
+) -> tuple[
+    JsonObject,
+    list[JsonObject],
+    list[JsonObject],
+    list[JsonObject],
+    list[JsonObject],
+    list[JsonObject],
+]:
     meta = json.loads((run / "metadata.json").read_text())
     rows = []
     for path in sorted(run.glob("solver-*.jsonl")):
@@ -112,7 +126,7 @@ def main() -> int:
     baseline_rows = []
     external_rows = []
     for run in args.runs:
-        meta, rows, paired, benches, baselines, external = load(run)
+        meta, rows, paired, benches, baselines, external = _load(run)
         host = meta["hostname"]
         metas[host] = meta
         paired_hashx.extend({"host": host, **item} for item in paired)
@@ -173,13 +187,11 @@ def main() -> int:
     baseline_grouped = defaultdict(list)
     for row in baseline_rows:
         baseline_grouped[
-            (
-                row["host"],
-                row["baseline"],
-                row["protocol"],
-                row["variant"],
-                row["implementation"],
-            )
+            row["host"],
+            row["baseline"],
+            row["protocol"],
+            row["variant"],
+            row["implementation"],
         ].append(row)
     baseline_summary = []
     for key, rows in sorted(baseline_grouped.items()):
@@ -206,16 +218,14 @@ def main() -> int:
     external_grouped = defaultdict(list)
     for row in external_rows:
         external_grouped[
-            (
-                row["host"],
-                row["baseline"],
-                row["protocol"],
-                row["variant"],
-                row["implementation"],
-                row["accelerator"],
-                row.get("gpu_adapter"),
-                row["comparison_scope"],
-            )
+            row["host"],
+            row["baseline"],
+            row["protocol"],
+            row["variant"],
+            row["implementation"],
+            row["accelerator"],
+            row.get("gpu_adapter"),
+            row["comparison_scope"],
         ].append(row)
     external_summary = []
     for key, rows in sorted(external_grouped.items(), key=lambda item: str(item[0])):
@@ -275,7 +285,9 @@ def main() -> int:
             and r["accelerator"] == "cpu"
             and r["median_attempted_work"] == legacy["median_attempted_work"]
         ]
-        best = max(candidates, key=lambda r: r["median_work_per_second"], default=None)
+        best = max(
+            candidates, key=operator.itemgetter("median_work_per_second"), default=None
+        )
         if (
             matched is not None
             and matched["median_attempted_work"] != legacy["median_attempted_work"]
