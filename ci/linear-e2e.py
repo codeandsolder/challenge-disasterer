@@ -30,7 +30,9 @@ def fetch(cookie: str | None = None) -> tuple[int, bytes]:
 def challenge_seed(page: bytes) -> str:
     match = SEED_RE.search(page.decode(errors="replace"))
     if match is None:
-        raise RuntimeError("could not find the 40-hex Linear.pub seed in live challenge JS")
+        raise RuntimeError(
+            "could not find the 40-hex Linear.pub seed in live challenge JS"
+        )
     return match.group(0)
 
 
@@ -86,7 +88,9 @@ def main() -> int:
     bad_cookie = f"yX3={reject_seed}{bad_nonce}"
     bad_status, _ = fetch(bad_cookie)
     if bad_status != 503:
-        raise RuntimeError(f"Linear.pub accepted deliberately corrupted proof: HTTP {bad_status}")
+        raise RuntimeError(
+            f"Linear.pub accepted deliberately corrupted proof: HTTP {bad_status}"
+        )
 
     seed = fetch_challenge()
     if seed is None:
@@ -94,17 +98,21 @@ def main() -> int:
     response = solve(solver_url, seed)
     answer = response["answer"]
     if not isinstance(answer, dict):
-        raise RuntimeError("solver answer is not an object")
+        raise TypeError("solver answer is not an object")
     nonce = int(answer["nonce"])
     cookie = str(answer["cookie"])
     if not target_matches(seed, nonce):
-        raise RuntimeError("solver returned a nonce that does not satisfy the live JS condition")
+        raise RuntimeError(
+            "solver returned a nonce that does not satisfy the live JS condition"
+        )
 
     good_status, page = fetch(cookie)
     if good_status != 200:
         raise RuntimeError(f"Linear.pub rejected solver proof: HTTP {good_status}")
     if b"Linear.pub" not in page:
-        raise RuntimeError("accepted response does not look like the Linear.pub storefront")
+        raise RuntimeError(
+            "accepted response does not look like the Linear.pub storefront"
+        )
 
     print("LINEAR_LIVE_PASS", f"seed={seed}", f"nonce={nonce}")
     return 0

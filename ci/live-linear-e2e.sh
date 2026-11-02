@@ -11,7 +11,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in cargo curl python3; do
+for command in cargo curl uv; do
   command -v "$command" >/dev/null || { echo "missing Linear.pub E2E dependency: $command" >&2; exit 2; }
 done
 
@@ -30,4 +30,4 @@ for _ in $(seq 1 100); do
 done
 curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null
 
-python3 "$ROOT/tools/linear-e2e.py" "http://127.0.0.1:$PORT"
+uv run "$ROOT/ci/linear-e2e.py" "http://127.0.0.1:$PORT"
