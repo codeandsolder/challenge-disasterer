@@ -110,7 +110,7 @@ pub(crate) fn solve_binary_impl<
         core::array::from_fn(|i| first_block[i]),
     );
 
-    let candidate_space = 256u64.saturating_pow(nonce_byte_count.get() as u32);
+    let candidate_space = 256u64.saturating_pow(u32::from(nonce_byte_count.get()));
     let search_end = limit.min(candidate_space);
     let mut cursor = (*attempted_nonces).min(search_end);
     while cursor < search_end {
@@ -274,7 +274,7 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
         return None;
     }
 
-    for (ix, i) in (crate::message::DoubleBlockMessage::DIGIT_IDX as usize..)
+    for (ix, i) in (crate::message::DoubleBlockMessage::DIGIT_IDX..)
         .take(9)
         .enumerate()
     {
@@ -352,7 +352,7 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
                     let nonce_prefix = 10 + LANES * prefix_set_index + success_lane_idx;
                     message.message[14] = cum0;
                     message.message[15] = cum1;
-                    let digit_idx = crate::message::DoubleBlockMessage::DIGIT_IDX as usize;
+                    let digit_idx = crate::message::DoubleBlockMessage::DIGIT_IDX;
                     crate::write_be_word_byte(
                         &mut message.message,
                         digit_idx,
@@ -716,6 +716,10 @@ fn solve_altcha_nested_impl<const LANES: usize, const TYPE: u8, const KEY_WORDS:
 
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
+#[expect(
+    clippy::similar_names,
+    reason = "HMAC terminology conventionally names the inner and outer pad midstates ipad and opad"
+)]
 fn solve_altcha_pbkdf2_impl<const LANES: usize, const TYPE: u8>(
     message: &crate::message::AltchaMessage,
     attempted_nonces: &mut u64,

@@ -9,7 +9,7 @@ use crate::{
 use alloc::string::String;
 
 #[derive(serde::Deserialize, Debug)]
-/// Anubis PoW challenge descriptor.
+/// Anubis `PoW` challenge descriptor.
 pub struct ChallengeDescriptor {
     challenge: ChallengeForm,
     rules: AnubisRules,
@@ -17,7 +17,7 @@ pub struct ChallengeDescriptor {
 
 #[derive(serde::Deserialize, Debug)]
 #[serde(untagged)]
-/// Anubis PoW challenge form.
+/// Anubis `PoW` challenge form.
 pub enum ChallengeForm {
     /// Plain challenge.
     Plain(String),
@@ -32,7 +32,8 @@ pub enum ChallengeForm {
 }
 
 impl ChallengeForm {
-    /// Get the id of an Anubis PoW challenge.
+    /// Get the id of an Anubis `PoW` challenge.
+    #[must_use]
     pub fn id(&self) -> Option<&str> {
         match self {
             ChallengeForm::Plain(_) => None,
@@ -52,7 +53,8 @@ impl AsRef<str> for ChallengeForm {
 }
 
 impl ChallengeDescriptor {
-    /// Estimate the workload of an Anubis PoW.
+    /// Estimate the workload of an Anubis `PoW`.
+    #[must_use]
     pub fn estimated_workload(&self) -> u64 {
         if self.rules.algorithm == "preact" {
             return 1u64;
@@ -60,12 +62,14 @@ impl ChallengeDescriptor {
         16u64.saturating_pow(self.rules.difficulty.into())
     }
 
-    /// Get the rules of an Anubis PoW.
+    /// Get the rules of an Anubis `PoW`.
+    #[must_use]
     pub fn rules(&self) -> &AnubisRules {
         &self.rules
     }
 
-    /// Get the hash result key of an Anubis PoW.
+    /// Get the hash result key of an Anubis `PoW`.
+    #[must_use]
     pub fn hash_result_key(&self) -> &str {
         if self.rules.algorithm == "preact" {
             "result"
@@ -74,43 +78,49 @@ impl ChallengeDescriptor {
         }
     }
 
-    /// Get the challenge of an Anubis PoW.
+    /// Get the challenge of an Anubis `PoW`.
+    #[must_use]
     pub fn challenge(&self) -> &ChallengeForm {
         &self.challenge
     }
 
-    /// If the Anubis PoW is supported.
+    /// If the Anubis `PoW` is supported.
+    #[must_use]
     pub fn supported(&self) -> bool {
         self.rules.algorithm == "fast"
             || self.rules.algorithm == "slow"
             || self.rules.algorithm == "preact"
     }
 
-    /// Solve an Anubis PoW.
+    /// Solve an Anubis `PoW`.
+    #[must_use]
     pub fn solve(&self) -> (Option<(u64, [u32; 8])>, u64) {
         self.solve_with_limit(u64::MAX)
     }
 
     /// Delay to hold the solution before it will be accepted.
+    #[must_use]
     pub fn delay(&self) -> u64 {
         if self.rules.algorithm == "preact" {
-            self.rules.difficulty as u64 * 100
+            u64::from(self.rules.difficulty) * 100
         } else {
             0
         }
     }
 
-    /// Solve an Anubis PoW with a limit.
+    /// Solve an Anubis `PoW` with a limit.
+    #[must_use]
     pub fn solve_with_limit(&self, limit: u64) -> (Option<(u64, [u32; 8])>, u64) {
         if self.rules.algorithm == "preact" {
-            let hash = sha2::Sha256::digest(self.challenge.as_ref().as_bytes());
-            let mut hash_arr = [0u32; 8];
-            for i in 0..8 {
-                hash_arr[i] = u32::from_be_bytes(hash[i * 4..i * 4 + 4].try_into().unwrap());
-            }
+            let hash: [u8; 32] = sha2::Sha256::digest(self.challenge.as_ref().as_bytes()).into();
+            let chunks = hash.as_chunks::<4>().0;
+            let hash_arr = core::array::from_fn(|i| u32::from_be_bytes(chunks[i]));
             return (Some((0, hash_arr)), 0);
         }
-        let mask = compute_mask_zero_nibbles(self.rules.difficulty.try_into().unwrap());
+        let Some(difficulty) = core::num::NonZeroU8::new(self.rules.difficulty) else {
+            return (None, 0);
+        };
+        let mask = compute_mask_zero_nibbles(difficulty);
 
         let mut result = None;
         let mut attempted_nonces = 0;
@@ -136,7 +146,7 @@ impl ChallengeDescriptor {
 }
 
 #[derive(serde::Deserialize, Debug)]
-/// Anubis PoW challenge rules.
+/// Anubis `PoW` challenge rules.
 pub struct AnubisRules {
     /// The algorithm. (JSON key: `algorithm`)
     algorithm: String,
@@ -145,16 +155,19 @@ pub struct AnubisRules {
 
 impl AnubisRules {
     /// If the instant is instantly or almost instantly solved and not worth task spawning.
+    #[must_use]
     pub fn instant(&self) -> bool {
         self.algorithm == "preact" || self.difficulty < 4
     }
 
-    /// Get the algorithm of an Anubis PoW.
+    /// Get the algorithm of an Anubis `PoW`.
+    #[must_use]
     pub fn algorithm(&self) -> &str {
         &self.algorithm
     }
 
     /// Difficulty in leading zero nibbles.
+    #[must_use]
     pub fn difficulty(&self) -> u8 {
         self.difficulty
     }

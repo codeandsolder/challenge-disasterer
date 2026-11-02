@@ -1,4 +1,8 @@
 #![expect(
+    clippy::inline_always,
+    reason = "hot fixed-layout message primitives force inlining in inner solver loops"
+)]
+#![expect(
     clippy::inconsistent_digit_grouping,
     reason = "protocol constants preserve grouping from their source algorithms"
 )]
@@ -10,9 +14,9 @@ use core::num::{NonZeroU8, NonZeroU32};
 
 use crate::{blake3, sha256};
 
-/// Solves an mCaptcha/Anubis/Cap.js SHA256 PoW where the SHA-256 message is a single block (512 bytes minus padding).
+/// Solves an mCaptcha/Anubis/Cap.js SHA256 `PoW` where the SHA-256 message is a single block (512 bytes minus padding).
 ///
-/// Construct: Proof := (prefix || ASCII_DECIMAL(nonce))
+/// Construct: Proof := (prefix || `ASCII_DECIMAL(nonce)`)
 ///
 /// Currently the mutating part is always 9 digits long.
 #[derive(Debug, Clone)]
@@ -48,11 +52,16 @@ pub struct IEEE754LosslessFixupPrefix {
 impl IEEE754LosslessFixupPrefix {
     /// fixes up a nonce before sending it to the server
     #[inline(always)]
-    pub const fn fixup(&self, nonce: u64) -> f64 {
+    #[must_use]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the fixup deliberately maps a u64 nonce into an IEEE-754 decimal representation"
+    )]
+    pub fn fixup(&self, nonce: u64) -> f64 {
         let mut decimals = 0.00000_000_000_001 * nonce as f64;
         let tens = self.buf[1] - b'0';
         let ones = self.buf[2] - b'0';
-        decimals += (tens * 10 + ones) as f64;
+        decimals += f64::from(tens * 10 + ones);
         if self.cut == 0 {
             decimals = -decimals;
         }
@@ -68,11 +77,12 @@ impl AsRef<[u8]> for IEEE754LosslessFixupPrefix {
 
 impl SingleBlockMessage {
     /// creates a new single block message
+    #[must_use]
     pub fn new(mut prefix: &[u8], mut working_set: u32) -> Option<Self> {
         // construct the message buffer
         let mut prefix_state = sha256::IV;
         let mut nonce_addend = 0u64;
-        let mut complete_blocks_before = 0;
+        let mut complete_blocks_before: usize = 0;
         let mut approx_working_set_count = 1u32;
 
         // first consume all full blocks, this is shared so use scalar reference implementation
@@ -101,7 +111,7 @@ impl SingleBlockMessage {
                 approx_working_set_count = approx_working_set_count.saturating_mul(10);
                 let digit = working_set % 10;
                 working_set /= 10;
-                digit as u8
+                digit.to_le_bytes()[0]
             }
         };
 
@@ -115,7 +125,7 @@ impl SingleBlockMessage {
             tmp_block[prefix.len()..].iter_mut().for_each(|b| {
                 let pad = pop_padding_digit();
                 nonce_addend *= 10;
-                nonce_addend += pad as u64;
+                nonce_addend += u64::from(pad);
                 *b = b'0' + pad;
             });
             nonce_addend.checked_mul(1_000_000_000)?; // make sure we still have enough headroom
@@ -147,7 +157,7 @@ impl SingleBlockMessage {
                 if nonce_addend.checked_mul(10_000_000_000 * 2).is_some() {
                     nonce_addend *= 10;
                     let pad = pop_padding_digit();
-                    nonce_addend += pad as u64;
+                    nonce_addend += u64::from(pad);
                     message[ptr] = b'0' + pad;
                     ptr += 1;
                 }
@@ -157,7 +167,7 @@ impl SingleBlockMessage {
                 if nonce_addend.checked_mul(10_000_000_000 * 2).is_some() {
                     nonce_addend *= 10;
                     let pad = pop_padding_digit();
-                    nonce_addend += pad as u64;
+                    nonce_addend += u64::from(pad);
                     message[ptr] = b'0' + pad;
                     ptr += 1;
                 } else {
@@ -175,8 +185,10 @@ impl SingleBlockMessage {
                 let pad2 = pop_padding_digit();
                 let pad3 = pop_padding_digit();
                 nonce_addend *= 10000;
-                nonce_addend +=
-                    pad0 as u64 * 1000 + pad1 as u64 * 100 + pad2 as u64 * 10 + pad3 as u64;
+                nonce_addend += u64::from(pad0) * 1000
+                    + u64::from(pad1) * 100
+                    + u64::from(pad2) * 10
+                    + u64::from(pad3);
                 message[ptr] = b'0' + pad0;
                 message[ptr + 1] = b'0' + pad1;
                 message[ptr + 2] = b'0' + pad2;
@@ -198,8 +210,9 @@ impl SingleBlockMessage {
 
         // set up padding
         message[ptr] = 0x80;
-        message[(64 - 8)..]
-            .copy_from_slice(&((complete_blocks_before * 64 + ptr) as u64 * 8).to_be_bytes());
+        let message_length = complete_blocks_before.checked_mul(64)?.checked_add(ptr)?;
+        let bit_length = u64::try_from(message_length).ok()?.checked_mul(8)?;
+        message[(64 - 8)..].copy_from_slice(&bit_length.to_be_bytes());
 
         if working_set != 0 {
             return None;
@@ -217,7 +230,7 @@ impl SingleBlockMessage {
             prefix_state,
             digit_index,
             nonce_addend,
-            approx_working_set_count: approx_working_set_count.try_into().unwrap(),
+            approx_working_set_count: core::num::NonZeroU32::new(approx_working_set_count)?,
             no_trailing_zeros: false,
         })
     }
@@ -225,6 +238,7 @@ impl SingleBlockMessage {
     /// Create a new single block message using only IEEE 754 double precision floats that can stringify losslessly
     ///
     /// The caller is expected to append the bytes from the prefix to the nonce before sending it to the server.
+    #[must_use]
     pub fn new_f64(
         mut prefix: &[u8],
         mut working_set: u32,
@@ -232,7 +246,7 @@ impl SingleBlockMessage {
         // construct the message buffer
         let mut prefix_state = sha256::IV;
         let mut nonce_addend = 0u64;
-        let mut complete_blocks_before = 0;
+        let mut complete_blocks_before: usize = 0;
         let mut approx_working_set_count = 1;
 
         // first consume all full blocks, this is shared so use scalar reference implementation
@@ -262,8 +276,8 @@ impl SingleBlockMessage {
             if working_set >= 32 {
                 return None;
             }
-            let working_set_msb = working_set / 10;
-            let working_set_lsb = working_set % 10;
+            let working_set_tens = working_set / 10;
+            let working_set_ones = working_set % 10;
             let mut tmp_block = [0; 64];
             tmp_block[..prefix.len()].copy_from_slice(prefix);
             let space = 64 - prefix.len();
@@ -275,8 +289,8 @@ impl SingleBlockMessage {
                 padding.cut = 1;
             }
             let mut padding_buf = padding.buf;
-            padding_buf[1] = b'1' + working_set_msb as u8;
-            padding_buf[2] = b'0' + working_set_lsb as u8;
+            padding_buf[1] = b'1' + working_set_tens.to_le_bytes()[0];
+            padding_buf[2] = b'0' + working_set_ones.to_le_bytes()[0];
             padding.buf = padding_buf;
             let pad = &padding.buf.as_slice()[padding.cut..];
             let (pad_left, pad_right) = pad.split_at(space);
@@ -310,7 +324,7 @@ impl SingleBlockMessage {
                 approx_working_set_count = approx_working_set_count.saturating_mul(10);
                 let digit = working_set % 10;
                 working_set /= 10;
-                digit as u8
+                digit.to_le_bytes()[0]
             }
         };
 
@@ -324,7 +338,7 @@ impl SingleBlockMessage {
             tmp_block[prefix.len()..].iter_mut().for_each(|b| {
                 let pad = pop_padding_digit();
                 nonce_addend *= 10;
-                nonce_addend += pad as u64;
+                nonce_addend += u64::from(pad);
                 *b = b'0' + pad;
             });
             nonce_addend.checked_mul(1_000_000_000)?; // make sure we still have enough headroom
@@ -353,12 +367,12 @@ impl SingleBlockMessage {
             if ptr % 2 == 1 {
                 if nonce_addend
                     .checked_mul(10_000_000_000 * 2)
-                    .filter(|x| *x < 1_000_000_000_000_000)
-                    .is_some()
+                    .as_ref()
+                    .is_some_and(|x| *x < 1_000_000_000_000_000)
                 {
                     nonce_addend *= 10;
                     let pad = pop_padding_digit();
-                    nonce_addend += pad as u64;
+                    nonce_addend += u64::from(pad);
                     message[ptr] = b'0' + pad;
                     ptr += 1;
                 }
@@ -367,12 +381,12 @@ impl SingleBlockMessage {
             while (ptr + 2) % 4 != 0 {
                 if nonce_addend
                     .checked_mul(10_000_000_000 * 2)
-                    .filter(|x| *x < 1_000_000_000_000_000)
-                    .is_some()
+                    .as_ref()
+                    .is_some_and(|x| *x < 1_000_000_000_000_000)
                 {
                     nonce_addend *= 10;
                     let pad = pop_padding_digit();
-                    nonce_addend += pad as u64;
+                    nonce_addend += u64::from(pad);
                     message[ptr] = b'0' + pad;
                     ptr += 1;
                 } else {
@@ -383,16 +397,18 @@ impl SingleBlockMessage {
             // times 2 because for some reason anubis uses signed nonces ... I wonder if we can send negative nonces
             while nonce_addend
                 .checked_mul(10000 * 1_000_000_000 * 2)
-                .filter(|x| *x < 1_000_000_000_000_000)
-                .is_some()
+                .as_ref()
+                .is_some_and(|x| *x < 1_000_000_000_000_000)
             {
                 let pad0 = pop_padding_digit();
                 let pad1 = pop_padding_digit();
                 let pad2 = pop_padding_digit();
                 let pad3 = pop_padding_digit();
                 nonce_addend *= 10000;
-                nonce_addend +=
-                    pad0 as u64 * 1000 + pad1 as u64 * 100 + pad2 as u64 * 10 + pad3 as u64;
+                nonce_addend += u64::from(pad0) * 1000
+                    + u64::from(pad1) * 100
+                    + u64::from(pad2) * 10
+                    + u64::from(pad3);
                 message[ptr] = b'0' + pad0;
                 message[ptr + 1] = b'0' + pad1;
                 message[ptr + 2] = b'0' + pad2;
@@ -416,8 +432,9 @@ impl SingleBlockMessage {
 
         // set up padding
         message[ptr] = 0x80;
-        message[(64 - 8)..]
-            .copy_from_slice(&((complete_blocks_before * 64 + ptr) as u64 * 8).to_be_bytes());
+        let message_length = complete_blocks_before.checked_mul(64)?.checked_add(ptr)?;
+        let bit_length = u64::try_from(message_length).ok()?.checked_mul(8)?;
+        message[(64 - 8)..].copy_from_slice(&bit_length.to_be_bytes());
 
         if working_set != 0 {
             return None;
@@ -436,7 +453,7 @@ impl SingleBlockMessage {
                 prefix_state,
                 digit_index,
                 nonce_addend,
-                approx_working_set_count: approx_working_set_count.try_into().unwrap(),
+                approx_working_set_count: core::num::NonZeroU32::new(approx_working_set_count)?,
                 no_trailing_zeros: fixup_prefix.is_some(),
             },
             fixup_prefix,
@@ -444,9 +461,9 @@ impl SingleBlockMessage {
     }
 }
 
-/// Solves an mCaptcha/Anubis/Cap.js SHA256 PoW where the SHA-256 message is a double block (1024 bytes minus padding).
+/// Solves an mCaptcha/Anubis/Cap.js SHA256 `PoW` where the SHA-256 message is a double block (1024 bytes minus padding).
 ///
-/// Construct: Proof := (prefix || '1' * k || ASCII_DECIMAL(nonce) || '\x80') | ('\0' * 56 + length)
+/// Construct: Proof := (prefix || '1' * k || `ASCII_DECIMAL(nonce)` || '\x80') | ('\0' * 56 + length)
 ///
 /// Currently the mutating part is always 9 digits long.
 pub struct DoubleBlockMessage {
@@ -465,14 +482,15 @@ pub struct DoubleBlockMessage {
 
 impl DoubleBlockMessage {
     /// the index of the mutating part of the digits in the message
-    pub const DIGIT_IDX: u64 = 54;
+    pub const DIGIT_IDX: usize = 54;
 
     /// creates a new double block message
+    #[must_use]
     pub fn new(mut prefix: &[u8], mut working_set: u32) -> Option<Self> {
         // construct the message buffer
         let mut prefix_state = sha256::IV;
 
-        let mut complete_blocks_before = 0;
+        let mut complete_blocks_before: u64 = 0;
 
         let mut is_fitst_digit = true;
         let mut pop_padding_digit = || {
@@ -482,7 +500,7 @@ impl DoubleBlockMessage {
             } else {
                 let digit = working_set % 10;
                 working_set /= 10;
-                digit as u8
+                digit.to_le_bytes()[0]
             }
         };
 
@@ -516,14 +534,14 @@ impl DoubleBlockMessage {
         while (ptr + 2) % 8 != 0 {
             nonce_addend *= 10;
             let pad = pop_padding_digit();
-            nonce_addend += pad as u64;
+            nonce_addend += u64::from(pad);
             *message.get_mut(ptr)? = b'0' + pad;
             ptr += 1;
         }
         nonce_addend *= 1_000_000_000;
 
         // these cases are handled by the single block solver
-        if ptr != Self::DIGIT_IDX as usize {
+        if ptr != Self::DIGIT_IDX {
             return None;
         }
 
@@ -543,7 +561,9 @@ impl DoubleBlockMessage {
 
         message[ptr] = 0x80;
 
-        let message_length = complete_blocks_before * 64 + ptr as u64;
+        let message_length = complete_blocks_before
+            .checked_mul(64)?
+            .checked_add(u64::try_from(ptr).ok()?)?;
 
         Some(Self {
             prefix_state,
@@ -579,6 +599,7 @@ impl DecimalMessage {
     }
 
     /// creates a new decimal message using only IEEE 754 double precision floats that can stringify losslessly
+    #[must_use]
     pub fn new_f64(
         input: &[u8],
         working_set: u32,
@@ -613,6 +634,7 @@ pub struct BinaryMessage {
 
 impl BinaryMessage {
     /// creates a new binary message
+    #[must_use]
     pub fn new(salt: &[u8], nonce_byte_count: NonZeroU8) -> Self {
         assert!(
             nonce_byte_count.get() <= 8,
@@ -641,7 +663,7 @@ impl BinaryMessage {
             salt_residual,
             salt_residual_len: remainder.len(),
             nonce_byte_count,
-            message_length: salt.len() + nonce_byte_count.get() as usize,
+            message_length: salt.len() + usize::from(nonce_byte_count.get()),
         }
     }
 }
@@ -666,12 +688,16 @@ pub struct CerberusBinaryMessage {
 
 impl CerberusBinaryMessage {
     /// Create a new Cerberus message
+    #[must_use]
     pub fn new(salt: &[u8], first_word: u32) -> Self {
         let prehash = ::blake3::hash(salt).to_hex();
-        Self::new_prehashed(prehash.as_bytes().try_into().unwrap(), first_word)
+        let mut prehash_bytes = [0_u8; 64];
+        prehash_bytes.copy_from_slice(prehash.as_bytes());
+        Self::new_prehashed(&prehash_bytes, first_word)
     }
 
     /// Create a new Cerberus message with a prehashed midstate
+    #[must_use]
     pub fn new_prehashed(prehash: &[u8; 64], first_word: u32) -> Self {
         let mut block = [0; 16];
         for i in 0..16 {
@@ -700,7 +726,7 @@ impl CerberusBinaryMessage {
 #[derive(Debug, Clone)]
 /// A message in the cerberus decimal format (pre 0.4.6)
 ///
-/// Construct: Proof := (prefix || ASCII_GO_INT_DECIMAL(nonce))
+/// Construct: Proof := (prefix || `ASCII_GO_INT_DECIMAL(nonce)`)
 pub struct CerberusDecimalMessage {
     pub(crate) prefix_state: [u32; 8],
     pub(crate) salt_residual: [u8; 64],
@@ -713,6 +739,7 @@ impl CerberusDecimalMessage {
     /// Create a new Cerberus message
     ///
     /// End-to-end salt construction: `${challenge}|${inputNonce}|${ts}|${signature}|`
+    #[must_use]
     pub fn new(salt: &[u8], mut working_set: u32) -> Option<Self> {
         // nonce placement in blake3 is less important than sha256, both early and late salts have strategies to elide computation.
         //
@@ -756,15 +783,15 @@ impl CerberusDecimalMessage {
         // this is far from the typical case for Cerberus so not very important (even the official solver only searches 4G of nonce space)
         if remainder.len() >= 55 {
             // not enough room for 9 digits, assume 64-bit server and pad generously
-            let head_digit = (working_set % 8) as u8 + 1; // i64::MAX starts with 9 so we can only use 1-8 as head digit
-            nonce_addend = head_digit as u64;
+            let head_digit = (working_set % 8).to_le_bytes()[0] + 1; // i64::MAX starts with 9 so we can only use 1-8 as head digit
+            nonce_addend = u64::from(head_digit);
             salt_residual[remainder.len()] = head_digit + b'0';
             working_set /= 8;
             for byte in salt_residual.iter_mut().skip(remainder.len() + 1) {
                 let digit = working_set % 10;
-                *byte = digit as u8 + b'0';
+                *byte = digit.to_le_bytes()[0] + b'0';
                 nonce_addend *= 10;
-                nonce_addend += digit as u64;
+                nonce_addend += u64::from(digit);
                 working_set /= 10;
             }
             ptr = 0;
@@ -789,17 +816,17 @@ impl CerberusDecimalMessage {
             salt_residual.fill(0);
         }
 
-        let head_digit = (working_set % 9) as u8 + 1;
+        let head_digit = (working_set % 9).to_le_bytes()[0] + 1;
         salt_residual[ptr] = head_digit + b'0';
         nonce_addend *= 10;
-        nonce_addend += head_digit as u64;
+        nonce_addend += u64::from(head_digit);
         working_set /= 9;
         while working_set != 0 {
             ptr += 1;
             let digit = working_set % 10;
-            salt_residual[ptr] = digit as u8 + b'0';
+            salt_residual[ptr] = digit.to_le_bytes()[0] + b'0';
             nonce_addend *= 10;
-            nonce_addend += digit as u64;
+            nonce_addend += u64::from(digit);
             working_set /= 10;
         }
 
@@ -835,6 +862,7 @@ pub struct GoAwayMessage {
 
 impl GoAwayMessage {
     /// creates a new go-away message
+    #[must_use]
     pub fn new(challenge: [u32; 8], high_word: u32) -> Self {
         Self {
             challenge,
@@ -848,6 +876,7 @@ impl GoAwayMessage {
     }
 
     /// creates a new go-away message from a 32 byte challenge
+    #[must_use]
     pub fn new_bytes(challenge: &[u8; 32], high_word: u32) -> Self {
         Self {
             challenge: core::array::from_fn(|i| {
@@ -863,21 +892,23 @@ impl GoAwayMessage {
     }
 
     /// creates a new go-away message from a 64 byte challenge
+    #[must_use]
     pub fn new_hex(challenge: &[u8; 64], high_word: u32) -> Option<Self> {
         let mut prefix_fixed_up = [0; 32];
         for i in 0..32 {
-            let byte_hex: [u8; 2] = challenge[i * 2..][..2].try_into().unwrap();
-            let high_nibble = if byte_hex[0].is_ascii_digit() {
-                byte_hex[0] - b'0'
-            } else if (b'a'..=b'f').contains(&byte_hex[0]) {
-                byte_hex[0] - b'a' + 10
+            let high = challenge[i * 2];
+            let low = challenge[i * 2 + 1];
+            let high_nibble = if high.is_ascii_digit() {
+                high - b'0'
+            } else if (b'a'..=b'f').contains(&high) {
+                high - b'a' + 10
             } else {
                 return None;
             };
-            let low_nibble = if byte_hex[1].is_ascii_digit() {
-                byte_hex[1] - b'0'
-            } else if (b'a'..=b'f').contains(&byte_hex[1]) {
-                byte_hex[1] - b'a' + 10
+            let low_nibble = if low.is_ascii_digit() {
+                low - b'0'
+            } else if (b'a'..=b'f').contains(&low) {
+                low - b'a' + 10
             } else {
                 return None;
             };
@@ -887,7 +918,7 @@ impl GoAwayMessage {
     }
 }
 
-/// A shared precomputed state for expanding CapJS batch challenges
+/// A shared precomputed state for expanding `CapJS` batch challenges
 pub struct CapJSEmitter {
     seed: u32,
 }
@@ -912,9 +943,10 @@ const fn capjs_lfsr(state: u32) -> u32 {
 
 impl CapJSEmitter {
     /// Create a new emitter for a given challenge token
+    #[must_use]
     pub const fn new(token: &[u8]) -> Self {
         let mut i = 0;
-        let mut hash = 2166136261;
+        let mut hash = 2_166_136_261;
         while i < token.len() {
             hash = fnv1a(hash, token[i]);
             i += 1;
@@ -931,7 +963,7 @@ impl CapJSEmitter {
         let mut j = 10;
         loop {
             j -= 1;
-            digits[j] = (copy % 10) as u8;
+            digits[j] = (copy % 10).to_le_bytes()[0];
             copy /= 10;
             if copy == 0 {
                 break;
@@ -1028,12 +1060,12 @@ mod tests {
 
     #[test]
     fn test_fnv1a() {
-        let mut state = 2166136261;
+        let mut state = 2_166_136_261;
         let data = [240, 159, 166, 132, 240, 159, 140, 136];
         data.iter().for_each(|d| {
             state = fnv1a(state, *d);
         });
-        assert_eq!(state, 2868248295);
+        assert_eq!(state, 2_868_248_295);
     }
 
     #[test]
@@ -1043,22 +1075,22 @@ mod tests {
         const S: usize = 30;
         const D: usize = 8;
         const KNOWN_ANSWER: [([u8; S], [u32; (D + 3) / 8]); C] = [
-            (*b"0301c97a7ffc19cd647d324f84a2d9", [0xd4f0af52]),
-            (*b"e2462bfec006f422ced5d703f2842e", [0xdf66e3e3]),
-            (*b"c9dc0ae6589d3a6605e1344e4e745a", [0x425e36e1]),
-            (*b"b47a610af330f9c76d0597a321c293", [0x3f743fab]),
-            (*b"9c8bdae31d2ee808c5de8bff808d54", [0x0e401a5c]),
-            (*b"488848fd736ecef6fcbb2e6eb7a2f8", [0xcd2ff29f]),
-            (*b"6ff608b772f74727d86eafeebffe4d", [0x2f937817]),
-            (*b"075dc1a5524efc3134dbc075d67d85", [0x0cbea335]),
-            (*b"38f3cb0b73c3f382bbc51e3b184c35", [0xf4e72b04]),
-            (*b"a01611f327205c07b8b5e0b790c35e", [0x29fe9e9b]),
-            (*b"4097bda25357605354f6a05d9f5544", [0xcecadb61]),
-            (*b"f62a5b07141651e21b65a0174385e3", [0x1b5bb71a]),
-            (*b"8b10f44f26b28ee39ab47fd4bc905b", [0x4b836fae]),
-            (*b"0f919a0ca6d088e44e4633428de8dd", [0x0fa70834]),
-            (*b"ea9fd8f221b396723cc2064cfd7cb1", [0xd4038d0a]),
-            (*b"5a94c8bcb3e606dd148e7723972538", [0x0a6a8e21]),
+            (*b"0301c97a7ffc19cd647d324f84a2d9", [0xd4f0_af52]),
+            (*b"e2462bfec006f422ced5d703f2842e", [0xdf66_e3e3]),
+            (*b"c9dc0ae6589d3a6605e1344e4e745a", [0x425e_36e1]),
+            (*b"b47a610af330f9c76d0597a321c293", [0x3f74_3fab]),
+            (*b"9c8bdae31d2ee808c5de8bff808d54", [0x0e40_1a5c]),
+            (*b"488848fd736ecef6fcbb2e6eb7a2f8", [0xcd2f_f29f]),
+            (*b"6ff608b772f74727d86eafeebffe4d", [0x2f93_7817]),
+            (*b"075dc1a5524efc3134dbc075d67d85", [0x0cbe_a335]),
+            (*b"38f3cb0b73c3f382bbc51e3b184c35", [0xf4e7_2b04]),
+            (*b"a01611f327205c07b8b5e0b790c35e", [0x29fe_9e9b]),
+            (*b"4097bda25357605354f6a05d9f5544", [0xceca_db61]),
+            (*b"f62a5b07141651e21b65a0174385e3", [0x1b5b_b71a]),
+            (*b"8b10f44f26b28ee39ab47fd4bc905b", [0x4b83_6fae]),
+            (*b"0f919a0ca6d088e44e4633428de8dd", [0x0fa7_0834]),
+            (*b"ea9fd8f221b396723cc2064cfd7cb1", [0xd403_8d0a]),
+            (*b"5a94c8bcb3e606dd148e7723972538", [0x0a6a_8e21]),
         ];
 
         let emitter = CapJSEmitter::new(TOKEN);
@@ -1066,7 +1098,11 @@ mod tests {
             let real_i = i + 1;
             let mut salt_out = [0; S];
             let mut target_out = [0; (D + 3) / 8];
-            emitter.emit(&mut salt_out, &mut target_out, real_i as u32);
+            emitter.emit(
+                &mut salt_out,
+                &mut target_out,
+                u32::try_from(real_i).expect("test index fits u32"),
+            );
             assert_eq!(
                 salt_out,
                 salt.as_slice(),

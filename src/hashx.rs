@@ -32,7 +32,7 @@ impl Challenge {
 #[cfg(feature = "gpu")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
-pub(crate) enum GpuOp {
+pub enum GpuOp {
     Mul = 0,
     UMulH = 1,
     SMulH = 2,
@@ -44,6 +44,13 @@ pub(crate) enum GpuOp {
     Rotate = 8,
     Target = 9,
     Branch = 10,
+}
+
+#[cfg(feature = "gpu")]
+impl From<GpuOp> for u32 {
+    fn from(value: GpuOp) -> Self {
+        value as Self
+    }
 }
 
 #[cfg(feature = "gpu")]
@@ -72,7 +79,7 @@ impl TryFrom<u32> for GpuOp {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "gpu", derive(bytemuck::Pod, bytemuck::Zeroable))]
-pub(crate) struct Instr {
+pub struct Instr {
     pub(crate) op: u32,
     pub(crate) dst: u32,
     pub(crate) src: u32,
@@ -88,7 +95,7 @@ impl Instr {
 
 #[cfg(feature = "gpu")]
 #[derive(Clone, Debug)]
-pub(crate) struct GpuProgram {
+pub struct GpuProgram {
     key: [u64; 4],
     instructions: Vec<Instr>,
 }
@@ -149,7 +156,7 @@ impl GpuProgram {
         Ok(Self { key, instructions })
     }
 
-    pub(crate) fn key(&self) -> &[u64; 4] {
+    pub(crate) const fn key(&self) -> &[u64; 4] {
         &self.key
     }
 
@@ -159,7 +166,7 @@ impl GpuProgram {
 }
 
 #[cfg(feature = "gpu")]
-fn prefix_mask(difficulty: u32) -> u32 {
+const fn prefix_mask(difficulty: u32) -> u32 {
     if difficulty >= 32 {
         return u32::MAX;
     }
@@ -178,7 +185,7 @@ fn prefix_mask(difficulty: u32) -> u32 {
 }
 
 #[cfg(feature = "gpu")]
-pub(crate) fn difficulty_masks(difficulty: u32) -> (u32, u32) {
+pub fn difficulty_masks(difficulty: u32) -> (u32, u32) {
     let low = prefix_mask(difficulty.min(32));
     let high = if difficulty > 32 {
         prefix_mask(difficulty - 32)
@@ -188,7 +195,7 @@ pub(crate) fn difficulty_masks(difficulty: u32) -> (u32, u32) {
     (low, high)
 }
 
-pub(crate) fn build_compiled_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX, HashXProgram)> {
+pub fn build_compiled_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX, HashXProgram)> {
     let mut candidate = seed.to_vec();
     let mut counter = 0_u32;
     loop {
@@ -209,25 +216,25 @@ pub(crate) fn build_compiled_seed(seed: &[u8]) -> anyhow::Result<(Vec<u8>, HashX
 }
 
 #[cfg(feature = "gpu")]
-pub(crate) fn describe(seed: &[u8]) -> anyhow::Result<(HashX, GpuProgram)> {
+pub fn describe(seed: &[u8]) -> anyhow::Result<(HashX, GpuProgram)> {
     let (_usable_seed, compiled, generated) = build_compiled_seed(seed)?;
     let mut instructions = Vec::with_capacity(generated.instructions().len());
     for instruction in generated.instructions() {
         let instruction = match instruction {
             HashXInstruction::Mul { dst, src } => Instr {
-                op: GpuOp::Mul as u32,
+                op: u32::from(GpuOp::Mul),
                 dst: u32::from(dst.index()),
                 src: u32::from(src.index()),
                 imm: 0,
             },
             HashXInstruction::UMulH { dst, src } => Instr {
-                op: GpuOp::UMulH as u32,
+                op: u32::from(GpuOp::UMulH),
                 dst: u32::from(dst.index()),
                 src: u32::from(src.index()),
                 imm: 0,
             },
             HashXInstruction::SMulH { dst, src } => Instr {
-                op: GpuOp::SMulH as u32,
+                op: u32::from(GpuOp::SMulH),
                 dst: u32::from(dst.index()),
                 src: u32::from(src.index()),
                 imm: 0,
@@ -237,49 +244,49 @@ pub(crate) fn describe(seed: &[u8]) -> anyhow::Result<(HashX, GpuProgram)> {
                 src,
                 left_shift,
             } => Instr {
-                op: GpuOp::AddShift as u32,
+                op: u32::from(GpuOp::AddShift),
                 dst: u32::from(dst.index()),
                 src: u32::from(src.index()),
                 imm: u32::from(*left_shift),
             },
             HashXInstruction::AddConst { dst, src } => Instr {
-                op: GpuOp::AddConst as u32,
+                op: u32::from(GpuOp::AddConst),
                 dst: u32::from(dst.index()),
                 src: 0,
-                imm: *src as u32,
+                imm: (*src).cast_unsigned(),
             },
             HashXInstruction::Sub { dst, src } => Instr {
-                op: GpuOp::Sub as u32,
+                op: u32::from(GpuOp::Sub),
                 dst: u32::from(dst.index()),
                 src: u32::from(src.index()),
                 imm: 0,
             },
             HashXInstruction::Xor { dst, src } => Instr {
-                op: GpuOp::Xor as u32,
+                op: u32::from(GpuOp::Xor),
                 dst: u32::from(dst.index()),
                 src: u32::from(src.index()),
                 imm: 0,
             },
             HashXInstruction::XorConst { dst, src } => Instr {
-                op: GpuOp::XorConst as u32,
+                op: u32::from(GpuOp::XorConst),
                 dst: u32::from(dst.index()),
                 src: 0,
-                imm: *src as u32,
+                imm: (*src).cast_unsigned(),
             },
             HashXInstruction::Rotate { dst, right_rotate } => Instr {
-                op: GpuOp::Rotate as u32,
+                op: u32::from(GpuOp::Rotate),
                 dst: u32::from(dst.index()),
                 src: 0,
                 imm: u32::from(*right_rotate),
             },
             HashXInstruction::Target => Instr {
-                op: GpuOp::Target as u32,
+                op: u32::from(GpuOp::Target),
                 dst: 0,
                 src: 0,
                 imm: 0,
             },
             HashXInstruction::Branch { mask } => Instr {
-                op: GpuOp::Branch as u32,
+                op: u32::from(GpuOp::Branch),
                 dst: 0,
                 src: 0,
                 imm: *mask,
@@ -293,7 +300,7 @@ pub(crate) fn describe(seed: &[u8]) -> anyhow::Result<(HashX, GpuProgram)> {
     ))
 }
 
-pub(crate) fn verify(challenge: &Challenge, answer: &Answer) -> anyhow::Result<bool> {
+pub fn verify(challenge: &Challenge, answer: &Answer) -> anyhow::Result<bool> {
     challenge.validate()?;
     let seed = hex::decode(&challenge.data).context("decode HashX challenge")?;
     let (_usable_seed, verifier, _program) = build_compiled_seed(&seed)?;
@@ -305,8 +312,13 @@ pub(crate) fn verify(challenge: &Challenge, answer: &Answer) -> anyhow::Result<b
     Ok(hex::encode(hash) == answer.hash && valid_prefix(&hash, challenge.difficulty))
 }
 
-pub(crate) fn valid_prefix(hash: &[u8; 32], difficulty: u32) -> bool {
-    let whole = (difficulty / 8) as usize;
+pub fn valid_prefix(hash: &[u8; 32], difficulty: u32) -> bool {
+    if difficulty > 256 {
+        return false;
+    }
+    let Ok(whole) = usize::try_from(difficulty / 8) else {
+        return false;
+    };
     let rem = difficulty % 8;
     hash[..whole].iter().all(|&byte| byte == 0)
         && (rem == 0 || hash[whole] & (0xff_u8 << (8 - rem)) == 0)
@@ -315,6 +327,12 @@ pub(crate) fn valid_prefix(hash: &[u8; 32], difficulty: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn valid_prefix_rejects_difficulty_wider_than_the_digest() {
+        assert!(!valid_prefix(&[0_u8; 32], 257));
+        assert!(valid_prefix(&[0_u8; 32], 256));
+    }
 
     #[test]
     fn rejected_seed_retries_with_one_authoritative_program() -> anyhow::Result<()> {

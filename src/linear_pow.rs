@@ -11,11 +11,11 @@ const DEFAULT_LIMIT: u64 = 4_000_000_000;
 const TARGET: [u8; 2] = [0xb0, 0x0b];
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct Challenge {
+pub struct Challenge {
     seed: String,
 }
 
-pub(crate) fn solve(
+pub fn solve(
     challenge: serde_json::Value,
     implementation: Implementation,
 ) -> anyhow::Result<Result> {
@@ -34,7 +34,7 @@ pub(crate) fn solve(
         .as_bytes()
         .first()
         .and_then(|byte| (*byte as char).to_digit(16))
-        .map(|value| value as usize)
+        .and_then(|value| usize::try_from(value).ok())
         .context("Linear.pub seed must begin with a hex digit")?;
     ensure!(offset + 1 < 20, "Linear.pub digest offset is out of range");
 
@@ -84,12 +84,12 @@ impl DecimalBytes {
     }
 }
 
-fn decimal_bytes(mut value: u64) -> DecimalBytes {
+const fn decimal_bytes(mut value: u64) -> DecimalBytes {
     let mut bytes = [0_u8; 20];
     let mut start = bytes.len();
     loop {
         start -= 1;
-        bytes[start] = b'0' + (value % 10) as u8;
+        bytes[start] = b'0' + (value % 10).to_le_bytes()[0];
         value /= 10;
         if value == 0 {
             break;

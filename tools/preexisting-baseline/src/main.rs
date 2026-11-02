@@ -169,7 +169,7 @@ fn current_cases(sample: u32, limit: u64) -> anyhow::Result<()> {
         current::solver::SOLVE_TYPE_MASK
     );
     let mut mc = Vec::new();
-    current::build_mcaptcha_prefix(
+    let _ = current::build_mcaptcha_prefix(
         &mut mc,
         "challenge-disasterer-matrix",
         &format!("matrix-salt-{sample:08x}"),

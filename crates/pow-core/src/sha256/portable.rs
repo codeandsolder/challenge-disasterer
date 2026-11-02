@@ -133,8 +133,14 @@ mod tests {
         }
 
         let expected = [
-            0xba7816bf, 0x8f01cfea, 0x414140de, 0x5dae2223, 0xb00361a3, 0x96177a9c, 0xb410ff61,
-            0xf20015ad,
+            0xba78_16bf,
+            0x8f01_cfea,
+            0x4141_40de,
+            0x5dae_2223,
+            0xb003_61a3,
+            0x9617_7a9c,
+            0xb410_ff61,
+            0xf200_15ad,
         ];
         for lane in 0..LANES {
             let actual = core::array::from_fn(|word| state[word][lane]);

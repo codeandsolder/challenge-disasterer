@@ -1,4 +1,4 @@
-use std::{borrow::Cow, sync::mpsc, time::Instant};
+use std::{borrow::Cow, fmt::Write as _, sync::mpsc, time::Instant};
 
 use anyhow::{Context, anyhow};
 use hashwx::HashX;
@@ -21,7 +21,7 @@ const NVIDIA_VULKAN_IMPLEMENTATION: &str = "vulkan-nvidia-u32-persistent";
 const EXTMUL_VULKAN_IMPLEMENTATION: &str = "vulkan-extmul-persistent";
 const SPECIALIZED_IMPLEMENTATION: &str = "wgsl-specialized";
 
-pub(crate) struct GpuResult {
+pub struct GpuResult {
     pub(crate) answer: Answer,
     pub(crate) solve_ms: f64,
     pub(crate) implementation: &'static str,
@@ -62,6 +62,10 @@ pub struct GpuSolver {
 }
 
 impl GpuSolver {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "GPU resource and pipeline construction is one audited initialization transaction"
+    )]
     pub async fn create() -> anyhow::Result<Self> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -167,7 +171,7 @@ impl GpuSolver {
                 layout: Some(&pipeline_layout),
                 module: &module,
                 entry_point: Some("solve"),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
             });
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -328,7 +332,7 @@ impl GpuSolver {
     }
 
     fn solve_persistent(
-        &mut self,
+        &self,
         challenge: &Challenge,
         hashx: &HashX,
         key: &[u64; 4],
@@ -353,11 +357,14 @@ impl GpuSolver {
         let mut base = 0_u64;
         while u32::try_from(base).is_ok() {
             let remaining = u64::from(u32::MAX) + 1 - base;
-            let batch = u64::from(batch_size).min(remaining) as u32;
+            let batch = u32::try_from(u64::from(batch_size).min(remaining))
+                .context("persistent HashX batch exceeds u32")?;
             self.write_params(key, base, challenge.difficulty);
-            let mut encoder = self.device.create_command_encoder(&Default::default());
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             {
-                let mut pass = encoder.begin_compute_pass(&Default::default());
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, bind_group, &[]);
                 pass.dispatch_workgroups(batch.div_ceil(self.persistent_wg_size), 1, 1);
@@ -384,7 +391,7 @@ impl GpuSolver {
     }
 
     fn solve_specialized(
-        &mut self,
+        &self,
         challenge: &Challenge,
         hashx: &HashX,
         key: &[u64; 4],
@@ -405,7 +412,7 @@ impl GpuSolver {
                 layout: None,
                 module: &module,
                 entry_point: Some("solve"),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
             });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -427,11 +434,14 @@ impl GpuSolver {
         let mut base = 0_u64;
         while u32::try_from(base).is_ok() {
             let remaining = u64::from(u32::MAX) + 1 - base;
-            let batch = u64::from(SPECIALIZED_BATCH).min(remaining) as u32;
+            let batch = u32::try_from(u64::from(SPECIALIZED_BATCH).min(remaining))
+                .context("specialized HashX batch exceeds u32")?;
             self.write_params(key, base, challenge.difficulty);
-            let mut encoder = self.device.create_command_encoder(&Default::default());
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             {
-                let mut pass = encoder.begin_compute_pass(&Default::default());
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
                 pass.set_pipeline(&pipeline);
                 pass.set_bind_group(0, &bind_group, &[]);
                 pass.dispatch_workgroups(batch.div_ceil(SPECIALIZED_WG_SIZE), 1, 1);
@@ -460,10 +470,11 @@ impl GpuSolver {
     fn write_params(&self, key: &[u64; 4], base: u64, difficulty: u32) {
         let mut words = [0_u32; 16];
         for (index, value) in key.iter().copied().enumerate() {
-            words[index * 2] = value as u32;
-            words[index * 2 + 1] = (value >> 32) as u32;
+            let (low, high) = split_u64(value);
+            words[index * 2] = low;
+            words[index * 2 + 1] = high;
         }
-        words[8] = base as u32;
+        words[8] = split_u64(base).0;
         words[9] = difficulty;
         self.queue
             .write_buffer(&self.params, 0, bytemuck::cast_slice(&words));
@@ -478,14 +489,17 @@ impl GpuSolver {
         self.device.poll(wgpu::PollType::wait_indefinitely())?;
         rx.recv().context("HashX map callback dropped")??;
         let mapped = slice.get_mapped_range().context("map HashX result")?;
-        let result = u32::from_le_bytes(mapped[..4].try_into().expect("four-byte result"));
+        let bytes = mapped
+            .get(..4)
+            .context("HashX result buffer shorter than four bytes")?;
+        let result = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         drop(mapped);
         self.staging.unmap();
         Ok(result)
     }
 }
 
-fn storage_layout_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
+const fn storage_layout_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -542,10 +556,18 @@ fn create_persistent_shader_module(
 }
 
 fn persistent_batch(difficulty: u32, workgroup_size: u32) -> u32 {
-    let expected = 1_u64 << difficulty.min(PERSISTENT_CROSSOVER_DIFFICULTY);
+    let expected = 1_u32 << difficulty.min(PERSISTENT_CROSSOVER_DIFFICULTY);
     expected
         .div_ceil(4)
-        .clamp(u64::from(workgroup_size), u64::from(PERSISTENT_MAX_BATCH)) as u32
+        .clamp(workgroup_size, PERSISTENT_MAX_BATCH)
+}
+
+const fn split_u64(value: u64) -> (u32, u32) {
+    let bytes = value.to_le_bytes();
+    (
+        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+    )
 }
 
 fn validated_result(
@@ -592,14 +614,14 @@ fn op_source(i: Instr) -> anyhow::Result<String> {
         GpuOp::AddConst => format!(
             "r[{d}u]=r[{d}u]+0x{v:016x}lu;\n",
             d = i.dst,
-            v = i64::from(i.imm as i32) as u64
+            v = i64::from(i.imm.cast_signed()).cast_unsigned()
         ),
         GpuOp::Sub => format!("r[{d}u]=r[{d}u]-r[{s}u];\n", d = i.dst, s = i.src),
         GpuOp::Xor => format!("r[{d}u]=r[{d}u]^r[{s}u];\n", d = i.dst, s = i.src),
         GpuOp::XorConst => format!(
             "r[{d}u]=r[{d}u]^0x{v:016x}lu;\n",
             d = i.dst,
-            v = i64::from(i.imm as i32) as u64
+            v = i64::from(i.imm.cast_signed()).cast_unsigned()
         ),
         GpuOp::Rotate => format!("r[{d}u]=ror(r[{d}u],{n}u);\n", d = i.dst, n = i.imm),
         GpuOp::Target | GpuOp::Branch => String::new(),
@@ -614,10 +636,11 @@ fn specialized_shader(program: &[Instr]) -> anyhow::Result<String> {
             GpuOp::Target => target = Some(index),
             GpuOp::Branch => {
                 let start = target.context("HashX branch without target")? + 1;
-                body.push_str(&format!(
-                    "if(allow&&((mh&0x{:08x}u)==0u)){{allow=false;\n",
+                let _ = writeln!(
+                    body,
+                    "if(allow&&((mh&0x{:08x}u)==0u)){{allow=false;",
                     instruction.imm
-                ));
+                );
                 for &replay in &program[start..index] {
                     body.push_str(&op_source(replay)?);
                 }

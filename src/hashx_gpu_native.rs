@@ -2,9 +2,9 @@ use cudarc::driver::CudaContext;
 
 use crate::{hashx::GpuProgram, hashx_sm75_cuda::Sm75Cuda};
 
-pub(crate) const SM75_SASS_IMPLEMENTATION: &str = "cuda-sm75-sass";
+pub const SM75_SASS_IMPLEMENTATION: &str = "cuda-sm75-sass";
 
-pub(crate) enum NativeGpuBackend {
+pub enum NativeGpuBackend {
     Sm75(Sm75Cuda),
 }
 
@@ -23,7 +23,11 @@ impl NativeGpuBackend {
         };
         let mut matches = Vec::new();
         for ordinal in 0..count {
-            let context = match CudaContext::new(ordinal as usize) {
+            let Ok(cuda_ordinal) = usize::try_from(ordinal) else {
+                tracing::debug!(ordinal, "CUDA device ordinal is negative");
+                continue;
+            };
+            let context = match CudaContext::new(cuda_ordinal) {
                 Ok(context) => context,
                 Err(error) => {
                     tracing::debug!(ordinal, %error, "failed to inspect CUDA device");
@@ -58,7 +62,7 @@ impl NativeGpuBackend {
         }
     }
 
-    pub(crate) fn implementation(&self) -> &'static str {
+    pub(crate) const fn implementation(&self) -> &'static str {
         match self {
             Self::Sm75(_) => SM75_SASS_IMPLEMENTATION,
         }

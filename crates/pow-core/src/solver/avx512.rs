@@ -469,7 +469,7 @@ impl crate::solver::Solver for BinarySolver {
     }
 }
 
-/// AVX-512 GoAway solver.
+/// AVX-512 `GoAway` solver.
 ///
 ///
 /// Current implementation: 16 way SIMD with 1-round hotstart granularity.
@@ -797,7 +797,7 @@ impl crate::solver::Solver for CerberusSolver {
                         8,
                         crate::blake3::FLAG_CHUNK_END | crate::blake3::FLAG_ROOT,
                     );
-                    Some((msg[1] as u64 | (msg[0] as u64) << 32, hash))
+                    Some((u64::from(msg[1]) | u64::from(msg[0]) << 32, hash))
                 }
             }
         } else {

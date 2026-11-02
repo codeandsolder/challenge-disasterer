@@ -66,7 +66,12 @@ fn prefix_mask(difficulty: u32) -> u64 {
 }
 
 fn has_leading_zero_bits(hash: &[u8; 32], difficulty: u32) -> bool {
-    let full_bytes = (difficulty / 8) as usize;
+    if difficulty > 256 {
+        return false;
+    }
+    let Ok(full_bytes) = usize::try_from(difficulty / 8) else {
+        return false;
+    };
     let remaining = difficulty % 8;
     if hash[..full_bytes].iter().any(|byte| *byte != 0) {
         return false;
@@ -109,6 +114,9 @@ fn argon2id_hash(data: &[u8], nonce: u32) -> anyhow::Result<[u8; 32]> {
 }
 
 pub fn verify_sha256(challenge: &Challenge, answer: &Answer) -> bool {
+    if challenge.validate().is_err() {
+        return false;
+    }
     let Ok(data) = challenge.bytes() else {
         return false;
     };
@@ -120,6 +128,9 @@ pub fn verify_sha256(challenge: &Challenge, answer: &Answer) -> bool {
 }
 
 pub fn verify_argon2id(challenge: &Challenge, answer: &Answer) -> bool {
+    if challenge.validate().is_err() {
+        return false;
+    }
     let Ok(data) = challenge.bytes() else {
         return false;
     };
@@ -163,7 +174,7 @@ pub fn solve_sha256(challenge: &Challenge, implementation: Option<&str>) -> anyh
     challenge.validate()?;
     let data = challenge.bytes()?;
     let implementation = Implementation::parse(implementation.unwrap_or("auto"))?;
-    let nonce_bytes = NonZeroU8::new(4).expect("four is nonzero");
+    let nonce_bytes = NonZeroU8::new(4).context("four-byte Anubis nonce width is nonzero")?;
     let message = BinaryMessage::new(&data, nonce_bytes);
     let mut solver = binary_solver(implementation, message)?;
     solver.set_limit(SEARCH_SPACE);
@@ -188,7 +199,7 @@ pub async fn solve_sha256_gpu(
 ) -> anyhow::Result<Result> {
     challenge.validate()?;
     let data = challenge.bytes()?;
-    let nonce_bytes = NonZeroU8::new(4).expect("four is nonzero");
+    let nonce_bytes = NonZeroU8::new(4).context("four-byte Anubis nonce width is nonzero")?;
     let message = BinaryMessage::new(&data, nonce_bytes);
     let mut solver = pow_buster::gpu::BinarySolver::from(message);
     solver.set_limit(SEARCH_SPACE);
@@ -220,7 +231,7 @@ pub fn solve_argon2id(
     ensure!(
         matches!(
             implementation,
-            None | Some(ARGON2_IMPLEMENTATION) | Some("argon2-0.6.0") | Some("argon2-0.5.3")
+            None | Some(ARGON2_IMPLEMENTATION | "argon2-0.6.0" | "argon2-0.5.3")
         ),
         "unsupported Argon2id implementation: {}",
         implementation.unwrap_or_default()

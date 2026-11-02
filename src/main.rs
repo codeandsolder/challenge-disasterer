@@ -20,7 +20,7 @@ mod routing;
 mod service;
 mod stats;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use axum::{
@@ -76,6 +76,14 @@ fn default_argon2_workers(
         .max(1)
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "benchmark work count is converted only to derive approximate throughput timing"
+)]
+fn benchmark_work_as_f64(work: u64) -> f64 {
+    work as f64
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -128,6 +136,10 @@ async fn main() -> anyhow::Result<()> {
         let mut solver = gpu::GpuSolver::create().await?;
         let adapter = solver.adapter().to_owned();
         let hashes_per_second = solver.calibrate(hashes)?;
+        let solve_ns =
+            Duration::try_from_secs_f64(benchmark_work_as_f64(hashes) / hashes_per_second)
+                .context("benchmark solve duration is not finite")?
+                .as_nanos();
         println!(
             "{}",
             serde_json::json!({
@@ -139,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
                 "sample": args.benchmark_sample,
                 "attempted_work": hashes,
                 "work_per_second": hashes_per_second,
-                "solve_ns": ((hashes as f64 / hashes_per_second) * 1e9).round() as u128,
+                "solve_ns": solve_ns,
                 "gpu_adapter": adapter,
             })
         );

@@ -61,11 +61,11 @@ impl SingleBlockSolver {
                 let pass = if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
                     crate::hash_has_leading_zero_bits(&state, target)
                 } else if TYPE == crate::solver::SOLVE_TYPE_GT {
-                    (state[0] as u64) << 32 | (state[1] as u64) > target
+                    u64::from(state[0]) << 32 | u64::from(state[1]) > target
                 } else if TYPE == crate::solver::SOLVE_TYPE_LT {
-                    (state[0] as u64) << 32 | (state[1] as u64) < target
+                    u64::from(state[0]) << 32 | u64::from(state[1]) < target
                 } else {
-                    ((state[0] as u64) << 32 | (state[1] as u64)) & mask == target & mask
+                    (u64::from(state[0]) << 32 | u64::from(state[1])) & mask == target & mask
                 };
 
                 if pass {
@@ -166,7 +166,7 @@ impl crate::solver::Solver for DoubleBlockSolver {
         } else {
             0
         };
-        let digit_start = DoubleBlockMessage::DIGIT_IDX as usize;
+        let digit_start = DoubleBlockMessage::DIGIT_IDX;
         buffer[digit_start..digit_start + 9].fill(b'0');
         if first_key != 0 {
             buffer[digit_start] = b'1';
@@ -192,7 +192,7 @@ impl crate::solver::Solver for DoubleBlockSolver {
                 state[1] = state[1].wrapping_add(feedforward[1]);
             }
 
-            let ab = (state[0] as u64) << 32 | (state[1] as u64);
+            let ab = u64::from(state[0]) << 32 | u64::from(state[1]);
 
             self.attempted_nonces += 1;
 
@@ -235,7 +235,7 @@ impl_decimal_solver!(
     [SingleBlockSolver, DoubleBlockSolver] => DecimalSolver
 );
 
-/// Safe GoAway solver.
+/// Safe `GoAway` solver.
 ///
 /// Current implementation: generic sha2 crate fallback.
 pub struct GoAwaySolver {
@@ -288,7 +288,7 @@ impl crate::solver::Solver for GoAwaySolver {
             let mut state = crate::sha256::IV;
             sha2::block_api::compress256(&mut state, core::array::from_ref(&buffer[0]));
 
-            let state_ab = (state[0] as u64) << 32 | (state[1] as u64);
+            let state_ab = u64::from(state[0]) << 32 | u64::from(state[1]);
             self.attempted_nonces += 1;
 
             let pass = if TYPE == crate::solver::SOLVE_TYPE_LEADING_ZERO_BITS {
@@ -304,7 +304,7 @@ impl crate::solver::Solver for GoAwaySolver {
                 crate::unlikely();
 
                 return Some((
-                    (self.message.high_word as u64) << 32 | u64::from(key),
+                    u64::from(self.message.high_word) << 32 | u64::from(key),
                     state,
                 ));
             }
@@ -374,7 +374,7 @@ impl crate::solver::Solver for BinarySolver {
 
         for x in 0..(self
             .limit
-            .min(256u64.saturating_pow(self.message.nonce_byte_count.get() as u32))
+            .min(256u64.saturating_pow(u32::from(self.message.nonce_byte_count.get())))
             .max(1))
         {
             let mut state = self.message.prefix_state;
@@ -396,7 +396,7 @@ impl crate::solver::Solver for BinarySolver {
                     x & mask == y & mask
                 }
             };
-            if cmp_fn((state[0] as u64) << 32 | (state[1] as u64), target) {
+            if cmp_fn(u64::from(state[0]) << 32 | u64::from(state[1]), target) {
                 return Some((x, state));
             }
 
@@ -471,7 +471,7 @@ impl crate::solver::Solver for CerberusSolver {
                         message.flags,
                     );
                     self.attempted_nonces += 1;
-                    if ((hash[0] as u64) << 32 | (hash[1] as u64)) & mask == 0 {
+                    if (u64::from(hash[0]) << 32 | u64::from(hash[1])) & mask == 0 {
                         crate::unlikely();
 
                         return Some((nonce + message.nonce_addend, hash));
@@ -509,14 +509,14 @@ impl crate::solver::Solver for CerberusSolver {
                         crate::blake3::FLAG_CHUNK_END | crate::blake3::FLAG_ROOT,
                     );
                     self.attempted_nonces += 1;
-                    if ((hash[0] as u64) << 32 | (hash[1] as u64)) & mask == 0 {
+                    if (u64::from(hash[0]) << 32 | u64::from(hash[1])) & mask == 0 {
                         crate::unlikely();
 
-                        return Some((msg[1] as u64 | ((msg[0] as u64) << 32), hash));
+                        return Some((u64::from(msg[1]) | (u64::from(msg[0]) << 32), hash));
                     }
                 }
             }
-        };
+        }
 
         None
     }
@@ -582,7 +582,7 @@ impl AltchaSha256Solver {
                     x & mask == y & mask
                 }
             };
-            if cmp64_fn((state[0] as u64) << 32 | (state[1] as u64), target) {
+            if cmp64_fn(u64::from(state[0]) << 32 | u64::from(state[1]), target) {
                 return Some((counter, state));
             }
             counter += 1;

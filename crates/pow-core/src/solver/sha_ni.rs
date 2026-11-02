@@ -236,7 +236,7 @@ impl SingleBlockSolver {
             let lane_id_0_or_value = core::array::from_fn(|i| {
                 let mut r = (lane_index_values[i] >> 8) << ((3 - lane_id_0_byte_idx) * 8);
                 if !DIGIT_WORD_IDX1_INC {
-                    r |= lane_id_1_or_value[i]
+                    r |= lane_id_1_or_value[i];
                 }
                 r
             });
@@ -252,11 +252,10 @@ impl SingleBlockSolver {
             }
 
             impl<
-                'a,
                 const DIGIT_WORD_IDX0_DIV_4: usize,
                 const DIGIT_WORD_IDX0_MOD_4: usize,
                 const DIGIT_WORD_IDX1_INC: bool,
-            > LaneIdPlucker<'a, DIGIT_WORD_IDX0_DIV_4, DIGIT_WORD_IDX0_MOD_4, DIGIT_WORD_IDX1_INC>
+            > LaneIdPlucker<'_, DIGIT_WORD_IDX0_DIV_4, DIGIT_WORD_IDX0_MOD_4, DIGIT_WORD_IDX1_INC>
             {
                 #[inline(always)]
                 fn fetch_msg_or(&self, idx: usize, lane: usize) -> u32 {
@@ -273,13 +272,12 @@ impl SingleBlockSolver {
             }
 
             impl<
-                'a,
                 const DIGIT_WORD_IDX0_DIV_4: usize,
                 const DIGIT_WORD_IDX0_MOD_4: usize,
                 const DIGIT_WORD_IDX1_INC: bool,
             > crate::sha256::sha_ni::Plucker
                 for LaneIdPlucker<
-                    'a,
+                    '_,
                     DIGIT_WORD_IDX0_DIV_4,
                     DIGIT_WORD_IDX0_MOD_4,
                     DIGIT_WORD_IDX1_INC,
@@ -391,7 +389,7 @@ impl SingleBlockSolver {
                         for m in (0..7u32).map(|i| 10u64.pow(i)) {
                             let output = reduced_key % 8;
                             reduced_key /= 8;
-                            value += output as u64 * m;
+                            value += u64::from(output) * m;
                         }
                         value
                     } else {
@@ -401,7 +399,7 @@ impl SingleBlockSolver {
                         prev_inner_key as u64
                     };
 
-                    return Some(nonce_prefix as u64 * 10u64.pow(7) + decimal_inner_key);
+                    return Some(u64::from(nonce_prefix) * 10u64.pow(7) + decimal_inner_key);
                 }
 
                 if REDUCED_RADIX {
@@ -535,7 +533,7 @@ impl DoubleBlockSolver {
         // seven digits directly in the message and advance them as an ASCII decimal odometer.
         // This preserves the full decimal search order while avoiding seven div/mod operations
         // and seven stores for every four candidate hashes.
-        for logical_idx in (DoubleBlockMessage::DIGIT_IDX as usize + 2)..63 {
+        for logical_idx in (DoubleBlockMessage::DIGIT_IDX + 2)..63 {
             crate::write_be_word_byte(&mut self.message.message, logical_idx, b'0');
         }
 
@@ -578,7 +576,7 @@ impl DoubleBlockSolver {
                 struct LaneIdPlucker<'a> {
                     lane_index_value_v: &'a [u32; 4],
                 }
-                impl<'a> crate::sha256::sha_ni::Plucker for LaneIdPlucker<'a> {
+                impl crate::sha256::sha_ni::Plucker for LaneIdPlucker<'_> {
                     #[inline(always)]
                     fn pluck_qword3(&mut self, lane: usize, w: u32x4) -> u32x4 {
                         w | u32x4::from_array([0, self.lane_index_value_v[lane], 0, 0])
@@ -670,8 +668,9 @@ impl DoubleBlockSolver {
                     crate::sha256::digest_block(&mut final_sha_state, &self.message.message);
                     crate::sha256::digest_block(&mut final_sha_state, &terminal_message);
 
-                    let computed_nonce =
-                        nonce_prefix as u64 * 10u64.pow(7) + inner_key + self.message.nonce_addend;
+                    let computed_nonce = u64::from(nonce_prefix) * 10u64.pow(7)
+                        + inner_key
+                        + self.message.nonce_addend;
 
                     // the nonce is the 8 digits in the message, plus the first two digits recomputed from the lane index
                     return Some((computed_nonce, final_sha_state));
@@ -679,7 +678,7 @@ impl DoubleBlockSolver {
 
                 // Advance the seven mutable decimal bytes in-place. Carries are rare, so
                 // this touches 10/9 bytes on average instead of rebuilding all seven digits.
-                for logical_idx in ((DoubleBlockMessage::DIGIT_IDX as usize + 2)..63).rev() {
+                for logical_idx in ((DoubleBlockMessage::DIGIT_IDX + 2)..63).rev() {
                     let byte = crate::read_be_word_byte(&msg0, logical_idx);
                     if byte != b'9' {
                         crate::write_be_word_byte(&mut msg0, logical_idx, byte + 1);
@@ -705,7 +704,7 @@ impl_decimal_solver!(
     [SingleBlockSolver, DoubleBlockSolver] => DecimalSolver
 );
 
-/// SHA-NI GoAway solver.
+/// SHA-NI `GoAway` solver.
 ///
 ///
 /// Current implementation: 4 way multi-issued solver with 4-round hotstart granularity.

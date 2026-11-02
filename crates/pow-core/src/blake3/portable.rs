@@ -111,8 +111,14 @@ mod tests {
         compress::<LANES, 0, 16>(&mut state, &block, Simd::splat(0));
 
         let expected = [
-            0x1edea283, 0xabe6f4e6, 0x24896868, 0xcfc04e8f, 0x9470c54c, 0xff82a646, 0xd6b4cbd1,
-            0xe2815116,
+            0x1ede_a283,
+            0xabe6_f4e6,
+            0x2489_6868,
+            0xcfc0_4e8f,
+            0x9470_c54c,
+            0xff82_a646,
+            0xd6b4_cbd1,
+            0xe281_5116,
         ];
         for lane in 0..LANES {
             let actual: [u32; 8] = core::array::from_fn(|word| state[word][lane]);

@@ -1,4 +1,4 @@
-//! GoAway specific protocol structures.
+//! `GoAway` specific protocol structures.
 
 use alloc::string::String;
 
@@ -9,7 +9,7 @@ use crate::{
 };
 
 #[derive(serde::Deserialize, Debug)]
-/// GoAway "js-pow-sha256" PoW challenge configuration.
+/// `GoAway` "js-pow-sha256" `PoW` challenge configuration.
 pub struct GoAwayConfig {
     /// The challenge. (JSON key: `challenge`)
     pub challenge: String,
@@ -19,17 +19,20 @@ pub struct GoAwayConfig {
 }
 
 impl GoAwayConfig {
-    /// Get the challenge of a GoAway "js-pow-sha256" PoW.
+    /// Get the challenge of a `GoAway` "js-pow-sha256" `PoW`.
+    #[must_use]
     pub fn challenge(&self) -> &str {
         &self.challenge
     }
 
-    /// Get the difficulty of a GoAway "js-pow-sha256" PoW.
+    /// Get the difficulty of a `GoAway` "js-pow-sha256" `PoW`.
+    #[must_use]
     pub const fn difficulty(&self) -> u64 {
         self.difficulty
     }
 
-    /// Estimate the workload of a GoAway "js-pow-sha256" PoW.
+    /// Estimate the workload of a `GoAway` "js-pow-sha256" `PoW`.
+    #[must_use]
     pub const fn estimated_workload(&self) -> u64 {
         if self.difficulty >= 64 {
             u64::MAX
@@ -38,12 +41,13 @@ impl GoAwayConfig {
         }
     }
 
-    /// Solve a GoAway "js-pow-sha256" PoW.
+    /// Solve a `GoAway` "js-pow-sha256" `PoW`.
+    #[must_use]
     pub fn solve(&self) -> (Option<(u64, [u32; 8])>, u64) {
         self.solve_with_limit(u64::MAX)
     }
 
-    /// Solve a GoAway "js-pow-sha256" PoW with a limit.
+    /// Solve a `GoAway` "js-pow-sha256" `PoW` with a limit.
     pub fn solve_with_limit(&self, limit: u64) -> (Option<(u64, [u32; 8])>, u64) {
         let Some(mut message) = self
             .challenge
@@ -91,8 +95,19 @@ impl GoAwayConfig {
 fn hash_nonce(message: &GoAwayMessage, nonce: u64) -> [u32; 8] {
     let mut block = [0_u32; 16];
     block[..8].copy_from_slice(&message.challenge);
-    block[8] = (nonce >> 32) as u32;
-    block[9] = nonce as u32;
+    let nonce_bytes = nonce.to_be_bytes();
+    block[8] = u32::from_be_bytes([
+        nonce_bytes[0],
+        nonce_bytes[1],
+        nonce_bytes[2],
+        nonce_bytes[3],
+    ]);
+    block[9] = u32::from_be_bytes([
+        nonce_bytes[4],
+        nonce_bytes[5],
+        nonce_bytes[6],
+        nonce_bytes[7],
+    ]);
     block[10] = 0x8000_0000;
     block[15] = 320;
     let mut state = crate::sha256::IV;
@@ -164,10 +179,10 @@ mod tests {
         let got = hash_nonce(&message, nonce);
         let mut wire = challenge.to_vec();
         wire.extend_from_slice(&nonce.to_be_bytes());
-        let expected = Sha256::digest(&wire);
-        let expected_words: [u32; 8] = core::array::from_fn(|index| {
-            u32::from_be_bytes(expected[index * 4..][..4].try_into().unwrap())
-        });
+        let expected: [u8; 32] = Sha256::digest(&wire).into();
+        let chunks = expected.as_chunks::<4>().0;
+        let expected_words: [u32; 8] =
+            core::array::from_fn(|index| u32::from_be_bytes(chunks[index]));
         assert_eq!(got, expected_words);
     }
 }

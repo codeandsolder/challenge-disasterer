@@ -469,7 +469,7 @@ impl crate::solver::Solver for BinarySolver {
     }
 }
 
-/// AVX2 GoAway solver.
+/// AVX2 `GoAway` solver.
 ///
 ///
 /// Current implementation: 8 way SIMD with 1-round hotstart granularity.
@@ -581,6 +581,7 @@ impl CerberusSolver {
     }
 
     /// Get the attempted nonces.
+    #[must_use]
     pub fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
@@ -812,7 +813,7 @@ impl crate::solver::Solver for CerberusSolver {
                         8,
                         crate::blake3::FLAG_CHUNK_END | crate::blake3::FLAG_ROOT,
                     );
-                    Some((msg[1] as u64 | (msg[0] as u64) << 32, hash))
+                    Some((u64::from(msg[1]) | u64::from(msg[0]) << 32, hash))
                 }
             }
         } else {

@@ -13,7 +13,7 @@ use crate::{
     hashx::{Challenge, build_compiled_seed, valid_prefix},
 };
 
-const SEARCH_LIMIT: u64 = (u32::MAX as u64) + 1;
+const SEARCH_LIMIT: u64 = u32::MAX as u64 + 1;
 const CANCEL_BATCH: u64 = 256;
 
 pub fn solve(challenge: &Challenge, workers: usize) -> anyhow::Result<BackendResult> {
@@ -32,7 +32,8 @@ pub fn solve(challenge: &Challenge, workers: usize) -> anyhow::Result<BackendRes
             let found = &found;
             let hashx = Arc::clone(&verifier);
             handles.push(scope.spawn(move || -> anyhow::Result<()> {
-                let mut base = u64::try_from(worker).expect("worker index fits u64");
+                let mut base =
+                    u64::try_from(worker).context("HashX JIT worker index exceeds u64")?;
 
                 while base < SEARCH_LIMIT && found.load(Ordering::Relaxed) == u64::MAX {
                     let mut nonce = base;
@@ -70,7 +71,9 @@ pub fn solve(challenge: &Challenge, workers: usize) -> anyhow::Result<BackendRes
         }
 
         for handle in handles {
-            handle.join().expect("HashX JIT worker panicked")?;
+            handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("HashX JIT worker panicked"))??;
         }
         Ok(())
     })?;

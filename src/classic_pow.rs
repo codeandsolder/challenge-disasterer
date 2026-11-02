@@ -1,6 +1,6 @@
 use std::{
     num::{NonZeroU8, NonZeroU32, NonZeroU64},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use altcha::{
@@ -112,7 +112,7 @@ pub fn solve(kind: &str, challenge: Value, implementation: Option<&str>) -> anyh
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Implementation {
+pub enum Implementation {
     Auto,
     Safe,
     Avx2,
@@ -132,7 +132,7 @@ impl Implementation {
         }
     }
 
-    pub(crate) fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Auto => "auto",
             Self::Safe => "safe",
@@ -143,7 +143,7 @@ impl Implementation {
     }
 }
 
-pub(crate) trait DynPow {
+pub trait DynPow {
     fn set_limit(&mut self, limit: u64);
     fn attempted(&self) -> u64;
     fn solve(&mut self, target: u64, ty: u8, mask: u64) -> Option<(u64, [u32; 8])>;
@@ -221,7 +221,7 @@ fn decimal_solver(
     }
 }
 
-pub(crate) fn binary_solver(
+pub fn binary_solver(
     implementation: Implementation,
     message: pow_buster::message::BinaryMessage,
 ) -> anyhow::Result<Box<dyn DynPow>> {
@@ -378,12 +378,12 @@ fn finish_goaway(
     let (nonce, hash) = solution;
     let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
     let token = format!("{}{:016x}", config.challenge(), nonce);
-    let id = hash
-        .into_iter()
-        .take(4)
-        .flat_map(u32::to_ne_bytes)
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let id = hex::encode(
+        hash.into_iter()
+            .take(4)
+            .flat_map(u32::to_ne_bytes)
+            .collect::<Vec<_>>(),
+    );
     Result {
         answer: json!({
             "nonce": nonce.to_string(),
@@ -462,9 +462,10 @@ fn solve_cap_decimal_cpu(
         let result = solver.solve(target, SOLVE_TYPE_MASK, mask);
         attempted = attempted.saturating_add(solver.attempted());
         if let Some((nonce, _)) = result {
-            let nonce = fixup
-                .map(|value| value.fixup(nonce))
-                .unwrap_or(nonce as f64);
+            let nonce = match fixup {
+                Some(value) => value.fixup(nonce),
+                None => js_safe_integer_as_f64(nonce)?,
+            };
             return Ok((nonce, attempted));
         }
     }
@@ -488,9 +489,10 @@ async fn solve_cap_decimal_gpu(
         let result = solver.solve::<SOLVE_TYPE_MASK>(gpu, target, mask).await?;
         attempted = attempted.saturating_add(solver.attempted_nonces());
         if let Some(solution) = result {
-            let nonce = fixup
-                .map(|value| value.fixup(solution.nonce))
-                .unwrap_or(solution.nonce as f64);
+            let nonce = match fixup {
+                Some(value) => value.fixup(solution.nonce),
+                None => js_safe_integer_as_f64(solution.nonce)?,
+            };
             return Ok((nonce, attempted));
         }
     }
@@ -504,7 +506,7 @@ fn solve_capjs(challenge: Value, implementation: Implementation) -> anyhow::Resu
     let descriptor: CapJsChallenge =
         serde_json::from_value(challenge).context("invalid Cap.js challenge")?;
     let rules = *descriptor.rules();
-    let token = descriptor.token.clone();
+    let token = descriptor.token;
     let emitter = CapJSEmitter::new(token.as_bytes());
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
@@ -512,21 +514,29 @@ fn solve_capjs(challenge: Value, implementation: Implementation) -> anyhow::Resu
     for index in 0..rules.count {
         let mut salt = vec![0_u8; rules.salt_length];
         let mut targets = [0_u32; 2];
-        emitter.emit(&mut salt, &mut targets, index as u32 + 1);
-        let mask = u64::MAX << (64 - u64::from(rules.difficulty) * 4);
+        let subchallenge = u32::try_from(index)
+            .context("Cap.js subchallenge index exceeds u32")?
+            .checked_add(1)
+            .context("Cap.js subchallenge index overflow")?;
+        emitter.emit(&mut salt, &mut targets, subchallenge);
+        let mask = rules
+            .mask()
+            .context("Cap.js difficulty exceeds the supported 64-bit target width")?;
         let target = (u64::from(targets[0]) << 32) | u64::from(targets[1]);
         let (nonce, attempted) = solve_cap_decimal_cpu(&salt, target, mask, implementation)?;
         attempted_nonces = attempted_nonces.saturating_add(attempted);
         solutions.push(nonce);
     }
-    let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let elapsed = started.elapsed();
+    let solve_ms = elapsed.as_secs_f64() * 1000.0;
+    let (elapsed_us, hashrate) = elapsed_work_metadata(elapsed, attempted_nonces);
     let answer = json!({
         "token": token,
         "solutions": solutions,
         "_meta": {
-            "elapsed_us": (solve_ms * 1000.0) as u64,
+            "elapsed_us": elapsed_us,
             "attempted_nonces": attempted_nonces,
-            "hashrate": if solve_ms > 0.0 { (attempted_nonces as f64 / (solve_ms / 1000.0)) as u64 } else { 0 },
+            "hashrate": hashrate,
         },
         "attempted_nonces_total": attempted_nonces,
     });
@@ -750,7 +760,8 @@ fn solve_mcaptcha(challenge: Value, implementation: Implementation) -> anyhow::R
     let difficulty_factor = NonZeroU64::new(u64::from(request.config.difficulty_factor))
         .context("mCaptcha difficulty factor must be positive")?;
     let mut prefix = Vec::new();
-    build_mcaptcha_prefix(&mut prefix, &request.config.string, &request.config.salt);
+    build_mcaptcha_prefix(&mut prefix, &request.config.string, &request.config.salt)
+        .context("mCaptcha string length exceeds the wire format")?;
     let target = compute_target_mcaptcha(difficulty_factor);
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
@@ -836,7 +847,7 @@ fn try_solve_altcha_fast(
     challenge: &AltchaChallenge,
     implementation: Implementation,
 ) -> anyhow::Result<Option<Result>> {
-    let Some((message, target, mask, key_length)) = altcha_fast_case(challenge)? else {
+    let Some((message, target, mask, key_length)) = altcha_fast_case(challenge) else {
         return Ok(None);
     };
     let mut solver = altcha_solver(implementation, message)?;
@@ -860,9 +871,7 @@ fn try_solve_altcha_fast(
     }))
 }
 
-fn altcha_fast_case(
-    challenge: &AltchaChallenge,
-) -> anyhow::Result<Option<(AltchaMessage, u64, u64, usize)>> {
+fn altcha_fast_case(challenge: &AltchaChallenge) -> Option<(AltchaMessage, u64, u64, usize)> {
     let parameters = &challenge.parameters;
     if !matches!(parameters.algorithm.as_str(), "SHA-256" | "PBKDF2/SHA-256")
         || parameters.cost == 0
@@ -872,35 +881,18 @@ fn altcha_fast_case(
         || !parameters.key_prefix.len().is_multiple_of(2)
         || parameters.key_prefix.len() > 8
     {
-        return Ok(None);
+        return None;
     }
-    let nonce: [u8; 16] = match hex::decode(&parameters.nonce)
+    let nonce: [u8; 16] = hex::decode(&parameters.nonce)
         .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-    {
-        Some(value) => value,
-        None => return Ok(None),
-    };
-    let salt: [u8; 16] = match hex::decode(&parameters.salt)
+        .and_then(|bytes| bytes.try_into().ok())?;
+    let salt: [u8; 16] = hex::decode(&parameters.salt)
         .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-    {
-        Some(value) => value,
-        None => return Ok(None),
-    };
-    let Some(cost) = NonZeroU32::new(parameters.cost) else {
-        return Ok(None);
-    };
-    let Ok(key_length_u32) = u32::try_from(parameters.key_length) else {
-        return Ok(None);
-    };
-    let Some(key_length) = NonZeroU32::new(key_length_u32) else {
-        return Ok(None);
-    };
-    let (target, mask) = match prefix_target(&parameters.key_prefix) {
-        Ok(value) => value,
-        Err(_) => return Ok(None),
-    };
+        .and_then(|bytes| bytes.try_into().ok())?;
+    let cost = NonZeroU32::new(parameters.cost)?;
+    let key_length_u32 = u32::try_from(parameters.key_length).ok()?;
+    let key_length = NonZeroU32::new(key_length_u32)?;
+    let (target, mask) = prefix_target(&parameters.key_prefix).ok()?;
     let message = AltchaMessage {
         nonce,
         salt,
@@ -908,9 +900,33 @@ fn altcha_fast_case(
         pbkdf2: parameters.algorithm == "PBKDF2/SHA-256",
         key_length,
     };
-    Ok(Some((message, target, mask, parameters.key_length)))
+    Some((message, target, mask, parameters.key_length))
 }
 const JS_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "value is explicitly constrained to JavaScript's exactly representable integer range"
+)]
+fn js_safe_integer_as_f64(value: u64) -> anyhow::Result<f64> {
+    ensure!(
+        value <= JS_MAX_SAFE_INTEGER,
+        "Cap.js nonce exceeds JavaScript's maximum safe integer"
+    );
+    Ok(value as f64)
+}
+
+fn elapsed_work_metadata(elapsed: Duration, attempted: u64) -> (u64, u64) {
+    let elapsed_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+    let nanos = elapsed.as_nanos();
+    let hashrate = u128::from(attempted)
+        .saturating_mul(1_000_000_000)
+        .checked_div(nanos)
+        .map_or(0, |per_second| {
+            u64::try_from(per_second).unwrap_or(u64::MAX)
+        });
+    (elapsed_us, hashrate)
+}
 
 struct AltchaHexPrefix(Vec<u8>);
 
@@ -983,10 +999,10 @@ fn altcha_derive_key(
             let mut out = vec![0_u8; key_length];
             match algorithm.as_str() {
                 "PBKDF2/SHA-384" => {
-                    pbkdf2_hmac::<Sha384>(password, salt, parameters.cost, &mut out)
+                    pbkdf2_hmac::<Sha384>(password, salt, parameters.cost, &mut out);
                 }
                 "PBKDF2/SHA-512" => {
-                    pbkdf2_hmac::<Sha512>(password, salt, parameters.cost, &mut out)
+                    pbkdf2_hmac::<Sha512>(password, salt, parameters.cost, &mut out);
                 }
                 _ => pbkdf2_hmac::<Sha256>(password, salt, parameters.cost, &mut out),
             }
@@ -1200,19 +1216,21 @@ fn prefix_target(prefix: &str) -> anyhow::Result<(u64, u64)> {
 }
 
 fn encode_words_le(words: [u32; 8]) -> String {
-    words
-        .into_iter()
-        .flat_map(u32::to_le_bytes)
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex::encode(
+        words
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn encode_words_be(words: [u32; 8]) -> String {
-    words
-        .into_iter()
-        .flat_map(u32::to_be_bytes)
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex::encode(
+        words
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect::<Vec<_>>(),
+    )
 }
 
 #[cfg(feature = "gpu")]
@@ -1406,22 +1424,30 @@ async fn solve_capjs_gpu(
     for index in 0..rules.count {
         let mut salt = vec![0_u8; rules.salt_length];
         let mut targets = [0_u32; 2];
-        emitter.emit(&mut salt, &mut targets, index as u32 + 1);
-        let mask = u64::MAX << (64 - u64::from(rules.difficulty) * 4);
+        let subchallenge = u32::try_from(index)
+            .context("Cap.js subchallenge index exceeds u32")?
+            .checked_add(1)
+            .context("Cap.js subchallenge index overflow")?;
+        emitter.emit(&mut salt, &mut targets, subchallenge);
+        let mask = rules
+            .mask()
+            .context("Cap.js difficulty exceeds the supported 64-bit target width")?;
         let target = (u64::from(targets[0]) << 32) | u64::from(targets[1]);
         let (nonce, attempted) = solve_cap_decimal_gpu(gpu, &salt, target, mask).await?;
         attempted_nonces = attempted_nonces.saturating_add(attempted);
         solutions.push(nonce);
     }
-    let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let elapsed = started.elapsed();
+    let solve_ms = elapsed.as_secs_f64() * 1000.0;
+    let (elapsed_us, hashrate) = elapsed_work_metadata(elapsed, attempted_nonces);
     Ok(Result {
         answer: json!({
             "token": token,
             "solutions": solutions,
             "_meta": {
-                "elapsed_us": (solve_ms * 1000.0) as u64,
+                "elapsed_us": elapsed_us,
                 "attempted_nonces": attempted_nonces,
-                "hashrate": if solve_ms > 0.0 { (attempted_nonces as f64 / (solve_ms / 1000.0)) as u64 } else { 0 },
+                "hashrate": hashrate,
             },
             "attempted_nonces_total": attempted_nonces,
         }),
@@ -1490,7 +1516,8 @@ async fn solve_mcaptcha_gpu(
     let difficulty_factor = NonZeroU64::new(u64::from(request.config.difficulty_factor))
         .context("mCaptcha difficulty factor must be positive")?;
     let mut prefix = Vec::new();
-    build_mcaptcha_prefix(&mut prefix, &request.config.string, &request.config.salt);
+    build_mcaptcha_prefix(&mut prefix, &request.config.string, &request.config.salt)
+        .context("mCaptcha string length exceeds the wire format")?;
     let target = compute_target_mcaptcha(difficulty_factor);
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
@@ -1534,7 +1561,7 @@ async fn solve_altcha_gpu(
     );
     let challenge: AltchaChallenge =
         serde_json::from_value(challenge).context("invalid ALTCHA v2 challenge")?;
-    let (message, target, mask, key_length) = altcha_fast_case(&challenge)?
+    let (message, target, mask, key_length) = altcha_fast_case(&challenge)
         .context("ALTCHA challenge shape is unsupported by the WGPU fast path")?;
     let mut solver = pow_buster::gpu::AltchaSha256Solver::from(message);
     solver.set_limit(u64::from(u32::MAX) + 1);

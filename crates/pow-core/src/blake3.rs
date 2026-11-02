@@ -1,3 +1,11 @@
+#![expect(
+    clippy::inline_always,
+    reason = "fixed-round BLAKE3 kernels force inlining across backend wrappers to preserve codegen"
+)]
+#![expect(
+    clippy::many_single_char_names,
+    reason = "BLAKE3 compression uses the canonical a/b/c/d and message-word notation"
+)]
 #[macro_use]
 mod loop_macros;
 

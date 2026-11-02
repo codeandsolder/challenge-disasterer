@@ -1,3 +1,7 @@
+#![expect(
+    clippy::inline_always,
+    reason = "fixed-width digit encoders are inner-loop primitives and intentionally force inlining"
+)]
 pub(crate) static DIGIT_LUT_10000_LE_EVEN: [u32; 10000 / 2] = const {
     let mut out = [0; 10000 / 2];
     let mut i = 0;
@@ -85,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_to_octal_7() {
-        let i = 0o1234567;
+        let i = 0o1_234_567;
         let mut buf = [0u8; 8];
         to_octal_7::<false, 0x80, 0>(&mut buf, i);
         assert_eq!(buf, *b"1234567\x80");
@@ -100,22 +104,22 @@ mod tests {
     #[test]
     fn test_format_decimal_8() {
         let mut buf = [0u8; 8];
-        format_decimal_8::<8, false, 0x80>(&mut buf, 12345678);
+        format_decimal_8::<8, false, 0x80>(&mut buf, 12_345_678);
         assert_eq!(buf, *b"12345678");
 
         format_decimal_8::<8, false, 0x80>(&mut buf, 1_0000_0000);
         assert_eq!(buf, *b"00000000");
 
-        format_decimal_8::<7, false, 0x80>(&mut buf, 1234567);
+        format_decimal_8::<7, false, 0x80>(&mut buf, 1_234_567);
         assert_eq!(buf, *b"1234567\x80");
 
         format_decimal_8::<7, false, 0x80>(&mut buf, 1000_0000);
         assert_eq!(buf, *b"0000000\x80");
 
-        format_decimal_8::<8, true, 0x80>(&mut buf, 12345678);
+        format_decimal_8::<8, true, 0x80>(&mut buf, 12_345_678);
         assert_eq!(buf, *b"43218765");
 
-        format_decimal_8::<7, true, 0x80>(&mut buf, 1234567);
+        format_decimal_8::<7, true, 0x80>(&mut buf, 1_234_567);
         assert_eq!(buf, *b"4321\x80765");
     }
 }

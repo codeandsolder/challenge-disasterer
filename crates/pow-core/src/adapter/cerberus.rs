@@ -9,7 +9,7 @@ use alloc::{format, string::String};
 use semver::{BuildMetadata, Prerelease};
 
 #[derive(serde::Deserialize, Debug)]
-/// A Cerberus PoW challenge descriptor.
+/// A Cerberus `PoW` challenge descriptor.
 pub struct ChallengeDescriptor {
     challenge: String,
     difficulty: core::num::NonZeroU8,
@@ -39,6 +39,7 @@ impl<'de> serde::Deserialize<'de> for MaybeSemver {
 
 impl ChallengeDescriptor {
     /// Build a pre-formatted message for the challenge.
+    #[must_use]
     pub fn build_msg(&self, working_set: u32) -> Option<CerberusMessage> {
         let buf = format!(
             "{}|{}|{}|{}|",
@@ -64,47 +65,55 @@ impl ChallengeDescriptor {
         )
     }
 
-    /// Set the version of a Cerberus PoW.
+    /// Set the version of a Cerberus `PoW`.
     pub fn set_version(&mut self, version: semver::Version) {
         self.version = MaybeSemver::Yes(version);
     }
 
     /// Return the challenge difficulty in Cerberus dubits (two bits each).
+    #[must_use]
     pub const fn difficulty(&self) -> core::num::NonZeroU8 {
         self.difficulty
     }
 
     /// Return the estimated workload.
+    #[must_use]
     pub fn estimated_workload(&self) -> u64 {
         4u64.saturating_pow(self.difficulty.get().into())
     }
 
     /// Return the mask.
+    #[must_use]
     pub fn mask(&self) -> u64 {
         compute_mask_cerberus(self.difficulty)
     }
 
-    /// Get the nonce of a Cerberus PoW.
+    /// Get the nonce of a Cerberus `PoW`.
+    #[must_use]
     pub fn nonce(&self) -> u64 {
         self.nonce
     }
 
-    /// Get the timestamp of a Cerberus PoW.
+    /// Get the timestamp of a Cerberus `PoW`.
+    #[must_use]
     pub fn ts(&self) -> u64 {
         self.ts
     }
 
-    /// Get the signature of a Cerberus PoW.
+    /// Get the signature of a Cerberus `PoW`.
+    #[must_use]
     pub fn signature(&self) -> &str {
         &self.signature
     }
 
-    /// Solve a Cerberus PoW.
+    /// Solve a Cerberus `PoW`.
+    #[must_use]
     pub fn solve(&self) -> (Option<(u64, [u32; 8])>, u64) {
         self.solve_with_limit(u64::MAX)
     }
 
-    /// Solve a Cerberus PoW with a limit.
+    /// Solve a Cerberus `PoW` with a limit.
+    #[must_use]
     pub fn solve_with_limit(&self, limit: u64) -> (Option<(u64, [u32; 8])>, u64) {
         let mask = compute_mask_cerberus(self.difficulty);
 
