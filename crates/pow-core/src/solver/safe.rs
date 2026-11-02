@@ -72,9 +72,9 @@ impl SingleBlockSolver {
                     let mut transformed_key = key;
                     if NO_TRAILING_ZEROS {
                         transformed_key *= 10;
-                        transformed_key += nonzero_digit;
+                        transformed_key += u64::from(nonzero_digit);
                     } else {
-                        transformed_key += 100_000_000 * nonzero_digit;
+                        transformed_key += 100_000_000 * u64::from(nonzero_digit);
                     }
                     return Some((transformed_key + self.message.nonce_addend, state));
                 }
@@ -153,12 +153,14 @@ impl crate::solver::Solver for DoubleBlockSolver {
             buffer[i * 4..i * 4 + 4].copy_from_slice(&self.message.message[i].to_be_bytes());
         }
 
+        let bit_length = u64::try_from(self.message.message_length)
+            .ok()?
+            .checked_mul(8)?;
         let mut buffer2 = [0u8; 64];
-        buffer2[56..].copy_from_slice(&(self.message.message_length * 8).to_be_bytes());
-
+        buffer2[56..].copy_from_slice(&bit_length.to_be_bytes());
         let mut terminal_message_schedule = [0; 64];
-        terminal_message_schedule[14] = crate::high_u32(self.message.message_length * 8);
-        terminal_message_schedule[15] = crate::low_u32(self.message.message_length * 8);
+        terminal_message_schedule[14] = crate::high_u32(bit_length);
+        terminal_message_schedule[15] = crate::low_u32(bit_length);
         crate::sha256::do_message_schedule_k_w(&mut terminal_message_schedule);
 
         let first_key: u64 = if self.message.nonce_addend == 0 {

@@ -6,7 +6,7 @@ pub(crate) static DIGIT_LUT_10000_LE_EVEN: [u32; 10000 / 2] = const {
     let mut out = [0; 10000 / 2];
     let mut i = 0;
     while i < 10000 / 2 {
-        let mut copy = i * 2;
+        let mut copy: usize = i * 2;
         let mut ds = [b'0'; 4];
         let mut j = 0;
         while j < 4 {

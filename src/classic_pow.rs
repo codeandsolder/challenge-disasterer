@@ -719,9 +719,13 @@ fn solve_haphash(challenge: Value, implementation: Implementation) -> anyhow::Re
     );
     let prefix = challenge.prefix.as_bytes();
     ensure!(!prefix.is_empty(), "haphash prefix must not be empty");
-    let fast_mask = NonZeroU8::new(challenge.difficulty)
-        .filter(|difficulty| difficulty.get() <= 16)
-        .map(compute_mask_zero_nibbles);
+    let fast_mask = if challenge.difficulty == 0 {
+        Some(0)
+    } else {
+        NonZeroU8::new(challenge.difficulty)
+            .filter(|difficulty| difficulty.get() <= 16)
+            .map(compute_mask_zero_nibbles)
+    };
     let full_digest_bits = u64::from(challenge.difficulty) * 4;
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
@@ -1469,9 +1473,13 @@ async fn solve_haphash_gpu(
     );
     let prefix = challenge.prefix.as_bytes();
     ensure!(!prefix.is_empty(), "haphash prefix must not be empty");
-    let fast_mask = NonZeroU8::new(challenge.difficulty)
-        .filter(|difficulty| difficulty.get() <= 16)
-        .map(compute_mask_zero_nibbles);
+    let fast_mask = if challenge.difficulty == 0 {
+        Some(0)
+    } else {
+        NonZeroU8::new(challenge.difficulty)
+            .filter(|difficulty| difficulty.get() <= 16)
+            .map(compute_mask_zero_nibbles)
+    };
     let full_digest_bits = u64::from(challenge.difficulty) * 4;
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
@@ -1629,7 +1637,7 @@ mod tests {
     fn haphash_zero_difficulty_is_trivial_for_accelerated_solver() {
         let result = solve_haphash(
             json!({"prefix":"127.0.0.1;example.test;1759954402;","difficulty":0}),
-            Implementation::Safe,
+            Implementation::Auto,
         )
         .unwrap();
         assert!(result.answer["nonce"].is_string());

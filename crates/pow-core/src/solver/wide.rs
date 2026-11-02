@@ -298,9 +298,10 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
     let mut partial_state = message.prefix_state;
     crate::sha256::sha2_arx::<0>(&mut partial_state, &message.message[..13]);
 
+    let bit_length = u64::try_from(message.message_length).ok()?.checked_mul(8)?;
     let mut terminal_message_schedule = [0; 64];
-    terminal_message_schedule[14] = crate::high_u32(message.message_length * 8);
-    terminal_message_schedule[15] = crate::low_u32(message.message_length * 8);
+    terminal_message_schedule[14] = crate::high_u32(bit_length);
+    terminal_message_schedule[15] = crate::low_u32(bit_length);
     crate::sha256::do_message_schedule_k_w(&mut terminal_message_schedule);
 
     let mut itoa_buf = *b"1111\x80111";
@@ -381,8 +382,8 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
                     let mut final_sha_state = message.prefix_state;
                     crate::sha256::digest_block(&mut final_sha_state, &message.message);
                     let mut terminal_message = [0; 16];
-                    terminal_message[14] = crate::high_u32(message.message_length * 8);
-                    terminal_message[15] = crate::low_u32(message.message_length * 8);
+                    terminal_message[14] = crate::high_u32(bit_length);
+                    terminal_message[15] = crate::low_u32(bit_length);
                     crate::sha256::digest_block(&mut final_sha_state, &terminal_message);
 
                     let mut decimal_inner_key = 0u64;
