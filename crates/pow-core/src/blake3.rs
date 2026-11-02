@@ -44,7 +44,7 @@ const MESSAGE_SCHEDULE: [[usize; 16]; 7] = {
 
 // The mixing function, G, which mixes either a column or a diagonal.
 #[inline(always)]
-fn g(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, mx: u32, my: u32) {
+const fn g(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, mx: u32, my: u32) {
     state[a] = state[a].wrapping_add(state[b]).wrapping_add(mx);
     state[d] = (state[d] ^ state[a]).rotate_right(16);
     state[c] = state[c].wrapping_add(state[d]);
@@ -56,7 +56,7 @@ fn g(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, mx: u32, my:
 }
 
 #[inline(always)]
-fn round_fixed(state: &mut [u32; 16], m: &[u32; 16], round: usize) {
+const fn round_fixed(state: &mut [u32; 16], m: &[u32; 16], round: usize) {
     // Mix the columns.
     g(
         state,

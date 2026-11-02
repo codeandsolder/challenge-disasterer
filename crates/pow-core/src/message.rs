@@ -276,9 +276,7 @@ impl SingleBlockMessage {
 
         let mut message: [u8; 64] = [0; 64]; // the final message
         let mut ptr = 0;
-        let mut fixup_prefix = None;
-
-        if (55..=57).contains(&prefix.len()) {
+        let fixup_prefix = if (55..=57).contains(&prefix.len()) {
             // a separate program is ran to make sure these numbers
             // parse and stringifies losslessly
             if working_set >= 32 {
@@ -320,8 +318,10 @@ impl SingleBlockMessage {
             ptr += pad_right.len();
             working_set = 0;
             approx_working_set_count = 32 - working_set;
-            fixup_prefix = Some(padding);
-        }
+            Some(padding)
+        } else {
+            None
+        };
 
         let mut is_fitst_digit = true;
         let mut pop_padding_digit = || {

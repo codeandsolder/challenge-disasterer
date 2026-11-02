@@ -153,9 +153,7 @@ impl crate::solver::Solver for DoubleBlockSolver {
             buffer[i * 4..i * 4 + 4].copy_from_slice(&self.message.message[i].to_be_bytes());
         }
 
-        let bit_length = u64::try_from(self.message.message_length)
-            .ok()?
-            .checked_mul(8)?;
+        let bit_length = self.message.message_length.checked_mul(8)?;
         let mut buffer2 = [0u8; 64];
         buffer2[56..].copy_from_slice(&bit_length.to_be_bytes());
         let mut terminal_message_schedule = [0; 64];
