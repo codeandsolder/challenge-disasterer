@@ -13,7 +13,6 @@ gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "challenge-solvers/gpu", "chall
 anyhow = "1"
 argon2 = { path = "vendor/argon2-fast" }
 anubis-argon2 = { path = "crates/anubis-argon2" }
-altcha = { version = "=1.1.0", features = ["argon2", "scrypt"] }
 axum = "0.8"
 bytemuck = { version = "1", features = ["derive"], optional = true }
 clap = { version = "4", features = ["derive"] }

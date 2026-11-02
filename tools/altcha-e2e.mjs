@@ -29,8 +29,8 @@ async function assertCapabilities() {
   if (string.implementations.join(",") !== "auto,safe") {
     throw new Error(`ALTCHA string mode must advertise only auto/safe: ${JSON.stringify(string)}`);
   }
-  if (!uint32.some((row) => row.implementations.includes("reference"))) {
-    throw new Error(`ALTCHA uint32 capabilities lost the reference selector: ${JSON.stringify(uint32)}`);
+  if (uint32.some((row) => row.implementations.includes("reference"))) {
+    throw new Error(`ALTCHA production capabilities must not expose the external reference solver: ${JSON.stringify(uint32)}`);
   }
 }
 
@@ -133,11 +133,8 @@ const optimizedOnly = ["avx2", "avx512", "sha-ni", "wgpu"].includes(implementati
 await runV2({ algorithm: "SHA-256", cost: 2, deriveKey: deriveSha, expectedImplementation: implementation });
 await runV2({ algorithm: "PBKDF2/SHA-256", cost: 16, deriveKey: derivePbkdf2, expectedImplementation: implementation });
 
-// Explicit independent oracle path over the same wire protocol.
-await runV2({ algorithm: "SHA-256", cost: 2, deriveKey: deriveSha, requestedImplementation: "reference", expectedImplementation: "reference" });
-
 if (!optimizedOnly) {
-  const genericImplementation = implementation === "reference" ? "reference" : "altcha-generic";
+  const genericImplementation = "altcha-generic";
   for (const algorithm of ["SHA-384", "SHA-512"]) {
     await runV2({ algorithm, cost: 2, deriveKey: deriveSha, expectedImplementation: genericImplementation });
   }

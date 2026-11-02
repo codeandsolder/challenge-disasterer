@@ -3,10 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use altcha::{
-    Challenge as AltchaChallenge, CounterMode as AltchaCounterMode,
-    SolveChallengeOptions as AltchaSolveOptions,
-};
 use anyhow::{Context, anyhow, bail, ensure};
 use argon2::{
     Algorithm as Argon2Algorithm, Argon2, Params as Argon2Params, Version as Argon2Version,
@@ -91,11 +87,6 @@ struct CapV2HashWx {
 }
 
 pub fn solve(kind: &str, challenge: Value, implementation: Option<&str>) -> anyhow::Result<Result> {
-    if kind == "altcha"
-        && let Some(label @ "reference") = implementation
-    {
-        return solve_altcha_official_only(challenge, label);
-    }
     let implementation = Implementation::parse(implementation.unwrap_or("auto"))?;
     match kind {
         "cerberus" => solve_cerberus(challenge, implementation),
@@ -798,6 +789,33 @@ fn solve_mcaptcha(challenge: Value, implementation: Implementation) -> anyhow::R
     Err(anyhow!("mCaptcha search exhausted configured limit"))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AltchaCounterMode {
+    Uint32,
+    String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AltchaChallenge {
+    parameters: AltchaChallengeParameters,
+}
+
+#[derive(Debug, Deserialize)]
+struct AltchaChallengeParameters {
+    algorithm: String,
+    cost: u32,
+    #[serde(rename = "keyLength")]
+    key_length: usize,
+    #[serde(rename = "keyPrefix")]
+    key_prefix: String,
+    #[serde(rename = "memoryCost", default)]
+    memory_cost: Option<u32>,
+    nonce: String,
+    #[serde(default)]
+    parallelism: Option<u32>,
+    salt: String,
+}
+
 fn altcha_counter_mode(challenge: &Value) -> anyhow::Result<AltchaCounterMode> {
     match challenge.get("counterMode").and_then(Value::as_str) {
         None | Some("uint32") => Ok(AltchaCounterMode::Uint32),
@@ -806,20 +824,6 @@ fn altcha_counter_mode(challenge: &Value) -> anyhow::Result<AltchaCounterMode> {
     }
 }
 
-fn solve_altcha_official_only(challenge: Value, implementation: &str) -> anyhow::Result<Result> {
-    ensure!(
-        challenge.get("parameters").is_some(),
-        "ALTCHA {implementation} backend supports v2 only"
-    );
-    let counter_mode = altcha_counter_mode(&challenge)?;
-    ensure!(
-        counter_mode == AltchaCounterMode::Uint32,
-        "ALTCHA reference backend supports uint32 counter mode only"
-    );
-    let challenge: AltchaChallenge =
-        serde_json::from_value(challenge).context("invalid ALTCHA v2 challenge")?;
-    solve_altcha_official(&challenge, counter_mode, implementation)
-}
 fn solve_altcha(challenge: Value, implementation: Implementation) -> anyhow::Result<Result> {
     if challenge.get("parameters").is_none() {
         return solve_altcha_v1(challenge, implementation);
@@ -840,7 +844,7 @@ fn solve_altcha(challenge: Value, implementation: Implementation) -> anyhow::Res
     }
     ensure!(
         matches!(implementation, Implementation::Auto | Implementation::Safe),
-        "this ALTCHA algorithm supports auto/safe or reference implementations only"
+        "this ALTCHA algorithm supports auto/safe implementations only"
     );
     solve_altcha_generic(&official, counter_mode)
 }
@@ -970,7 +974,7 @@ fn altcha_iterative_sha<D: Digest>(initial: &[u8], iterations: u32, key_length: 
 }
 
 fn altcha_derive_key(
-    parameters: &altcha::ChallengeParameters,
+    parameters: &AltchaChallengeParameters,
     salt: &[u8],
     password: &[u8],
 ) -> anyhow::Result<Vec<u8>> {
@@ -1115,31 +1119,6 @@ fn solve_altcha_generic(
             bail!("ALTCHA string-counter search exhausted Number.MAX_SAFE_INTEGER")
         }
     }
-}
-
-fn solve_altcha_official(
-    challenge: &AltchaChallenge,
-    counter_mode: AltchaCounterMode,
-    implementation: &str,
-) -> anyhow::Result<Result> {
-    let started = Instant::now();
-    let mut options = AltchaSolveOptions::new(challenge);
-    options.counter_mode = counter_mode;
-    options.timeout_ms = 0;
-    let solution = altcha::solve_challenge(options)
-        .context("ALTCHA official Rust solver failed")?
-        .context("ALTCHA search exhausted u32 counter space")?;
-    let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
-    Ok(Result {
-        answer: json!({
-            "counter": solution.counter,
-            "derivedKey": solution.derived_key,
-            "time": solution.time.unwrap_or(solve_ms),
-            "attempted_nonces": u64::from(solution.counter) + 1,
-        }),
-        solve_ms,
-        implementation: implementation.to_owned(),
-    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1661,20 +1640,16 @@ mod tests {
     #[test]
     fn altcha_fast_path_declines_nonstandard_nonce_shape() -> anyhow::Result<()> {
         let challenge = AltchaChallenge {
-            parameters: altcha::ChallengeParameters {
+            parameters: AltchaChallengeParameters {
                 algorithm: "SHA-256".to_owned(),
                 cost: 1,
-                data: None,
-                expires_at: None,
                 key_length: 32,
                 key_prefix: "00".to_owned(),
-                key_signature: None,
                 memory_cost: None,
                 nonce: "00".to_owned(),
                 parallelism: None,
                 salt: "00".repeat(16),
             },
-            signature: None,
         };
         assert!(try_solve_altcha_fast(&challenge, Implementation::Safe)?.is_none());
         Ok(())
@@ -1682,14 +1657,11 @@ mod tests {
 
     #[test]
     fn altcha_string_counter_derivation_covers_js_safe_integer_max() -> anyhow::Result<()> {
-        let parameters = altcha::ChallengeParameters {
+        let parameters = AltchaChallengeParameters {
             algorithm: "SHA-256".to_owned(),
             cost: 2,
-            data: None,
-            expires_at: None,
             key_length: 32,
             key_prefix: "00".to_owned(),
-            key_signature: None,
             memory_cost: None,
             nonce: hex::encode((0_u8..16).collect::<Vec<_>>()),
             parallelism: None,
@@ -1711,20 +1683,16 @@ mod tests {
     fn altcha_generic_modes_match_upstream_empty_prefix_and_case_insensitive_algorithm()
     -> anyhow::Result<()> {
         let challenge = AltchaChallenge {
-            parameters: altcha::ChallengeParameters {
+            parameters: AltchaChallengeParameters {
                 algorithm: "sha-256".to_owned(),
                 cost: 1,
-                data: None,
-                expires_at: None,
                 key_length: 32,
                 key_prefix: String::new(),
-                key_signature: None,
                 memory_cost: None,
                 nonce: "00".to_owned(),
                 parallelism: None,
                 salt: "00".repeat(16),
             },
-            signature: None,
         };
         for (mode, implementation) in [
             (AltchaCounterMode::Uint32, "altcha-generic"),
@@ -1738,26 +1706,18 @@ mod tests {
     }
 
     #[test]
-    fn altcha_reference_is_uint32_only_and_has_one_canonical_name() -> anyhow::Result<()> {
-        let error = require_error(
-            solve(
-                "altcha",
-                json!({"parameters": {}, "counterMode": "string"}),
-                Some("reference"),
-            ),
-            "reference must not advertise partial string-counter coverage",
-        )?;
-        assert!(error.to_string().contains("uint32 counter mode only"));
-
-        let error = require_error(
-            solve("altcha", json!({"parameters": {}}), Some("altcha-rust")),
-            "obsolete ALTCHA reference alias must stay rejected",
-        )?;
-        assert!(
-            error
-                .to_string()
-                .contains("unsupported classic implementation")
-        );
+    fn altcha_reference_backend_is_not_exposed_by_production() -> anyhow::Result<()> {
+        for implementation in ["reference", "altcha-rust"] {
+            let error = require_error(
+                solve("altcha", json!({"parameters": {}}), Some(implementation)),
+                "external ALTCHA reference solver must not be selectable in production",
+            )?;
+            assert!(
+                error
+                    .to_string()
+                    .contains("unsupported classic implementation")
+            );
+        }
         Ok(())
     }
 
