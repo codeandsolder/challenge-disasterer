@@ -175,7 +175,8 @@ pub fn solve_sha256(challenge: &Challenge, implementation: Option<&str>) -> anyh
     let data = challenge.bytes()?;
     let implementation = Implementation::parse(implementation.unwrap_or("auto"))?;
     let nonce_bytes = NonZeroU8::new(4).context("four-byte Anubis nonce width is nonzero")?;
-    let message = BinaryMessage::new(&data, nonce_bytes);
+    let message = BinaryMessage::new(&data, nonce_bytes)
+        .context("Anubis nonce width exceeds the binary solver layout")?;
     let mut solver = binary_solver(implementation, message)?;
     solver.set_limit(SEARCH_SPACE);
 
@@ -200,7 +201,8 @@ pub async fn solve_sha256_gpu(
     challenge.validate()?;
     let data = challenge.bytes()?;
     let nonce_bytes = NonZeroU8::new(4).context("four-byte Anubis nonce width is nonzero")?;
-    let message = BinaryMessage::new(&data, nonce_bytes);
+    let message = BinaryMessage::new(&data, nonce_bytes)
+        .context("Anubis nonce width exceeds the binary solver layout")?;
     let mut solver = pow_buster::gpu::BinarySolver::from(message);
     solver.set_limit(SEARCH_SPACE);
 

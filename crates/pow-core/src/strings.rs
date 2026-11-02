@@ -10,7 +10,7 @@ pub(crate) static DIGIT_LUT_10000_LE_EVEN: [u32; 10000 / 2] = const {
         let mut ds = [b'0'; 4];
         let mut j = 0;
         while j < 4 {
-            ds[j] = (copy % 10) as u8 + b'0';
+            ds[j] = (copy % 10).to_le_bytes()[0] + b'0';
             copy /= 10;
             j += 1;
         }
@@ -54,7 +54,7 @@ pub fn format_decimal_8<const N: usize, const REGISTER_BSWAP: bool, const PLACEH
     debug_assert!(N <= 8);
     out.fill(PLACEHOLDER);
     for i in (0..N).rev() {
-        out[i] = (input % 10) as u8 + b'0';
+        out[i] = (input % 10).to_le_bytes()[0] + b'0';
         input /= 10;
     }
     if REGISTER_BSWAP {
@@ -74,7 +74,7 @@ pub fn to_octal_7<const REGISTER_BSWAP: bool, const PLACEHOLDER: u8, const ADDEN
 ) {
     out.fill(PLACEHOLDER);
     for i in (0..7).rev() {
-        out[i] = ((input & 0b111) as u8) + b'0' + ADDEND;
+        out[i] = (input & 0b111).to_le_bytes()[0] + b'0' + ADDEND;
         input >>= 3;
     }
     if REGISTER_BSWAP {

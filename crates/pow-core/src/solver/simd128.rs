@@ -223,7 +223,7 @@ impl_decimal_solver!(
     [SingleBlockSolver, DoubleBlockSolver] => DecimalSolver
 );
 
-/// SIMD128 GoAway solver.
+/// SIMD128 `GoAway` solver.
 ///
 ///
 /// Current implementation: 4 way SIMD with 1-round hotstart granularity.
@@ -288,8 +288,8 @@ impl crate::solver::Solver for GoAwaySolver {
         let mut output_msg = [0; 16];
         let nonce = self.solve_nonce_only::<TYPE>(target, mask)?;
         output_msg[..8].copy_from_slice(&self.message.challenge);
-        output_msg[8] = (nonce >> 32) as u32;
-        output_msg[9] = nonce as u32;
+        output_msg[8] = crate::high_u32(nonce);
+        output_msg[9] = crate::low_u32(nonce);
         output_msg[10] = u32::from_be_bytes([0x80, 0, 0, 0]);
         output_msg[15] = Self::MSG_LEN as _;
 
@@ -326,6 +326,7 @@ impl CerberusSolver {
     }
 
     /// Get the attempted nonces.
+    #[must_use]
     pub fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
@@ -379,6 +380,10 @@ impl crate::solver::Solver for CerberusSolver {
         self.attempted_nonces
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the Cerberus SIMD dispatcher keeps four byte-layout cases and compile-time kernel dispatch together to preserve the hot-path structure"
+    )]
     fn solve_nonce_only<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
         match &self.message {
             CerberusMessage::Binary(_) => self.solve_binary_impl(target, mask),
@@ -395,29 +400,25 @@ impl crate::solver::Solver for CerberusSolver {
                 let salt_residual_len = message.salt_residual_len;
                 let position_mod = message.salt_residual_len % 4;
 
-                for resid0 in 0..10u64 {
-                    for resid1 in 0..10u64 {
+                for resid0 in 0..10_u8 {
+                    for resid1 in 0..10_u8 {
                         if self.attempted_nonces >= self.limit {
                             return None;
                         }
                         let mut msg = salt_residual;
 
                         match position_mod {
-                            0 => {
-                                msg[salt_residual_len] = resid0 as u8 + b'0';
-                                msg[salt_residual_len + 8] = resid1 as u8 + b'0';
+                            0 | 3 => {
+                                msg[salt_residual_len] = resid0 + b'0';
+                                msg[salt_residual_len + 8] = resid1 + b'0';
                             }
                             1 => {
-                                msg[salt_residual_len + 7] = resid0 as u8 + b'0';
-                                msg[salt_residual_len + 8] = resid1 as u8 + b'0';
+                                msg[salt_residual_len + 7] = resid0 + b'0';
+                                msg[salt_residual_len + 8] = resid1 + b'0';
                             }
                             2 => {
-                                msg[salt_residual_len] = resid0 as u8 + b'0';
-                                msg[salt_residual_len + 1] = resid1 as u8 + b'0';
-                            }
-                            3 => {
-                                msg[salt_residual_len] = resid0 as u8 + b'0';
-                                msg[salt_residual_len + 8] = resid1 as u8 + b'0';
+                                msg[salt_residual_len] = resid0 + b'0';
+                                msg[salt_residual_len + 1] = resid1 + b'0';
                             }
                             _ => return None,
                         }
@@ -472,26 +473,26 @@ impl crate::solver::Solver for CerberusSolver {
                                     0 => {
                                         10 * middle_word
                                             + 100_000 * success_lane_idx
-                                            + 100_000_000 * resid0
-                                            + resid1
+                                            + 100_000_000 * u64::from(resid0)
+                                            + u64::from(resid1)
                                     }
                                     1 => {
                                         100 * middle_word
                                             + 1_000_000 * success_lane_idx
-                                            + 10 * resid0
-                                            + resid1
+                                            + 10 * u64::from(resid0)
+                                            + u64::from(resid1)
                                     }
                                     2 => {
                                         1000 * middle_word
                                             + success_lane_idx
-                                            + 100_000_000 * resid0
-                                            + 10_000_000 * resid1
+                                            + 100_000_000 * u64::from(resid0)
+                                            + 10_000_000 * u64::from(resid1)
                                     }
                                     3 => {
                                         10000 * middle_word
                                             + 10 * success_lane_idx
-                                            + 100_000_000 * resid0
-                                            + resid1
+                                            + 100_000_000 * u64::from(resid0)
+                                            + u64::from(resid1)
                                     }
                                     _ => return None,
                                 };
@@ -514,7 +515,8 @@ impl crate::solver::Solver for CerberusSolver {
 
                     let mut nonce_copy = nonce;
                     for i in (0..9).rev() {
-                        msg[message.salt_residual_len + i] = (nonce_copy % 10) as u8 + b'0';
+                        msg[message.salt_residual_len + i] =
+                            (nonce_copy % 10).to_le_bytes()[0] + b'0';
                         nonce_copy /= 10;
                     }
 
@@ -531,7 +533,7 @@ impl crate::solver::Solver for CerberusSolver {
                         &message.prefix_state,
                         &msg,
                         0,
-                        message.salt_residual_len as u32 + 9,
+                        u32::try_from(message.salt_residual_len).ok()? + 9,
                         message.flags,
                     );
 
@@ -540,7 +542,7 @@ impl crate::solver::Solver for CerberusSolver {
                 CerberusMessage::Binary(message) => {
                     let mut msg = [0; 16];
                     msg[0] = message.first_word;
-                    msg[1] = nonce as u32;
+                    msg[1] = crate::low_u32(nonce);
                     let hash = crate::blake3::compress8(
                         &message.midstate,
                         &msg,
@@ -548,7 +550,7 @@ impl crate::solver::Solver for CerberusSolver {
                         8,
                         crate::blake3::FLAG_CHUNK_END | crate::blake3::FLAG_ROOT,
                     );
-                    Some((msg[1] as u64 | (msg[0] as u64) << 32, hash))
+                    Some((u64::from(msg[1]) | (u64::from(msg[0]) << 32), hash))
                 }
             }
         } else {

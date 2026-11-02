@@ -6,6 +6,8 @@ use core::{fmt, num::NonZeroU8};
 use std::{borrow::Cow, string::String, vec::Vec};
 
 use bytemuck::{Pod, Zeroable};
+
+use crate::{high_u32, low_u32};
 use sha2::{Digest, Sha256};
 
 const WG_SIZE: u32 = 64;
@@ -13,16 +15,6 @@ const STEPS: u32 = 128;
 const HASHES_PER_WG: u64 = 64 * 128;
 const CANCEL_INTERVAL: u32 = 16;
 const COUNTER_SPACE: u64 = 1_u64 << 54;
-
-const fn low_u32(value: u64) -> u32 {
-    let bytes = value.to_le_bytes();
-    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
-}
-
-const fn high_u32(value: u64) -> u32 {
-    let bytes = value.to_le_bytes();
-    u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]])
-}
 
 fn gpu_u32(value: u64, field: &str) -> Result<u32, GpuError> {
     u32::try_from(value).map_err(|_| GpuError::new(format!("{field} exceeds the GPU u32 ABI")))

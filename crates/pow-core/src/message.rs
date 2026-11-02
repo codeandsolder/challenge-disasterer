@@ -78,6 +78,10 @@ impl AsRef<[u8]> for IEEE754LosslessFixupPrefix {
 impl SingleBlockMessage {
     /// creates a new single block message
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the optimized single-block constructor is a linear padding/search-layout state machine; splitting it would duplicate mutable construction state"
+    )]
     pub fn new(mut prefix: &[u8], mut working_set: u32) -> Option<Self> {
         // construct the message buffer
         let mut prefix_state = sha256::IV;
@@ -239,6 +243,10 @@ impl SingleBlockMessage {
     ///
     /// The caller is expected to append the bytes from the prefix to the nonce before sending it to the server.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the IEEE-754 constructor is a linear padding/search-layout state machine with shared mutable construction state"
+    )]
     pub fn new_f64(
         mut prefix: &[u8],
         mut working_set: u32,
@@ -633,13 +641,14 @@ pub struct BinaryMessage {
 }
 
 impl BinaryMessage {
-    /// creates a new binary message
+    /// Creates a new binary message.
+    ///
+    /// Returns `None` when the nonce width exceeds the eight bytes representable by the solver layout.
     #[must_use]
-    pub fn new(salt: &[u8], nonce_byte_count: NonZeroU8) -> Self {
-        assert!(
-            nonce_byte_count.get() <= 8,
-            "nonce_byte_count must be less or equal to 8"
-        );
+    pub fn new(salt: &[u8], nonce_byte_count: NonZeroU8) -> Option<Self> {
+        if nonce_byte_count.get() > 8 {
+            return None;
+        }
         let mut prefix_state = sha256::IV;
 
         let (chunks, remainder) = salt.as_chunks::<64>();
@@ -658,13 +667,13 @@ impl BinaryMessage {
         }
         let mut salt_residual = [0; 64];
         salt_residual[..remainder.len()].copy_from_slice(remainder);
-        Self {
+        Some(Self {
             prefix_state,
             salt_residual,
             salt_residual_len: remainder.len(),
             nonce_byte_count,
             message_length: salt.len() + usize::from(nonce_byte_count.get()),
-        }
+        })
     }
 }
 
@@ -971,9 +980,9 @@ impl CapJSEmitter {
         }
         let itoa_buf = &digits[j..];
         let mut salt_state = self.seed;
-        itoa_buf.iter().for_each(|d| {
-            salt_state = fnv1a(salt_state, *d + b'0');
-        });
+        for digit in itoa_buf {
+            salt_state = fnv1a(salt_state, *digit + b'0');
+        }
         let mut target_state = fnv1a(salt_state, b'd');
         salt.chunks_mut(8).for_each(|d| {
             salt_state = capjs_lfsr(salt_state);
@@ -996,10 +1005,10 @@ impl CapJSEmitter {
             }
             d.copy_from_slice(&buf[..d.len()]);
         });
-        target.iter_mut().for_each(|d| {
+        for word in target {
             target_state = capjs_lfsr(target_state);
-            *d = target_state;
-        });
+            *word = target_state;
+        }
     }
 }
 

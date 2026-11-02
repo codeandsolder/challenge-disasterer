@@ -274,29 +274,31 @@ fn decimal_backends(
     Ok(out)
 }
 
-fn binary_backends(message: impl Fn() -> BinaryMessage) -> Vec<(&'static str, Box<dyn DynPow>)> {
+fn binary_backends(
+    mut message: impl FnMut() -> Result<BinaryMessage>,
+) -> Result<Vec<(&'static str, Box<dyn DynPow>)>> {
     let mut out: Vec<(&'static str, Box<dyn DynPow>)> = vec![
         (
             "safe",
-            Box::new(pow_core::solver::safe::BinarySolver::from(message())),
+            Box::new(pow_core::solver::safe::BinarySolver::from(message()?)),
         ),
-        ("auto", Box::new(pow_core::BinarySolver::from(message()))),
+        ("auto", Box::new(pow_core::BinarySolver::from(message()?))),
     ];
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if std::arch::is_x86_feature_detected!("avx2") {
         out.push((
             "avx2",
-            Box::new(pow_core::solver::avx2::BinarySolver::from(message())),
+            Box::new(pow_core::solver::avx2::BinarySolver::from(message()?)),
         ));
     }
     #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("avx512f") {
         out.push((
             "avx512",
-            Box::new(pow_core::solver::avx512::BinarySolver::from(message())),
+            Box::new(pow_core::solver::avx512::BinarySolver::from(message()?)),
         ));
     }
-    out
+    Ok(out)
 }
 
 fn leading_zero_bits(hash: &[u8; 32], difficulty: u32) -> bool {
@@ -781,9 +783,10 @@ fn run_cpu_anubis_haphash_cases(meta: &Meta, args: &Args, sample: u32) -> Result
     anubis_wasm_data[47] = 0x80;
     let anubis_sha_mask = u64::MAX << (64 - 20);
     let nonce_bytes = NonZeroU8::new(4).context("Anubis nonce width must be non-zero")?;
-    for (implementation, solver) in
-        binary_backends(|| BinaryMessage::new(&anubis_wasm_data, nonce_bytes))
-    {
+    for (implementation, solver) in binary_backends(|| {
+        BinaryMessage::new(&anubis_wasm_data, nonce_bytes)
+            .context("construct Anubis binary fixture")
+    })? {
         emit_cpu(
             meta,
             Case {
@@ -1210,8 +1213,9 @@ async fn run_gpu_wasm_mcaptcha_cases(
     anubis_wasm_data[47] = 0x80;
     let anubis_sha_mask = u64::MAX << (64 - 20);
     let nonce_bytes = NonZeroU8::new(4).context("Anubis nonce width must be non-zero")?;
-    let mut solver =
-        pow_core::gpu::BinarySolver::from(BinaryMessage::new(&anubis_wasm_data, nonce_bytes));
+    let binary_message = BinaryMessage::new(&anubis_wasm_data, nonce_bytes)
+        .context("construct GPU Anubis binary fixture")?;
+    let mut solver = pow_core::gpu::BinarySolver::from(binary_message);
     solver.set_limit(args.limit);
     let started = Instant::now();
     let (bench_target, bench_mask, _) =

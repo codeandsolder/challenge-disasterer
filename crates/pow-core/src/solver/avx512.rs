@@ -932,7 +932,7 @@ mod tests {
     fn test_solve_binary() {
         crate::solver::tests::test_binary_validator::<BinarySolver, _>(
             |prefix, nonce_byte_count| {
-                BinarySolver::from(BinaryMessage::new(prefix, nonce_byte_count))
+                BinaryMessage::new(prefix, nonce_byte_count).map(BinarySolver::from)
             },
         )
     }

@@ -477,21 +477,22 @@ pub(crate) mod tests {
 
     pub(crate) fn test_binary_validator<
         S: Solver<Output = [u32; 8]>,
-        F: for<'a> FnMut(&'a [u8], NonZeroU8) -> S,
+        F: for<'a> FnMut(&'a [u8], NonZeroU8) -> Option<S>,
     >(
         mut factory: F,
     ) {
         for nonce_byte_count in [4, 5, 8] {
             for prefix_len in 0..64 {
                 let mut msg = Vec::from_iter(b"abc".iter().cloned().cycle().take(prefix_len));
-                let mut solver = factory(&msg, NonZeroU8::new(nonce_byte_count).unwrap());
+                let mut solver = factory(&msg, NonZeroU8::new(nonce_byte_count).unwrap())
+                    .expect("supported binary validator width must construct");
                 const DIFFICULTY: u64 = 100_000;
                 let target =
                     compute_target_mcaptcha(core::num::NonZeroU64::new(DIFFICULTY).unwrap());
                 let (nonce, result) = solver
                     .solve::<SOLVE_TYPE_GT>(target, !0)
                     .expect("solver failed");
-                msg.extend_from_slice(&nonce.to_le_bytes()[..nonce_byte_count as usize]);
+                msg.extend_from_slice(&nonce.to_le_bytes()[..usize::from(nonce_byte_count)]);
                 let expected_digest = sha2::Sha256::digest(&msg);
                 let mut got_digest = [0; 32];
                 for i in 0..8 {

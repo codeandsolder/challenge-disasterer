@@ -935,10 +935,9 @@ mod tests {
         }
 
         let salt = [b'a'; 32];
-        check(BinarySolver::from(BinaryMessage::new(
-            &salt,
-            4.try_into().unwrap(),
-        )));
+        check(BinarySolver::from(
+            BinaryMessage::new(&salt, 4.try_into().unwrap()).expect("four-byte test nonce width"),
+        ));
         check(GoAwaySolver::from(GoAwayMessage::new_bytes(&salt, 0)));
     }
 
@@ -963,10 +962,9 @@ mod tests {
             .find_map(|len| DoubleBlockMessage::new(&salt[..len], 0))
             .expect("double block shape");
         check(DoubleBlockSolver::from(double));
-        check(BinarySolver::from(BinaryMessage::new(
-            &salt,
-            4.try_into().unwrap(),
-        )));
+        check(BinarySolver::from(
+            BinaryMessage::new(&salt, 4.try_into().unwrap()).expect("four-byte test nonce width"),
+        ));
         check(GoAwaySolver::from(GoAwayMessage::new_bytes(
             (&salt[..32]).try_into().unwrap(),
             0,
@@ -1035,7 +1033,7 @@ mod tests {
     fn test_solve_binary() {
         crate::solver::tests::test_binary_validator::<BinarySolver, _>(
             |prefix, nonce_byte_count| {
-                BinarySolver::from(BinaryMessage::new(prefix, nonce_byte_count))
+                BinaryMessage::new(prefix, nonce_byte_count).map(BinarySolver::from)
             },
         )
     }

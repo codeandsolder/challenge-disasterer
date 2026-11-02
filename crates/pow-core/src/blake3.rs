@@ -184,7 +184,7 @@ pub fn ingest_message_prefix(
         IV[1],
         IV[2],
         IV[3],
-        counter as u32,
+        crate::low_u32(counter),
         0,
         block_len,
         flags,
@@ -202,8 +202,8 @@ pub fn compress8(
     block_len: u32,
     flags: u32,
 ) -> [u32; 8] {
-    let counter_low = counter as u32;
-    let counter_high = (counter >> 32) as u32;
+    let counter_low = crate::low_u32(counter);
+    let counter_high = crate::high_u32(counter);
     #[rustfmt::skip]
     let mut state = [
         chaining_value[0], chaining_value[1], chaining_value[2], chaining_value[3],
@@ -220,7 +220,9 @@ pub fn compress8(
     for i in 0..8 {
         state[i] ^= state[i + 8];
     }
-    state[..8].try_into().unwrap()
+    let mut output = [0_u32; 8];
+    output.copy_from_slice(&state[..8]);
+    output
 }
 
 #[cfg(test)]

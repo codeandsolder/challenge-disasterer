@@ -45,6 +45,16 @@ pub mod adapter;
 #[cold]
 fn unlikely() {}
 
+pub(crate) const fn low_u32(value: u64) -> u32 {
+    let bytes = value.to_le_bytes();
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+pub(crate) const fn high_u32(value: u64) -> u32 {
+    let bytes = value.to_le_bytes();
+    u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]])
+}
+
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[expect(
     clippy::inline_always,
