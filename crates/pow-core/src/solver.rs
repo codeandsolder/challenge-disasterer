@@ -121,7 +121,10 @@ pub trait CpuIDToken: Default + Copy + Clone + 'static {
 
 /// A solver router that can take a solver or a fallback solver based on the CPU features
 #[derive(Debug, Copy, Clone)]
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "variant fields are internal dispatch state and not part of the public solver contract"
+)]
 #[cfg_attr(not(feature = "runtime-dispatch"), repr(transparent))]
 pub enum SolverRouter<T: CpuIDToken, M, S: Solver + From<M>, F: Solver + From<M>> {
     #[cfg(feature = "runtime-dispatch")]

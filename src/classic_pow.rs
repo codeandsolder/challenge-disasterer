@@ -210,7 +210,13 @@ fn decimal_solver(
         Implementation::Avx512 => Ok(Box::new(pow_buster::solver::avx512::DecimalSolver::from(
             message,
         ))),
-        #[allow(unreachable_patterns)]
+        #[cfg_attr(
+            target_arch = "x86_64",
+            expect(
+                unreachable_patterns,
+                reason = "all solver implementations in this match are available on x86_64"
+            )
+        )]
         _ => bail!("implementation unavailable on this target"),
     }
 }
@@ -263,7 +269,13 @@ fn goaway_solver(
         Implementation::Avx512 => Ok(Box::new(pow_buster::solver::avx512::GoAwaySolver::from(
             message,
         ))),
-        #[allow(unreachable_patterns)]
+        #[cfg_attr(
+            target_arch = "x86_64",
+            expect(
+                unreachable_patterns,
+                reason = "all solver implementations in this match are available on x86_64"
+            )
+        )]
         _ => bail!("implementation unavailable on this target"),
     }
 }

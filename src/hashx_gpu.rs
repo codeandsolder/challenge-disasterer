@@ -498,7 +498,10 @@ fn storage_layout_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutE
     }
 }
 
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "wgpu SPIR-V passthrough requires its audited unsafe module-construction API"
+)]
 fn create_persistent_shader_module(
     device: &wgpu::Device,
     is_nvidia: bool,

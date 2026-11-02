@@ -1,4 +1,17 @@
-#![cfg_attr(target_feature = "avx512f", allow(dead_code, unused))]
+#![cfg_attr(
+    target_feature = "avx512f",
+    expect(
+        dead_code,
+        reason = "AVX-512 compilation intentionally selects only a subset of the shared SHA-NI helpers"
+    )
+)]
+#![cfg_attr(
+    target_feature = "avx512f",
+    expect(
+        unused_variables,
+        reason = "AVX-512 compilation intentionally selects only a subset of the shared SHA-NI helpers"
+    )
+)]
 
 // these are mainly adapted from the sha2 crate as well,
 // the core logic is verbatim, but shuffling and batch message loading overhead is removed
@@ -75,7 +88,10 @@ pub(crate) fn extract_state(state: [__m128i; 2]) -> [u32; 8] {
     [a, b, c, d, e, f, g, h]
 }
 
-#[allow(unused_variables)]
+#[expect(
+    unused_variables,
+    reason = "default trait lane helpers intentionally ignore lane indices overridden by specialized implementations"
+)]
 pub trait Plucker: Sized {
     #[inline(always)]
     fn pluck_qword0(&mut self, lane: usize, w: u32x4) -> u32x4 {

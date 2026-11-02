@@ -126,7 +126,10 @@ fn mov(rd: Reg, src: Src1, guard: Pred, stall: u8) -> u128 {
     code | 0xf00
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "SASS instruction fields map one-to-one to encoded operands"
+)]
 fn iadd3(
     rd: Reg,
     pd0: Option<Pred>,
@@ -171,7 +174,10 @@ fn iadd3(
     code
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "SASS instruction fields map one-to-one to encoded operands"
+)]
 fn imad(
     wide: bool,
     x: bool,
@@ -220,7 +226,10 @@ impl Cmp {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "SASS instruction fields map one-to-one to encoded operands"
+)]
 fn isetp(
     cmp: Cmp,
     u32_type: bool,
@@ -246,7 +255,10 @@ fn isetp(
     code
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "SASS instruction fields map one-to-one to encoded operands"
+)]
 fn lop3(
     rd: Reg,
     rs0: Reg,
@@ -543,7 +555,10 @@ impl Emitter {
         self.mov(dlo, Src1::Reg(r(24)), guard);
         self.mov(dhi, Src1::Reg(r(25)), guard);
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "register-pair multiply lowering keeps explicit physical operands"
+    )]
     fn mullo(&mut self, dlo: u8, dhi: u8, alo: u8, ahi: u8, blo: u8, bhi: u8, guard: Pred) {
         self.emit(imad(
             true,
@@ -598,7 +613,10 @@ impl Emitter {
         self.mov(dlo, Src1::Reg(r(24)), guard);
         self.mov(dhi, Src1::Reg(r(25)), guard);
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "register-pair multiply lowering keeps explicit physical operands"
+    )]
     fn umul_core(&mut self, alo: u8, ahi: u8, blo: u8, bhi: u8, guard: Pred) {
         self.emit(imad(
             true,
@@ -678,7 +696,10 @@ impl Emitter {
             Ctrl::standard(8),
         ));
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "register-pair multiply lowering keeps explicit physical operands"
+    )]
     fn mulhi(
         &mut self,
         dlo: u8,

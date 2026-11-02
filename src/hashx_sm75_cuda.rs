@@ -88,7 +88,10 @@ impl Sm75Cuda {
         Err(anyhow!("sm_75 HashX search exhausted u32 nonce space"))
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "CUDA kernel launch crosses cudarc's audited unsafe driver boundary"
+    )]
     fn launch(
         &mut self,
         function: &cudarc::driver::CudaFunction,

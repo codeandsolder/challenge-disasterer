@@ -1403,7 +1403,10 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
 }
 
 #[cfg(feature = "gpu")]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "matrix row emission keeps protocol dimensions explicit at the reporting boundary"
+)]
 fn emit_gpu(
     meta: &Meta,
     protocol: &'static str,

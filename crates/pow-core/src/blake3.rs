@@ -8,7 +8,7 @@ pub(crate) const IV: [u32; 8] = crate::sha256::IV;
 
 pub(crate) const FLAG_CHUNK_START: u32 = 0x01;
 pub(crate) const FLAG_CHUNK_END: u32 = 0x02;
-#[expect(unused, reason = "TODO, maybe never going to need this")]
+#[expect(dead_code, reason = "reserved for the parent-node BLAKE3 mode")]
 pub(crate) const FLAG_PARENT: u32 = 0x04;
 pub(crate) const FLAG_ROOT: u32 = 0x08;
 

@@ -1,5 +1,11 @@
-#![allow(clippy::inconsistent_digit_grouping)]
-#![allow(clippy::collapsible_if)]
+#![expect(
+    clippy::inconsistent_digit_grouping,
+    reason = "protocol constants preserve grouping from their source algorithms"
+)]
+#![expect(
+    clippy::collapsible_if,
+    reason = "nested conditions mirror protocol decision stages and remain easier to audit"
+)]
 use core::num::{NonZeroU8, NonZeroU32};
 
 use crate::{blake3, sha256};

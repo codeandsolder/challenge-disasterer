@@ -112,7 +112,7 @@ fn validate_token(label: &str, value: &str) -> anyhow::Result<()> {
 
 #[derive(Parser, Debug, Clone)]
 #[command(about = "Exercise challenge-disasterer against a real Anubis server")]
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
     reason = "independent CLI feature switches are clearer as booleans"
 )]
@@ -383,7 +383,7 @@ struct ManagedChild {
 impl ManagedChild {
     fn spawn(name: &'static str, command: &mut Command, log_path: PathBuf) -> anyhow::Result<Self> {
         let stdout = File::create(&log_path)
-            .with_context(|| format!("create {} log {}", name, log_path.display()))?;
+            .with_context(|| format!("create {name} log {}", log_path.display()))?;
         let stderr = stdout.try_clone().context("clone log handle")?;
         command
             .stdout(Stdio::from(stdout))
@@ -503,8 +503,7 @@ fn write_policy(path: &Path, cases: &[CaseSpec]) -> anyhow::Result<()> {
             policy,
             "  - name: e2e-{index}\n    user_agent_regex: '^challenge-disasterer-e2e/{index}/{}$'\n    action: CHALLENGE\n    challenge:\n      algorithm: {}\n      difficulty: {}",
             case.algorithm, case.algorithm, case.difficulty
-        )
-        .expect("writing to String cannot fail");
+        )?;
     }
     policy.push_str("\nstatus_codes:\n  CHALLENGE: 200\n  DENY: 403\n");
     fs::write(path, policy).with_context(|| format!("write policy {}", path.display()))
@@ -1148,7 +1147,7 @@ fn solve_case(
     solve_case_inner(index, case, anubis_base, solver_base, negative_check, true)
 }
 
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "keeps one complete protocol round trip together"
 )]
@@ -1286,16 +1285,14 @@ fn solve_case_inner(
     let wall_ms = wall_started.elapsed().as_secs_f64() * 1000.0;
     if emit_pass {
         println!(
-            "PASS algorithm={} solver={} backend={} implementation={} difficulty={} nonce={} solver_ms={:.3} wall_ms={:.3} final_url={}",
+            "PASS algorithm={} solver={} backend={} implementation={} difficulty={} nonce={} solver_ms={:.3} wall_ms={wall_ms:.3} final_url={final_url}",
             case.algorithm,
             case.solver,
             solved.backend,
             solved.implementation.as_deref().unwrap_or("-"),
             case.difficulty,
             solved.answer.nonce,
-            solved.solve_ms,
-            wall_ms,
-            final_url
+            solved.solve_ms
         );
     }
     Ok(TrialResult {
@@ -1386,9 +1383,8 @@ fn paired_hashx_sample(
     for solved in &solves {
         ensure!(
             solved.nonce == reference.nonce && solved.hash == reference.hash,
-            "HashX implementation disagreement at d{} sample {}: {} returned nonce={} hash={}, cpu-jit nonce={} hash={}",
+            "HashX implementation disagreement at d{} sample {sample}: {} returned nonce={} hash={}, cpu-jit nonce={} hash={}",
             case.difficulty,
-            sample,
             solved.label,
             solved.nonce,
             solved.hash,
@@ -1402,9 +1398,9 @@ fn paired_hashx_sample(
     ))
 }
 
-fn paired_mean(values: &[f64]) -> f64 {
-    let count = u32::try_from(values.len()).expect("paired sample count fits u32");
-    values.iter().sum::<f64>() / f64::from(count)
+fn paired_mean(values: &[f64]) -> anyhow::Result<f64> {
+    let count = u32::try_from(values.len()).context("paired sample count exceeds u32")?;
+    Ok(values.iter().sum::<f64>() / f64::from(count))
 }
 
 fn print_paired_hashx_report(
@@ -1414,20 +1410,20 @@ fn print_paired_hashx_report(
     auto_implementations: &std::collections::BTreeMap<String, usize>,
     implementations: &[String],
 ) -> anyhow::Result<()> {
-    let auto_ms = paired_mean(timings.get("auto").context("missing auto timings")?);
+    let auto_ms = paired_mean(timings.get("auto").context("missing auto timings")?)?;
     let mut best_gpu = None::<(&str, f64)>;
     for implementation in implementations {
         let value = paired_mean(
             timings
                 .get(implementation)
                 .with_context(|| format!("missing timings for {implementation}"))?,
-        );
+        )?;
         if best_gpu.is_none_or(|(_, best)| value < best) {
             best_gpu = Some((implementation.as_str(), value));
         }
     }
     let (best_gpu_name, best_gpu_ms) = best_gpu.context("no GPU implementations to benchmark")?;
-    let jit_ms = paired_mean(timings.get("cpu-jit").context("missing cpu-jit timings")?);
+    let jit_ms = paired_mean(timings.get("cpu-jit").context("missing cpu-jit timings")?)?;
     let slowdown = auto_ms / best_gpu_ms.max(f64::MIN_POSITIVE);
     let selection_matches_best =
         auto_implementations.len() == 1 && auto_implementations.contains_key(best_gpu_name);
@@ -1445,12 +1441,10 @@ fn print_paired_hashx_report(
         "ROUTING status={routing} difficulty={difficulty} n={samples} auto_ms={auto_ms:.3} auto_impls={auto_implementations:?} best_gpu={best_gpu_name} best_gpu_ms={best_gpu_ms:.3} selection_matches_best={selection_matches_best} slowdown={slowdown:.3} cpu_jit_ms={jit_ms:.3} best_overall={best_overall} best_overall_ms={best_overall_ms:.3}"
     );
     for (label, values) in timings {
+        let mean_solver_ms = paired_mean(values)?;
         println!(
-            "PAIRED_HASHX difficulty={} implementation={} n={} mean_solver_ms={:.3}",
-            difficulty,
-            label,
-            values.len(),
-            paired_mean(values)
+            "PAIRED_HASHX difficulty={difficulty} implementation={label} n={} mean_solver_ms={mean_solver_ms:.3}",
+            values.len()
         );
     }
     Ok(())
@@ -1592,7 +1586,7 @@ fn browser_benchmark_matrix() -> anyhow::Result<Vec<CaseSpec>> {
 fn print_benchmark(case: &CaseSpec, trials: &[TrialResult]) -> anyhow::Result<()> {
     let wall_ms: f64 = trials.iter().map(|trial| trial.wall_ms).sum();
     let solve_ms: f64 = trials.iter().map(|trial| trial.solve_ms).sum();
-    let sample_count = u32::try_from(trials.len()).expect("benchmark sample count fits u32");
+    let sample_count = u32::try_from(trials.len()).context("benchmark sample count exceeds u32")?;
     let sample_count = f64::from(sample_count);
     let hashes_per_s =
         expected_hashes(case) * sample_count * 1000.0 / solve_ms.max(f64::MIN_POSITIVE);
@@ -1609,22 +1603,20 @@ fn print_benchmark(case: &CaseSpec, trials: &[TrialResult]) -> anyhow::Result<()
         "benchmark mixed backend/implementation results"
     );
     println!(
-        "BENCH algorithm={} solver={} backend={} implementation={} difficulty={} n={} avg_answer_ms={:.3} effective_h_s={:.3} effective_mh_s={:.3} mean_solver_ms={:.3}",
+        "BENCH algorithm={} solver={} backend={backend} implementation={} difficulty={} n={} avg_answer_ms={:.3} effective_h_s={hashes_per_s:.3} effective_mh_s={:.3} mean_solver_ms={:.3}",
         case.algorithm,
         case.solver,
-        backend,
         implementation.unwrap_or("-"),
         case.difficulty,
         trials.len(),
         wall_ms / sample_count,
-        hashes_per_s,
         hashes_per_s / 1e6,
         solve_ms / sample_count,
     );
     Ok(())
 }
 
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "top-level test orchestration is intentionally linear"
 )]
@@ -1970,13 +1962,12 @@ fn run(
                             eprintln!("\n--- Anubis log ---\n{}", anubis.log_tail());
                             return Err(error).with_context(|| {
                                 format!(
-                                    "routing calibration failed: provider={} solver={} implementation={:?} algorithm={} difficulty={} batch={}",
+                                    "routing calibration failed: provider={} solver={} implementation={:?} algorithm={} difficulty={} batch={batch_size}",
                                     candidate.provider,
                                     candidate.solver,
                                     candidate.implementation,
                                     parameter.algorithm,
                                     parameter.difficulty,
-                                    batch_size,
                                 )
                             });
                         }
@@ -2065,19 +2056,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_case_spec() {
-        let case: CaseSpec = "hashx:anubis-hashx:16".parse().expect("valid case");
+    fn parses_case_spec() -> anyhow::Result<()> {
+        let case: CaseSpec = "hashx:anubis-hashx:16".parse()?;
         assert_eq!(case.algorithm, "hashx");
         assert_eq!(case.solver, "anubis-hashx");
         assert_eq!(case.difficulty, 16);
         assert_eq!(case.implementation, None);
         assert_eq!(case.force_implementation, None);
 
-        let concrete: CaseSpec = "hashx:anubis-hashx:18:cuda-sm75-sass"
-            .parse()
-            .expect("valid implementation-qualified case");
+        let concrete: CaseSpec = "hashx:anubis-hashx:18:cuda-sm75-sass".parse()?;
         assert_eq!(concrete.difficulty, 18);
         assert_eq!(concrete.implementation.as_deref(), Some("cuda-sm75-sass"));
+        Ok(())
     }
 
     #[test]
@@ -2332,13 +2322,13 @@ mod tests {
     }
 
     #[test]
-    fn extracts_templ_json_script() {
+    fn extracts_templ_json_script() -> anyhow::Result<()> {
         let html = r#"<html><script type="application/json" id="anubis_challenge">{"challenge":{"id":"abc","randomData":"deadbeef"},"rules":{"algorithm":"fast","difficulty":2}}</script></html>"#;
-        let challenge: ChallengeEnvelope =
-            extract_json_script(html, "anubis_challenge").expect("extract challenge");
+        let challenge: ChallengeEnvelope = extract_json_script(html, "anubis_challenge")?;
         assert_eq!(challenge.challenge.id, "abc");
         assert_eq!(challenge.challenge.random_data, "deadbeef");
         assert_eq!(challenge.rules.algorithm, "fast");
         assert_eq!(challenge.rules.difficulty, 2);
+        Ok(())
     }
 }

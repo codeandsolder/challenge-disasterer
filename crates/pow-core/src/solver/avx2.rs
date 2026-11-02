@@ -297,7 +297,10 @@ impl From<crate::solver::safe::BinarySolver> for BinarySolver {
 impl BinarySolver {
     #[inline(never)]
     #[target_feature(enable = "avx2")]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "const-generic SHA block specialization keeps hot solver inputs explicit"
+    )]
     fn solve_impl<
         const TYPE: u8,
         const FIRST_NONCE_WORD_IDX: usize,

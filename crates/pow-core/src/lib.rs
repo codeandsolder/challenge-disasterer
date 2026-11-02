@@ -1,7 +1,7 @@
 #![feature(portable_simd)]
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 #![doc = "Internal protocol PoW solver core for challenge-disasterer."]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 #![deny(unsafe_code)]
 
 use core::num::{NonZeroU8, NonZeroU64};
@@ -365,7 +365,10 @@ pub fn build_mcaptcha_prefix<E: Extend<u8>>(out: &mut E, string: &str, salt: &st
 /// # Returns
 ///
 /// The plausible time in milliseconds
-#[expect(unused)]
+#[expect(
+    dead_code,
+    reason = "kept as the SHA-256 counterpart to the active plausibility estimators"
+)]
 pub(crate) fn compute_plausible_time_sha256(hashes: u64) -> u64 {
     hashes / 512
 }

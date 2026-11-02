@@ -472,6 +472,7 @@ dependencies = [
 name = "challenge-disasterer-mcaptcha-e2e"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "bincode",
  "mcaptcha_pow_sha256",
  "serde",

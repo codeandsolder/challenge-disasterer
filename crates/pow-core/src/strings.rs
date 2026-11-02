@@ -16,7 +16,10 @@ pub(crate) static DIGIT_LUT_10000_LE_EVEN: [u32; 10000 / 2] = const {
     out
 };
 
-#[expect(dead_code)]
+#[expect(
+    dead_code,
+    reason = "compile-time assertions exist only to validate LUT layout invariants"
+)]
 mod static_asserts {
     use super::DIGIT_LUT_10000_LE_EVEN;
 
