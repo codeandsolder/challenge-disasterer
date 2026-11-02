@@ -36,8 +36,8 @@ impl ChallengeForm {
     #[must_use]
     pub fn id(&self) -> Option<&str> {
         match self {
-            ChallengeForm::Plain(_) => None,
-            ChallengeForm::IdWrapped { id, .. } => Some(id),
+            Self::Plain(_) => None,
+            Self::IdWrapped { id, .. } => Some(id),
         }
     }
 }
@@ -46,8 +46,8 @@ impl ChallengeForm {
 impl AsRef<str> for ChallengeForm {
     fn as_ref(&self) -> &str {
         match self {
-            ChallengeForm::Plain(s) => s,
-            ChallengeForm::IdWrapped { random_data, .. } => random_data,
+            Self::Plain(s) => s,
+            Self::IdWrapped { random_data, .. } => random_data,
         }
     }
 }
@@ -64,7 +64,7 @@ impl ChallengeDescriptor {
 
     /// Get the rules of an Anubis `PoW`.
     #[must_use]
-    pub fn rules(&self) -> &AnubisRules {
+    pub const fn rules(&self) -> &AnubisRules {
         &self.rules
     }
 
@@ -80,7 +80,7 @@ impl ChallengeDescriptor {
 
     /// Get the challenge of an Anubis `PoW`.
     #[must_use]
-    pub fn challenge(&self) -> &ChallengeForm {
+    pub const fn challenge(&self) -> &ChallengeForm {
         &self.challenge
     }
 
@@ -168,7 +168,7 @@ impl AnubisRules {
 
     /// Difficulty in leading zero nibbles.
     #[must_use]
-    pub fn difficulty(&self) -> u8 {
+    pub const fn difficulty(&self) -> u8 {
         self.difficulty
     }
 }

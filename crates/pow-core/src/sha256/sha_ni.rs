@@ -56,7 +56,7 @@ macro_rules! schedule {
 }
 
 #[inline(always)]
-pub(crate) fn prepare_state(state: &[u32; 8]) -> [__m128i; 2] {
+pub fn prepare_state(state: &[u32; 8]) -> [__m128i; 2] {
     [
         u32x4::from_array([state[5], state[4], state[1], state[0]]).into(),
         u32x4::from_array([state[7], state[6], state[3], state[2]]).into(),
@@ -64,25 +64,25 @@ pub(crate) fn prepare_state(state: &[u32; 8]) -> [__m128i; 2] {
 }
 
 #[inline(always)]
-pub(crate) fn feedback_ab(a: u32, b: u32) -> __m128i {
+pub fn feedback_ab(a: u32, b: u32) -> __m128i {
     u32x4::from_array([0, 0, b, a]).into()
 }
 
 #[inline(always)]
-pub(crate) fn add_words(a: __m128i, b: __m128i) -> __m128i {
+pub fn add_words(a: __m128i, b: __m128i) -> __m128i {
     let a: u32x4 = a.into();
     let b: u32x4 = b.into();
     (a + b).into()
 }
 
 #[inline(always)]
-pub(crate) fn extract_ab(state: __m128i) -> u64 {
+pub fn extract_ab(state: __m128i) -> u64 {
     let state: u64x2 = state.into();
     state.to_array()[1]
 }
 
 #[inline(always)]
-pub(crate) fn extract_state(state: [__m128i; 2]) -> [u32; 8] {
+pub fn extract_state(state: [__m128i; 2]) -> [u32; 8] {
     let abef: u32x4 = state[0].into();
     let cdgh: u32x4 = state[1].into();
     let [f, e, b, a] = abef.to_array();
@@ -118,11 +118,7 @@ impl Plucker for () {}
 // ARX network using altered data layout
 #[inline]
 #[target_feature(enable = "sse4.1,sha")]
-pub(crate) fn multiway_arx_abef_cdgh<
-    const BEGIN_ROUND_BY_4: usize,
-    const LANES: usize,
-    P: Plucker,
->(
+pub fn multiway_arx_abef_cdgh<const BEGIN_ROUND_BY_4: usize, const LANES: usize, P: Plucker>(
     state: [&mut [__m128i; 2]; LANES],
     block_template: &[u32; 16],
     mut plucker: P,

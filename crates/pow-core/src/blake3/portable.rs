@@ -27,7 +27,7 @@ pub(super) fn g<const N: usize>(
 }
 #[cfg_attr(target_arch = "wasm32", inline(never))]
 #[cfg_attr(not(target_arch = "wasm32"), inline(always))]
-pub(crate) fn compress<const N: usize, const CONSTANT_WORD_COUNT: usize, const PATCH: usize>(
+pub fn compress<const N: usize, const CONSTANT_WORD_COUNT: usize, const PATCH: usize>(
     v: &mut [Simd<u32, N>; 16],
     tpl: &[u32; 16],
     patch: Simd<u32, N>,

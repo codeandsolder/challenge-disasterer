@@ -6,13 +6,13 @@
     clippy::many_single_char_names,
     reason = "SHA-256 round state follows the canonical a-through-h notation"
 )]
-pub(crate) mod portable;
+pub mod portable;
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub mod sha_ni;
 
 // Initial hash values for SHA-256
-pub(crate) const IV: [u32; 8] = [
+pub const IV: [u32; 8] = [
     0x6a09_e667,
     0xbb67_ae85,
     0x3c6e_f372,
@@ -23,7 +23,7 @@ pub(crate) const IV: [u32; 8] = [
     0x5be0_cd19,
 ];
 
-pub(crate) const K32: [u32; 64] = [
+pub const K32: [u32; 64] = [
     0x428a_2f98,
     0x7137_4491,
     0xb5c0_fbcf,
@@ -94,7 +94,7 @@ pub(crate) const K32: [u32; 64] = [
 ///
 /// The first 16 words are the input block, the rest are computed from them
 #[inline(always)]
-pub(crate) const fn do_message_schedule(w: &mut [u32; 64]) {
+pub const fn do_message_schedule(w: &mut [u32; 64]) {
     let mut i = 16;
     while i < 64 {
         let w15 = w[i - 15];
@@ -111,7 +111,7 @@ pub(crate) const fn do_message_schedule(w: &mut [u32; 64]) {
 
 /// pre-compute the message schedule for a single block, adding corresponding round constants
 #[inline(always)]
-pub(crate) const fn do_message_schedule_k_w(w: &mut [u32; 64]) {
+pub const fn do_message_schedule_k_w(w: &mut [u32; 64]) {
     do_message_schedule(w);
     let mut i = 0;
     while i < 64 {
@@ -121,7 +121,7 @@ pub(crate) const fn do_message_schedule_k_w(w: &mut [u32; 64]) {
 }
 
 #[cfg(test)]
-pub(crate) fn deterministic_test_word(row: usize, column: usize, domain: u32) -> u32 {
+pub fn deterministic_test_word(row: usize, column: usize, domain: u32) -> u32 {
     let row = row as u32;
     let column = column as u32;
     domain
@@ -132,7 +132,7 @@ pub(crate) fn deterministic_test_word(row: usize, column: usize, domain: u32) ->
 
 /// A reference software implementation of SHA-256 compression function from sha2 crate
 #[inline(always)]
-pub(crate) fn digest_block(state: &mut [u32; 8], block: &[u32; 16]) {
+pub fn digest_block(state: &mut [u32; 8], block: &[u32; 16]) {
     let mut tmp = [0u8; 64];
     for i in 0..16 {
         tmp[i * 4..][..4].copy_from_slice(&block[i].to_be_bytes());
@@ -142,13 +142,13 @@ pub(crate) fn digest_block(state: &mut [u32; 8], block: &[u32; 16]) {
 
 /// ingest a message prefix into the state
 #[inline(always)]
-pub(crate) fn ingest_message_prefix<const LEN: usize>(state: &mut [u32; 8], w: [u32; LEN]) {
+pub fn ingest_message_prefix<const LEN: usize>(state: &mut [u32; 8], w: [u32; LEN]) {
     sha2_arx::<0>(state, &w);
 }
 
 /// scalar sha2 rounds for hotstart taken verbatim from sha2 crate
 #[inline(always)]
-pub(crate) fn sha2_arx<const START: usize>(state: &mut [u32; 8], w: &[u32]) {
+pub fn sha2_arx<const START: usize>(state: &mut [u32; 8], w: &[u32]) {
     let [a, b, c, d, e, f, g, h] = &mut *state;
 
     for i in 0..w.len() {
@@ -176,7 +176,7 @@ pub(crate) fn sha2_arx<const START: usize>(state: &mut [u32; 8], w: &[u32]) {
 
 /// scalar sha2 rounds for hotstart taken verbatim from sha2 crate, but without adding constants
 #[inline(always)]
-pub(crate) const fn sha2_arx_without_constants<const START: usize, const LEN: usize>(
+pub const fn sha2_arx_without_constants<const START: usize, const LEN: usize>(
     state: &mut [u32; 8],
     ws: [u32; LEN],
 ) {

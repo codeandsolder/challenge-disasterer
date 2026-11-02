@@ -24,6 +24,12 @@ fn gpu_usize_u32(value: usize, field: &str) -> Result<u32, GpuError> {
     u32::try_from(value).map_err(|_| GpuError::new(format!("{field} exceeds the GPU u32 ABI")))
 }
 
+fn append_fmt(output: &mut String, args: fmt::Arguments<'_>) {
+    if fmt::Write::write_fmt(output, args).is_err() {
+        unreachable!("writing to String cannot fail");
+    }
+}
+
 fn be_words_4(bytes: &[u8; 16]) -> [u32; 4] {
     let chunks = bytes.as_chunks::<4>().0;
     core::array::from_fn(|i| u32::from_be_bytes(chunks[i]))
@@ -325,36 +331,40 @@ impl GpuBindings {
     }
 }
 
-async fn select_gpu_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, GpuError> {
-    if let Ok(requested) = std::env::var("WGPU_ADAPTER_NAME") {
-        let requested = requested.to_lowercase();
-        let adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN).await;
-        let available = adapters
-            .iter()
-            .map(|adapter| adapter.get_info().name)
-            .collect::<Vec<_>>();
-        return adapters
-            .into_iter()
-            .find(|adapter| {
-                let info = adapter.get_info();
-                info.device_type != wgpu::DeviceType::Cpu
-                    && info.name.to_lowercase().contains(&requested)
-            })
-            .ok_or_else(|| {
-                GpuError::new(format!(
-                    "WGPU_ADAPTER_NAME={requested:?} matched no GPU adapter; available: {}",
-                    available.join(", ")
-                ))
-            });
-    }
+fn select_gpu_adapter(
+    instance: &wgpu::Instance,
+) -> core::pin::Pin<Box<dyn core::future::Future<Output = Result<wgpu::Adapter, GpuError>> + '_>> {
+    Box::pin(async move {
+        if let Ok(requested) = std::env::var("WGPU_ADAPTER_NAME") {
+            let requested = requested.to_lowercase();
+            let adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN).await;
+            let available = adapters
+                .iter()
+                .map(|adapter| adapter.get_info().name)
+                .collect::<Vec<_>>();
+            return adapters
+                .into_iter()
+                .find(|adapter| {
+                    let info = adapter.get_info();
+                    info.device_type != wgpu::DeviceType::Cpu
+                        && info.name.to_lowercase().contains(&requested)
+                })
+                .ok_or_else(|| {
+                    GpuError::new(format!(
+                        "WGPU_ADAPTER_NAME={requested:?} matched no GPU adapter; available: {}",
+                        available.join(", ")
+                    ))
+                });
+        }
 
-    instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            ..wgpu::RequestAdapterOptions::default()
-        })
-        .await
-        .map_err(|e| GpuError::new(format!("request GPU adapter: {e}")))
+        instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                ..wgpu::RequestAdapterOptions::default()
+            })
+            .await
+            .map_err(|e| GpuError::new(format!("request GPU adapter: {e}")))
+    })
 }
 
 impl GpuContext {
@@ -435,7 +445,7 @@ impl GpuContext {
     /// # Errors
     ///
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
-    pub async fn warm_up(&mut self) -> Result<(), GpuError> {
+    pub async fn warm_up(&self) -> Result<(), GpuError> {
         let mut params = Params { words: [0; 16] };
         params.words[..8].copy_from_slice(&crate::sha256::IV);
         params.words[10] = 19 * 8;
@@ -517,7 +527,7 @@ impl GpuContext {
     ///
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_anubis(
-        &mut self,
+        &self,
         prefix: &[u8],
         difficulty: NonZeroU8,
     ) -> Result<GpuSolution, GpuError> {
@@ -532,7 +542,7 @@ impl GpuContext {
     ///
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_anubis_with_limit(
-        &mut self,
+        &self,
         prefix: &[u8],
         difficulty: NonZeroU8,
         max_hashes: u64,
@@ -625,7 +635,7 @@ impl GpuContext {
     ///
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_anubis_descriptor(
-        &mut self,
+        &self,
         descriptor: &crate::adapter::anubis::ChallengeDescriptor,
     ) -> Result<GpuSolution, GpuError> {
         if descriptor.rules().algorithm() == "preact" {
@@ -643,7 +653,7 @@ impl GpuContext {
     }
 
     async fn solve_single_block_inner<const TYPE: u8>(
-        &mut self,
+        &self,
         message: &crate::message::SingleBlockMessage,
         target: u64,
         mask: u64,
@@ -673,7 +683,7 @@ impl GpuContext {
     }
 
     async fn solve_fast_single_block_message(
-        &mut self,
+        &self,
         message: &crate::message::SingleBlockMessage,
         mask: u64,
         max_hashes: u64,
@@ -748,7 +758,7 @@ impl GpuContext {
     }
 
     async fn solve_generic_single_block<const TYPE: u8>(
-        &mut self,
+        &self,
         message: &crate::message::SingleBlockMessage,
         target: u64,
         mask: u64,
@@ -836,7 +846,7 @@ impl GpuContext {
     }
 
     async fn dispatch_multi(
-        &mut self,
+        &self,
         params: &[u32; 64],
         workgroups: u32,
     ) -> Result<Option<(u64, [u32; 8])>, GpuError> {
@@ -891,7 +901,7 @@ impl GpuContext {
     }
 
     async fn dispatch_cerberus(
-        &mut self,
+        &self,
         params: &[u32; 64],
         workgroups: u32,
     ) -> Result<Option<(u64, [u32; 8])>, GpuError> {
@@ -926,7 +936,7 @@ impl GpuContext {
     }
 
     async fn dispatch_altcha(
-        &mut self,
+        &self,
         params: &[u32; 64],
         workgroups: u32,
     ) -> Result<Option<(u64, [u32; 8])>, GpuError> {
@@ -1007,7 +1017,7 @@ impl From<crate::message::SingleBlockMessage> for SingleBlockSolver {
 
 impl SingleBlockSolver {
     /// Set the maximum number of candidates dispatched by this solver.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
 
@@ -1016,7 +1026,7 @@ impl SingleBlockSolver {
     /// GPU workgroups cooperatively stop after a hit, so this is an upper bound on candidates
     /// actually executed by the device.
     #[must_use]
-    pub fn attempted_nonces(&self) -> u64 {
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -1078,12 +1088,12 @@ impl From<crate::message::DoubleBlockMessage> for DoubleBlockSolver {
 
 impl DoubleBlockSolver {
     /// Set the maximum number of candidates dispatched.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
     /// Number of candidates dispatched so far.
     #[must_use]
-    pub fn attempted_nonces(&self) -> u64 {
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -1192,7 +1202,7 @@ impl From<crate::message::DecimalMessage> for DecimalSolver {
 
 impl DecimalSolver {
     /// Set the maximum number of candidates dispatched.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         match self {
             Self::SingleBlock(s) => s.set_limit(limit),
             Self::DoubleBlock(s) => s.set_limit(limit),
@@ -1200,7 +1210,7 @@ impl DecimalSolver {
     }
     /// Number of candidates dispatched so far.
     #[must_use]
-    pub fn attempted_nonces(&self) -> u64 {
+    pub const fn attempted_nonces(&self) -> u64 {
         match self {
             Self::SingleBlock(s) => s.attempted_nonces(),
             Self::DoubleBlock(s) => s.attempted_nonces(),
@@ -1243,12 +1253,12 @@ impl From<crate::message::GoAwayMessage> for GoAwaySolver {
 
 impl GoAwaySolver {
     /// Set the maximum number of candidates dispatched.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
     /// Number of candidates dispatched so far.
     #[must_use]
-    pub fn attempted_nonces(&self) -> u64 {
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
     /// Solve a `GoAway` message on the GPU.
@@ -1339,12 +1349,12 @@ impl From<crate::message::BinaryMessage> for BinarySolver {
 }
 impl BinarySolver {
     /// Set the maximum number of candidates dispatched.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
     /// Number of candidates dispatched so far.
     #[must_use]
-    pub fn attempted_nonces(&self) -> u64 {
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
     /// Solve a binary-nonce SHA-256 message on the GPU.
@@ -1439,13 +1449,13 @@ impl From<crate::message::CerberusMessage> for CerberusSolver {
 
 impl CerberusSolver {
     /// Set the maximum number of candidates dispatched.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
 
     /// Number of candidates dispatched so far.
     #[must_use]
-    pub fn attempted_nonces(&self) -> u64 {
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -1644,7 +1654,7 @@ impl AltchaSha256Solver {
     }
 }
 
-fn single_block_search_space(message: &crate::message::SingleBlockMessage) -> u64 {
+const fn single_block_search_space(message: &crate::message::SingleBlockMessage) -> u64 {
     if message.nonce_addend == 0 {
         900_000_000
     } else {
@@ -1652,7 +1662,7 @@ fn single_block_search_space(message: &crate::message::SingleBlockMessage) -> u6
     }
 }
 
-fn single_block_fast_compatible(message: &crate::message::SingleBlockMessage) -> bool {
+const fn single_block_fast_compatible(message: &crate::message::SingleBlockMessage) -> bool {
     if message.digit_index != 10
         || message.nonce_addend != 1_000_000_000_000_000_000
         || message.no_trailing_zeros
@@ -1930,9 +1940,26 @@ fn altcha_shader_source() -> String {
     for (t, k) in crate::sha256::K32.iter().enumerate() {
         let i = t & 15;
         if t >= 16 {
-            rounds.push_str(&format!("w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",(t-2)&15,(t-2)&15,(t-2)&15,(t-7)&15,(t-15)&15,(t-15)&15,(t-15)&15));
+            append_fmt(
+                &mut rounds,
+                format_args!(
+                    "w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 7) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15
+                ),
+            );
         }
-        rounds.push_str(&format!("{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"));
+        append_fmt(
+            &mut rounds,
+            format_args!(
+                "{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"
+            ),
+        );
     }
     format!(
         r"
@@ -2000,9 +2027,12 @@ fn cerberus_shader_source() -> String {
         for &(a, b, c, d, x, y) in &gs {
             let mx = sched[x];
             let my = sched[y];
-            rounds.push_str(&format!(
-                "v[{a}]=v[{a}]+v[{b}]+m[{mx}];v[{d}]=rotr(v[{d}]^v[{a}],16u);v[{c}]=v[{c}]+v[{d}];v[{b}]=rotr(v[{b}]^v[{c}],12u);v[{a}]=v[{a}]+v[{b}]+m[{my}];v[{d}]=rotr(v[{d}]^v[{a}],8u);v[{c}]=v[{c}]+v[{d}];v[{b}]=rotr(v[{b}]^v[{c}],7u);\n"
-            ));
+            append_fmt(
+                &mut rounds,
+                format_args!(
+                    "v[{a}]=v[{a}]+v[{b}]+m[{mx}];v[{d}]=rotr(v[{d}]^v[{a}],16u);v[{c}]=v[{c}]+v[{d}];v[{b}]=rotr(v[{b}]^v[{c}],12u);v[{a}]=v[{a}]+v[{b}]+m[{my}];v[{d}]=rotr(v[{d}]^v[{a}],8u);v[{c}]=v[{c}]+v[{d}];v[{b}]=rotr(v[{b}]^v[{c}],7u);\n"
+                ),
+            );
         }
     }
     format!(
@@ -2048,9 +2078,26 @@ fn multi_layout_shader_source() -> String {
         for (t, k) in crate::sha256::K32.iter().enumerate().skip(start) {
             let i = t & 15;
             if t >= 16 {
-                rounds.push_str(&format!("w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",(t-2)&15,(t-2)&15,(t-2)&15,(t-7)&15,(t-15)&15,(t-15)&15,(t-15)&15));
+                append_fmt(
+                    &mut rounds,
+                    format_args!(
+                        "w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",
+                        (t - 2) & 15,
+                        (t - 2) & 15,
+                        (t - 2) & 15,
+                        (t - 7) & 15,
+                        (t - 15) & 15,
+                        (t - 15) & 15,
+                        (t - 15) & 15
+                    ),
+                );
             }
-            rounds.push_str(&format!("{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"));
+            append_fmt(
+                &mut rounds,
+                format_args!(
+                    "{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"
+                ),
+            );
         }
         rounds
     };
@@ -2259,9 +2306,26 @@ fn generic_single_block_shader_source() -> String {
     for (t, k) in crate::sha256::K32.iter().enumerate() {
         let i = t & 15;
         if t >= 16 {
-            rounds.push_str(&format!("w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",(t-2)&15,(t-2)&15,(t-2)&15,(t-7)&15,(t-15)&15,(t-15)&15,(t-15)&15));
+            append_fmt(
+                &mut rounds,
+                format_args!(
+                    "w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 7) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15
+                ),
+            );
         }
-        rounds.push_str(&format!("{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"));
+        append_fmt(
+            &mut rounds,
+            format_args!(
+                "{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"
+            ),
+        );
     }
     format!(
         r"
@@ -2331,9 +2395,26 @@ fn shader_source() -> String {
     for (t, k) in crate::sha256::K32.iter().enumerate() {
         let i = t & 15;
         if t >= 16 {
-            rounds.push_str(&format!("w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",(t-2)&15,(t-2)&15,(t-2)&15,(t-7)&15,(t-15)&15,(t-15)&15,(t-15)&15));
+            append_fmt(
+                &mut rounds,
+                format_args!(
+                    "w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 7) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15
+                ),
+            );
         }
-        rounds.push_str(&format!("{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"));
+        append_fmt(
+            &mut rounds,
+            format_args!(
+                "{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"
+            ),
+        );
     }
     format!(
         r"

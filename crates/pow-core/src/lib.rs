@@ -43,7 +43,7 @@ pub mod solver;
 pub mod adapter;
 
 #[cold]
-fn unlikely() {}
+const fn unlikely() {}
 
 pub(crate) const fn low_u32(value: u64) -> u32 {
     let bytes = value.to_le_bytes();
@@ -61,7 +61,7 @@ pub(crate) const fn high_u32(value: u64) -> u32 {
     reason = "byte extraction is an inner-loop primitive in architecture-specific solvers"
 )]
 #[inline(always)]
-pub(crate) fn read_be_word_byte(words: &[u32; 16], byte_index: usize) -> u8 {
+pub(crate) const fn read_be_word_byte(words: &[u32; 16], byte_index: usize) -> u8 {
     words[byte_index / 4].to_be_bytes()[byte_index % 4]
 }
 
@@ -82,7 +82,7 @@ pub(crate) fn write_be_word_byte(words: &mut [u32; 16], byte_index: usize, byte:
     reason = "byte extraction is an inner-loop primitive in solver kernels"
 )]
 #[inline(always)]
-pub(crate) fn read_le_word_byte(words: &[u32; 16], byte_index: usize) -> u8 {
+pub(crate) const fn read_le_word_byte(words: &[u32; 16], byte_index: usize) -> u8 {
     words[byte_index / 4].to_le_bytes()[byte_index % 4]
 }
 
@@ -395,7 +395,7 @@ pub fn build_mcaptcha_prefix<E: Extend<u8>>(out: &mut E, string: &str, salt: &st
     dead_code,
     reason = "kept as the SHA-256 counterpart to the active plausibility estimators"
 )]
-pub(crate) fn compute_plausible_time_sha256(hashes: u64) -> u64 {
+pub(crate) const fn compute_plausible_time_sha256(hashes: u64) -> u64 {
     hashes / 512
 }
 

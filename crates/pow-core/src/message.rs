@@ -872,7 +872,7 @@ pub struct GoAwayMessage {
 impl GoAwayMessage {
     /// creates a new go-away message
     #[must_use]
-    pub fn new(challenge: [u32; 8], high_word: u32) -> Self {
+    pub const fn new(challenge: [u32; 8], high_word: u32) -> Self {
         Self {
             challenge,
             high_word,
@@ -880,7 +880,7 @@ impl GoAwayMessage {
     }
 
     /// sets the high word of the message
-    pub fn set_high_word(&mut self, high_word: u32) {
+    pub const fn set_high_word(&mut self, high_word: u32) {
         self.high_word = high_word;
     }
 

@@ -9,16 +9,16 @@
 #[macro_use]
 mod loop_macros;
 
-pub(crate) mod portable;
+pub mod portable;
 
 /// Initial hash values for BLAKE3
-pub(crate) const IV: [u32; 8] = crate::sha256::IV;
+pub const IV: [u32; 8] = crate::sha256::IV;
 
-pub(crate) const FLAG_CHUNK_START: u32 = 0x01;
-pub(crate) const FLAG_CHUNK_END: u32 = 0x02;
+pub const FLAG_CHUNK_START: u32 = 0x01;
+pub const FLAG_CHUNK_END: u32 = 0x02;
 #[expect(dead_code, reason = "reserved for the parent-node BLAKE3 mode")]
-pub(crate) const FLAG_PARENT: u32 = 0x04;
-pub(crate) const FLAG_ROOT: u32 = 0x08;
+pub const FLAG_PARENT: u32 = 0x04;
+pub const FLAG_ROOT: u32 = 0x08;
 
 const PERMUTATION: [usize; 16] = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
 

@@ -8,7 +8,7 @@ use alloc::{string::String, vec::Vec};
 
 const JS_MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
 
-fn js_safe_nonce(value: u64) -> Option<f64> {
+const fn js_safe_nonce(value: u64) -> Option<f64> {
     if value > JS_MAX_SAFE_INTEGER {
         return None;
     }
@@ -94,7 +94,7 @@ pub struct SolveCapJsResponse {
 impl ChallengeDescriptor {
     /// Get the rules of a Cap.js `PoW`.
     #[must_use]
-    pub fn rules(&self) -> &ChallengeRules {
+    pub const fn rules(&self) -> &ChallengeRules {
         &self.rules
     }
 
@@ -170,11 +170,8 @@ impl ChallengeDescriptor {
                         solver.attempted_nonces(),
                         core::sync::atomic::Ordering::Relaxed,
                     );
-                    let nonce_f64 = if let Some(fixup) = fixup_prefix {
-                        Some(fixup.fixup(nonce))
-                    } else {
-                        js_safe_nonce(nonce)
-                    };
+                    let nonce_f64 = fixup_prefix
+                        .map_or_else(|| js_safe_nonce(nonce), |fixup| Some(fixup.fixup(nonce)));
                     let Some(nonce_f64) = nonce_f64 else {
                         failed.store(true, core::sync::atomic::Ordering::Relaxed);
                         return;
@@ -241,11 +238,8 @@ impl ChallengeDescriptor {
                 return (None, attempted_nonces);
             };
             attempted_nonces += solver.attempted_nonces();
-            let nonce_f64 = if let Some(fixup) = fixup_prefix {
-                Some(fixup.fixup(nonce))
-            } else {
-                js_safe_nonce(nonce)
-            };
+            let nonce_f64 =
+                fixup_prefix.map_or_else(|| js_safe_nonce(nonce), |fixup| Some(fixup.fixup(nonce)));
             let Some(nonce_f64) = nonce_f64 else {
                 return (None, attempted_nonces);
             };

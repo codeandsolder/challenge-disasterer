@@ -5,10 +5,18 @@ use core::simd::{
 
 #[inline]
 fn usize_u32(value: usize) -> u32 {
-    match u32::try_from(value) {
-        Ok(value) => value,
-        Err(_) => unreachable!("SIMD/search index exceeds u32"),
-    }
+    let Ok(value) = u32::try_from(value) else {
+        unreachable!("SIMD/search index exceeds u32");
+    };
+    value
+}
+
+#[inline]
+fn usize_u64(value: usize) -> u64 {
+    let Ok(value) = u64::try_from(value) else {
+        unreachable!("SIMD/search index exceeds u64");
+    };
+    value
 }
 
 #[inline(always)]
@@ -76,19 +84,19 @@ fn leading_zero_match<const LANES: usize>(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub(crate) struct BinaryWork<'a> {
-    pub(crate) attempted_nonces: &'a mut u64,
-    pub(crate) limit: u64,
-    pub(crate) prefix_state: [u32; 8],
-    pub(crate) first_block: &'a [u32; 16],
-    pub(crate) second_block_schedule: &'a [u32; 64],
-    pub(crate) nonce_byte_offset: usize,
-    pub(crate) nonce_byte_count: core::num::NonZeroU8,
+pub struct BinaryWork<'a> {
+    pub attempted_nonces: &'a mut u64,
+    pub limit: u64,
+    pub prefix_state: [u32; 8],
+    pub first_block: &'a [u32; 16],
+    pub second_block_schedule: &'a [u32; 64],
+    pub nonce_byte_offset: usize,
+    pub nonce_byte_count: core::num::NonZeroU8,
 }
 
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn solve_binary_impl<
+pub fn solve_binary_impl<
     const LANES: usize,
     const TYPE: u8,
     const FIRST_NONCE_WORD_IDX: usize,
@@ -110,7 +118,7 @@ pub(crate) fn solve_binary_impl<
     let target = target & mask;
     let lane_shift = (3 - nonce_byte_offset % 4) * 8;
     let lane_ids =
-        Simd::<u32, LANES>::from_array(core::array::from_fn(|lane| (lane as u32) << lane_shift));
+        Simd::<u32, LANES>::from_array(core::array::from_fn(|lane| usize_u32(lane) << lane_shift));
 
     let mut memo_state = prefix_state;
     crate::sha256::ingest_message_prefix::<FIRST_NONCE_WORD_IDX>(
@@ -127,7 +135,7 @@ pub(crate) fn solve_binary_impl<
         let x_bytes = x.to_le_bytes();
         for (i, byte) in x_bytes
             .iter()
-            .take(nonce_byte_count.get() as usize - 1)
+            .take(usize::from(nonce_byte_count.get()) - 1)
             .enumerate()
         {
             let byte_index = nonce_byte_offset + 1 + i;
@@ -135,12 +143,13 @@ pub(crate) fn solve_binary_impl<
             block_template[byte_index / 4] |= u32::from(*byte) << shift;
         }
 
-        let mut lane_base = (cursor & 0xff) as usize;
+        let mut lane_base = usize::from((cursor & 0xff).to_le_bytes()[0]);
         while lane_base < 256 && cursor < search_end {
             let valid_lanes = (search_end - cursor)
-                .min(LANES as u64)
-                .min((256 - lane_base) as u64) as usize;
-            let lane_values = lane_ids + Simd::splat((lane_base as u32) << lane_shift);
+                .min(usize_u64(LANES))
+                .min(usize_u64(256 - lane_base));
+            let valid_lanes = usize::try_from(valid_lanes).ok()?;
+            let lane_values = lane_ids + Simd::splat(usize_u32(lane_base) << lane_shift);
 
             let mut state = core::array::from_fn(|i| Simd::splat(memo_state[i]));
             let mut message: [Simd<u32, LANES>; 16] =
@@ -186,7 +195,7 @@ pub(crate) fn solve_binary_impl<
                 crate::unlikely();
                 let lanes = met_target.to_array();
                 if let Some(success_lane) = (0..valid_lanes).find(|&lane| lanes[lane]) {
-                    return Some((x << 8) | (lane_base + success_lane) as u64);
+                    return Some((x << 8) | usize_u64(lane_base + success_lane));
                 }
             }
 
@@ -198,7 +207,7 @@ pub(crate) fn solve_binary_impl<
 }
 
 #[inline(always)]
-pub(crate) fn solve_goaway_impl<const LANES: usize, const TYPE: u8>(
+pub fn solve_goaway_impl<const LANES: usize, const TYPE: u8>(
     attempted_nonces: &mut u64,
     limit: u64,
     challenge: [u32; 8],
@@ -277,7 +286,7 @@ pub(crate) fn solve_goaway_impl<const LANES: usize, const TYPE: u8>(
     reason = "fixed-round SIMD SHA-256 kernel keeps hot-loop state and reconstruction adjacent for codegen and auditability"
 )]
 #[inline(always)]
-pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
+pub fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
     message: &mut crate::message::DoubleBlockMessage,
     attempted_nonces: &mut u64,
     limit: u64,
@@ -417,7 +426,7 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
     reason = "fixed-round SIMD SHA-256 kernel keeps compile-time layout cases in one hot loop for codegen"
 )]
 #[inline(always)]
-pub(crate) fn solve_single_block_impl<
+pub fn solve_single_block_impl<
     const LANES: usize,
     const DIGIT_WORD_IDX0: usize,
     const DIGIT_WORD_IDX1_INCREMENT: bool,
@@ -670,9 +679,9 @@ fn solve_altcha_nested_impl<const LANES: usize, const TYPE: u8, const KEY_WORDS:
 
     while cursor < search_end {
         let batch_start = cursor;
-        let valid_lanes = (search_end - cursor).min(LANES as u64) as usize;
+        let valid_lanes = usize::try_from((search_end - cursor).min(usize_u64(LANES))).ok()?;
         let counters = Simd::<u32, LANES>::from_array(core::array::from_fn(|lane| {
-            (batch_start + lane as u64) as u32
+            crate::low_u32(batch_start + usize_u64(lane))
         }));
         let mut blocks = [
             Simd::splat(salt[0]),
@@ -709,7 +718,7 @@ fn solve_altcha_nested_impl<const LANES: usize, const TYPE: u8, const KEY_WORDS:
                     } else if word == KEY_WORDS {
                         pad
                     } else if word == 15 {
-                        Simd::splat((KEY_WORDS * 4 * 8) as u32)
+                        Simd::splat(usize_u32(KEY_WORDS * 4 * 8))
                     } else {
                         zero
                     }
@@ -765,9 +774,9 @@ fn solve_altcha_pbkdf2_impl<const LANES: usize, const TYPE: u8>(
 
     while cursor < search_end {
         let batch_start = cursor;
-        let valid_lanes = (search_end - cursor).min(LANES as u64) as usize;
+        let valid_lanes = usize::try_from((search_end - cursor).min(usize_u64(LANES))).ok()?;
         let counters = Simd::<u32, LANES>::from_array(core::array::from_fn(|lane| {
-            (batch_start + lane as u64) as u32
+            crate::low_u32(batch_start + usize_u64(lane))
         }));
 
         let mut ipad_blocks = [Simd::<u32, LANES>::splat(crate::solver::HMAC_IPAD32); 16];
@@ -883,7 +892,7 @@ fn solve_altcha_pbkdf2_impl<const LANES: usize, const TYPE: u8>(
 
 #[inline]
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn solve_altcha_fallback<const TYPE: u8>(
+pub fn solve_altcha_fallback<const TYPE: u8>(
     message: &crate::message::AltchaMessage,
     attempted_nonces: &mut u64,
     limit: u64,
@@ -902,7 +911,7 @@ pub(crate) fn solve_altcha_fallback<const TYPE: u8>(
 
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn solve_altcha_impl<const LANES: usize, const TYPE: u8>(
+pub fn solve_altcha_impl<const LANES: usize, const TYPE: u8>(
     message: &crate::message::AltchaMessage,
     attempted_nonces: &mut u64,
     limit: u64,
@@ -1216,7 +1225,7 @@ fn solve_cerberus_binary_impl<const LANES: usize, B: CerberusCompression<LANES>>
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[inline(always)]
-pub(crate) fn solve_cerberus_decimal_avx2<
+pub fn solve_cerberus_decimal_avx2<
     const CENTER_WORD_IDX: usize,
     const LANE_ID_WORD_IDX: usize,
     const CONSTANT_WORD_COUNT: usize,
@@ -1239,7 +1248,7 @@ pub(crate) fn solve_cerberus_decimal_avx2<
 
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn solve_cerberus_decimal_wide16<
+pub fn solve_cerberus_decimal_wide16<
     const CENTER_WORD_IDX: usize,
     const LANE_ID_WORD_IDX: usize,
     const CONSTANT_WORD_COUNT: usize,
@@ -1262,7 +1271,7 @@ pub(crate) fn solve_cerberus_decimal_wide16<
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[inline(always)]
-pub(crate) fn solve_cerberus_binary_avx2(
+pub fn solve_cerberus_binary_avx2(
     message: &crate::message::CerberusMessage,
     attempted_nonces: &mut u64,
     limit: u64,
@@ -1280,7 +1289,7 @@ pub(crate) fn solve_cerberus_binary_avx2(
 
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn solve_cerberus_binary_wide16(
+pub fn solve_cerberus_binary_wide16(
     message: &crate::message::CerberusMessage,
     attempted_nonces: &mut u64,
     limit: u64,
@@ -1298,7 +1307,7 @@ pub(crate) fn solve_cerberus_binary_wide16(
 
 #[cfg(target_arch = "wasm32")]
 #[inline(always)]
-pub(crate) fn solve_cerberus_decimal_wide4<
+pub fn solve_cerberus_decimal_wide4<
     const CENTER_WORD_IDX: usize,
     const LANE_ID_WORD_IDX: usize,
     const CONSTANT_WORD_COUNT: usize,
@@ -1321,7 +1330,7 @@ pub(crate) fn solve_cerberus_decimal_wide4<
 
 #[cfg(target_arch = "wasm32")]
 #[inline(always)]
-pub(crate) fn solve_cerberus_binary_wide4(
+pub fn solve_cerberus_binary_wide4(
     message: &crate::message::CerberusMessage,
     attempted_nonces: &mut u64,
     limit: u64,

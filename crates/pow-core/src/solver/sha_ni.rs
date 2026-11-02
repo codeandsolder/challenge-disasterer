@@ -1,3 +1,7 @@
+#![expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "SHA-NI solver kernels are architecture-gated intrinsic blocks audited at the module boundary"
+)]
 use core::simd::u32x4;
 
 use crate::message::{DecimalMessage, DoubleBlockMessage, GoAwayMessage, SingleBlockMessage};

@@ -8,6 +8,14 @@ use crate::{
 use alloc::{format, string::String};
 use semver::{BuildMetadata, Prerelease};
 
+const VERSION_FOR_BINARY: semver::Version = semver::Version {
+    major: 0,
+    minor: 4,
+    patch: 6,
+    pre: Prerelease::EMPTY,
+    build: BuildMetadata::EMPTY,
+};
+
 #[derive(serde::Deserialize, Debug)]
 /// A Cerberus `PoW` challenge descriptor.
 pub struct ChallengeDescriptor {
@@ -30,10 +38,8 @@ impl<'de> serde::Deserialize<'de> for MaybeSemver {
     where
         D: serde::Deserializer<'de>,
     {
-        match semver::Version::deserialize(deserializer) {
-            Ok(v) => Ok(MaybeSemver::Yes(v)),
-            Err(_) => Ok(MaybeSemver::Unknown),
-        }
+        semver::Version::deserialize(deserializer)
+            .map_or_else(|_| Ok(Self::Unknown), |version| Ok(Self::Yes(version)))
     }
 }
 
@@ -45,14 +51,6 @@ impl ChallengeDescriptor {
             "{}|{}|{}|{}|",
             self.challenge, self.nonce, self.ts, self.signature
         );
-
-        const VERSION_FOR_BINARY: semver::Version = semver::Version {
-            major: 0,
-            minor: 4,
-            patch: 6,
-            pre: Prerelease::EMPTY,
-            build: BuildMetadata::EMPTY,
-        };
 
         Some(
             if let MaybeSemver::Yes(version) = &self.version
@@ -84,19 +82,19 @@ impl ChallengeDescriptor {
 
     /// Return the mask.
     #[must_use]
-    pub fn mask(&self) -> u64 {
+    pub const fn mask(&self) -> u64 {
         compute_mask_cerberus(self.difficulty)
     }
 
     /// Get the nonce of a Cerberus `PoW`.
     #[must_use]
-    pub fn nonce(&self) -> u64 {
+    pub const fn nonce(&self) -> u64 {
         self.nonce
     }
 
     /// Get the timestamp of a Cerberus `PoW`.
     #[must_use]
-    pub fn ts(&self) -> u64 {
+    pub const fn ts(&self) -> u64 {
         self.ts
     }
 
