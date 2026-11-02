@@ -1,3 +1,7 @@
+#![allow(
+    clippy::inline_always,
+    reason = "solver dispatch helper inlining is performance-sensitive"
+)]
 macro_rules! impl_decimal_solver {
     ([$single_block_solver:ty, $double_block_solver:ty] => $decimal_solver:ident) => {
         /// Safe decimal nonce solver variant
@@ -94,7 +98,7 @@ pub(crate) fn increment_ascii_decimal(digits: &mut [u8]) -> bool {
     true
 }
 
-/// Less than test (such as Anubis and GoAway)
+/// Less than test (such as Anubis and `GoAway`)
 pub const SOLVE_TYPE_LT: u8 = 1;
 /// Greater than test (such as mCaptcha)
 pub const SOLVE_TYPE_GT: u8 = 2;
@@ -118,7 +122,10 @@ pub trait CpuIDToken: Default + Copy + Clone + 'static {
 
 /// A solver router that can take a solver or a fallback solver based on the CPU features
 #[derive(Debug, Copy, Clone)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "internal solver implementation enum is not part of the documented API"
+)]
 #[cfg_attr(not(feature = "runtime-dispatch"), repr(transparent))]
 pub enum SolverRouter<T: CpuIDToken, M, S: Solver + From<M>, F: Solver + From<M>> {
     #[cfg(feature = "runtime-dispatch")]
@@ -198,7 +205,7 @@ pub trait Solver {
     ///
     /// Supported schemes:
     ///
-    /// - `SOLVE_TYPE_LT`: Less than test (such as Anubis and GoAway)
+    /// - `SOLVE_TYPE_LT`: Less than test (such as Anubis and `GoAway`)
     /// - `SOLVE_TYPE_GT`: Greater than test (such as mCaptcha)
     /// - `SOLVE_TYPE_MASK`: Mask test (such as Cap.js)
     ///
@@ -232,7 +239,7 @@ pub trait SolverDyn {
 
     /// A dynamic dispatching wrapper for solve
     fn solve_dyn(&mut self, target: u64, ty: u8, mask: u64) -> Option<(u64, Self::Output)>;
-    /// A dynamic dispatching wrapper for solve_nonce_only
+    /// A dynamic dispatching wrapper for `solve_nonce_only`
     fn solve_nonce_only_dyn(&mut self, target: u64, ty: u8, mask: u64) -> Option<u64>;
 }
 
@@ -721,8 +728,14 @@ pub(crate) mod tests {
             key_length: 32.try_into().unwrap(),
         };
         let expected_derived = [
-            0x0058b155, 0x1f526b2e, 0xa17487e5, 0xf6f7edd0, 0x35ca3847, 0x8030a59d, 0x7b7bee49,
-            0xb090c58e,
+            0x0058_b155,
+            0x1f52_6b2e,
+            0xa174_87e5,
+            0xf6f7_edd0,
+            0x35ca_3847,
+            0x8030_a59d,
+            0x7b7b_ee49,
+            0xb090_c58e,
         ];
 
         let mut solver = factory(msg.clone()).unwrap();
@@ -749,8 +762,14 @@ pub(crate) mod tests {
             key_length: 32.try_into().unwrap(),
         };
         let expected_derived = [
-            0x00641b3e, 0x3f8db108, 0xd345552e, 0x8d9f78fe, 0x67a7d0ae, 0x0faa2ea0, 0x701a0432,
-            0x0c407bb7,
+            0x0064_1b3e,
+            0x3f8d_b108,
+            0xd345_552e,
+            0x8d9f_78fe,
+            0x67a7_d0ae,
+            0x0faa_2ea0,
+            0x701a_0432,
+            0x0c40_7bb7,
         ];
         let mut solver = factory(msg.clone()).unwrap();
         let (nonce, hash) = solver

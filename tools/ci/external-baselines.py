@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
@@ -18,12 +19,14 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pyopencl as cl
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 CACHE = ROOT / "target" / "external-baselines"
 
 SOURCES = {
@@ -45,7 +48,9 @@ STEPS_PER_TASK = 0x100
 OPENCL_WARMUP_RUNS = 3
 
 
-def run(argv: list[str], *, cwd: Path | None = None, capture: bool = False) -> subprocess.CompletedProcess:
+def _run(
+    argv: list[str], *, cwd: Path | None = None, capture: bool = False
+) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(argv), file=sys.stderr, flush=True)
     return subprocess.run(
         argv,
@@ -62,39 +67,77 @@ def ensure_checkout(name: str) -> Path:
     dst = CACHE / "src" / name
     if not (dst / ".git").is_dir():
         dst.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dst)], check=True, stdout=sys.stderr)
-    subprocess.run(["git", "-C", str(dst), "fetch", "--depth", "1", "origin", rev], check=True, stdout=sys.stderr)
-    subprocess.run(["git", "-C", str(dst), "checkout", "--detach", "--force", rev], check=True, stdout=sys.stderr)
-    actual = subprocess.check_output(["git", "-C", str(dst), "rev-parse", "HEAD"], text=True).strip()
+        subprocess.run(
+            ["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dst)],
+            check=True,
+            stdout=sys.stderr,
+        )
+    subprocess.run(
+        ["git", "-C", str(dst), "fetch", "--depth", "1", "origin", rev],
+        check=True,
+        stdout=sys.stderr,
+    )
+    subprocess.run(
+        ["git", "-C", str(dst), "checkout", "--detach", "--force", rev],
+        check=True,
+        stdout=sys.stderr,
+    )
+    actual = subprocess.check_output(
+        ["git", "-C", str(dst), "rev-parse", "HEAD"], text=True
+    ).strip()
     if actual != rev:
         raise RuntimeError(f"{name}: expected {rev}, got {actual}")
     return dst
 
 
-def emit(*, baseline: str, protocol: str, variant: str, implementation: str,
-         accelerator: str, sample: int, attempted: int, ns: int,
-         gpu_adapter: str | None = None, comparison_scope: str = "primitive-ceiling") -> None:
-    print(json.dumps({
-        "schema": 1,
-        "baseline": baseline,
-        "protocol": protocol,
-        "variant": variant,
-        "implementation": implementation,
-        "accelerator": accelerator,
-        "gpu_adapter": gpu_adapter,
-        "sample": sample,
-        "attempted_work": attempted,
-        "solve_ns": ns,
-        "work_per_second": attempted * 1e9 / ns,
-        "comparison_scope": comparison_scope,
-    }, separators=(",", ":")), flush=True)
+def emit(
+    *,
+    baseline: str,
+    protocol: str,
+    variant: str,
+    implementation: str,
+    accelerator: str,
+    sample: int,
+    attempted: int,
+    ns: int,
+    gpu_adapter: str | None = None,
+    comparison_scope: str = "primitive-ceiling",
+) -> None:
+    print(
+        json.dumps(
+            {
+                "schema": 1,
+                "baseline": baseline,
+                "protocol": protocol,
+                "variant": variant,
+                "implementation": implementation,
+                "accelerator": accelerator,
+                "gpu_adapter": gpu_adapter,
+                "sample": sample,
+                "attempted_work": attempted,
+                "solve_ns": ns,
+                "work_per_second": attempted * 1e9 / ns,
+                "comparison_scope": comparison_scope,
+            },
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
 
 
 def build_hashx(src: Path) -> Path:
     build = CACHE / "build" / "hashx"
     build.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["cmake", "-S", str(src), "-B", str(build), "-DCMAKE_BUILD_TYPE=Release"], check=True, stdout=sys.stderr)
-    subprocess.run(["cmake", "--build", str(build), "--config", "Release", "-j"], check=True, stdout=sys.stderr)
+    subprocess.run(
+        ["cmake", "-S", str(src), "-B", str(build), "-DCMAKE_BUILD_TYPE=Release"],
+        check=True,
+        stdout=sys.stderr,
+    )
+    subprocess.run(
+        ["cmake", "--build", str(build), "--config", "Release", "-j"],
+        check=True,
+        stdout=sys.stderr,
+    )
     return build / "hashx-bench"
 
 
@@ -106,9 +149,20 @@ def bench_hashx(samples: int, limit: int) -> None:
     binary = build_hashx(src)
     rev = SOURCES["hashx"][1][:12]
     for sample in range(samples):
-        result = run(
-            [str(binary), "--start", str(1000 + sample), "--seeds", "1",
-             "--nonces", str(limit), "--threads", "1", "--diff", "2147483647"],
+        result = _run(
+            [
+                str(binary),
+                "--start",
+                str(1000 + sample),
+                "--seeds",
+                "1",
+                "--nonces",
+                str(limit),
+                "--threads",
+                "1",
+                "--diff",
+                "2147483647",
+            ],
             capture=True,
         )
         if result.returncode:
@@ -178,7 +232,7 @@ def x86_64_microarch_level() -> str | None:
         return None
     flags = set()
     try:
-        for line in Path("/proc/cpuinfo").read_text().splitlines():
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
             if line.startswith("flags"):
                 flags.update(line.split(":", 1)[1].split())
                 break
@@ -201,18 +255,27 @@ def build_argon2(src: Path) -> Path:
         make_args.append(f"OPTTARGET={opttarget}")
     # The source selection (ref.c vs opt.c) is decided at make parse time, so
     # clean before rebuilding with a possibly different deterministic target.
-    subprocess.run(make_args + ["clean"], check=True, stdout=sys.stderr, env=make_env)
-    subprocess.run(make_args + ["-j", "libargon2.a"], check=True, stdout=sys.stderr, env=make_env)
+    subprocess.run([*make_args, "clean"], check=True, stdout=sys.stderr, env=make_env)
+    subprocess.run(
+        [*make_args, "-j", "libargon2.a"], check=True, stdout=sys.stderr, env=make_env
+    )
     adapter = build / "argon2-fixed.c"
     adapter.write_text(ARGON2_ADAPTER)
     binary = build / "argon2-fixed"
     cc_args = [os.environ.get("CC", "cc"), "-O3"]
     if opttarget is not None:
         cc_args.append(f"-march={opttarget}")
-    cc_args.extend([
-        "-I", str(src / "include"), str(adapter), str(src / "libargon2.a"),
-        "-pthread", "-o", str(binary),
-    ])
+    cc_args.extend(
+        [
+            "-I",
+            str(src / "include"),
+            str(adapter),
+            str(src / "libargon2.a"),
+            "-pthread",
+            "-o",
+            str(binary),
+        ]
+    )
     subprocess.run(cc_args, check=True, stdout=sys.stderr)
     return binary
 
@@ -222,7 +285,7 @@ def bench_argon2(samples: int, limit: int) -> None:
     binary = build_argon2(src)
     rev = SOURCES["argon2"][1][:12]
     for sample in range(samples):
-        result = run([str(binary), str(sample), str(limit)], capture=True)
+        result = _run([str(binary), str(sample), str(limit)], capture=True)
         if result.returncode:
             raise RuntimeError(result.stderr)
         ns = int(result.stdout.split()[0])
@@ -239,22 +302,22 @@ def bench_argon2(samples: int, limit: int) -> None:
         )
 
 
-def load_sha256_prefix(src: Path):
-    spec = importlib.util.spec_from_file_location("anubis_offload_sha256", src / "sha256.py")
+def _load_sha256_prefix(src: Path) -> Callable[[bytes], list[int]]:
+    spec = importlib.util.spec_from_file_location(
+        "anubis_offload_sha256", src / "sha256.py"
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError("failed to load anubis_offload sha256.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.sha256_prefix
+    return cast(Callable[[bytes], list[int]], module.sha256_prefix)
 
 
 def opencl_gpu_devices() -> list[cl.Device]:
     devices: list[cl.Device] = []
     for platform in cl.get_platforms():
-        try:
+        with contextlib.suppress(cl.LogicError):
             devices.extend(platform.get_devices(device_type=cl.device_type.GPU))
-        except cl.LogicError:
-            pass
     return devices
 
 
@@ -262,14 +325,17 @@ def bench_anubis_offload(samples: int, limit: int) -> None:
     if limit % STEPS_PER_TASK:
         raise ValueError(f"OpenCL limit must be a multiple of {STEPS_PER_TASK}")
     src = ensure_checkout("anubis_offload")
-    prefix_state = load_sha256_prefix(src)
+    prefix_state = _load_sha256_prefix(src)
     kernel_src = (src / "sha256.cl").read_text()
     challenge = b"A" * 64
     initial_h = np.array(prefix_state(challenge), dtype=np.uint32)
     rev = SOURCES["anubis_offload"][1][:12]
     devices = opencl_gpu_devices()
     if not devices:
-        print("external-baselines: no OpenCL GPU devices; skipping anubis_offload", file=sys.stderr)
+        print(
+            "external-baselines: no OpenCL GPU devices; skipping anubis_offload",
+            file=sys.stderr,
+        )
         return
     global_size = limit // STEPS_PER_TASK
     for device in devices:
@@ -286,8 +352,14 @@ def bench_anubis_offload(samples: int, limit: int) -> None:
         result_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=result_h)
         initial_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=initial_h)
         kernel.set_args(
-            found_buf, nonce_buf, result_buf, initial_buf,
-            np.uint64(0), np.uint32(len(challenge)), np.uint32(0xFFFFFFFF), np.uint32(0xFFFFFFFF),
+            found_buf,
+            nonce_buf,
+            result_buf,
+            initial_buf,
+            np.uint64(0),
+            np.uint32(len(challenge)),
+            np.uint32(0xFFFFFFFF),
+            np.uint32(0xFFFFFFFF),
         )
         for _ in range(OPENCL_WARMUP_RUNS):
             cl.enqueue_nd_range_kernel(queue, kernel, (global_size,), None)

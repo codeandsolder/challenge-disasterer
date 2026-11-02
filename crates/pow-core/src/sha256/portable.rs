@@ -1,3 +1,11 @@
+#![allow(
+    clippy::inline_always,
+    reason = "portable-SIMD SHA-256 helpers must inline to preserve vector code generation"
+)]
+#![allow(
+    clippy::many_single_char_names,
+    reason = "SHA-256 uses the canonical specification state names a through h and schedule word w"
+)]
 //! Portable-SIMD SHA-256 compression core shared by architecture wrappers.
 use super::K32;
 use core::simd::Simd;
@@ -34,7 +42,7 @@ fn maj<const N: usize>(x: Simd<u32, N>, y: Simd<u32, N>, z: Simd<u32, N>) -> Sim
 }
 #[cfg_attr(target_arch = "wasm32", inline(never))]
 #[cfg_attr(not(target_arch = "wasm32"), inline(always))]
-pub(crate) fn multiway_arx<const N: usize, const BEGIN: usize>(
+pub fn multiway_arx<const N: usize, const BEGIN: usize>(
     state: &mut [Simd<u32, N>; 8],
     block: &mut [Simd<u32, N>; 16],
 ) {
@@ -66,7 +74,7 @@ pub(crate) fn multiway_arx<const N: usize, const BEGIN: usize>(
 }
 #[cfg_attr(target_arch = "wasm32", inline(never))]
 #[cfg_attr(not(target_arch = "wasm32"), inline(always))]
-pub(crate) fn bcst_multiway_arx<const N: usize, const LEAD: usize>(
+pub fn bcst_multiway_arx<const N: usize, const LEAD: usize>(
     state: &mut [Simd<u32, N>; 8],
     wk: &[u32; 64],
 ) {
@@ -133,8 +141,14 @@ mod tests {
         }
 
         let expected = [
-            0xba7816bf, 0x8f01cfea, 0x414140de, 0x5dae2223, 0xb00361a3, 0x96177a9c, 0xb410ff61,
-            0xf20015ad,
+            0xba78_16bf,
+            0x8f01_cfea,
+            0x4141_40de,
+            0x5dae_2223,
+            0xb003_61a3,
+            0x9617_7a9c,
+            0xb410_ff61,
+            0xf200_15ad,
         ];
         for lane in 0..LANES {
             let actual = core::array::from_fn(|word| state[word][lane]);

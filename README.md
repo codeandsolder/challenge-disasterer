@@ -66,7 +66,7 @@ The repository pins its development toolchain in `rust-toolchain.toml`; Anubis a
 
 ## Reproducible hardware matrix
 
-`tools/run-hardware-matrix.py` is the canonical cross-hardware validation/benchmark entry point. It writes immutable run directories containing host/toolchain/GPU metadata, JSONL direct-solver measurements, authoritative verifier logs, and a manifest of every gate. `tools/summarize-hardware-matrix.py` compares multiple run directories by identical protocol/backend keys while keeping distinct exact throughput work budgets separate, and also extracts the paired HashX/Anubis benchmarks.
+`tools/ci/run-hardware-matrix.py` is the canonical cross-hardware validation/benchmark entry point. It writes immutable run directories containing host/toolchain/GPU metadata, JSONL direct-solver measurements, authoritative verifier logs, and a manifest of every gate. `tools/ci/summarize-hardware-matrix.py` compares multiple run directories by identical protocol/backend keys while keeping distinct exact throughput work budgets separate, and also extracts the paired HashX/Anubis benchmarks.
 
 The same run also executes `tools/preexisting-baseline`, pinned to the original `eternal-flame-AD/pow-buster@d359adb` ancestor. The isolated baseline workspace uses the same ThinLTO / single-codegen-unit release profile and 64-bit comparison mode as the main solver matrix on both old and current dependencies, then runs alternating old/new samples with identical message bytes and an aligned 1,120,000-candidate budget for every solver family the old implementation had in common with the current core (Anubis decimal and WASM SHA-256 shape, haphash, mCaptcha, Cap.js, go-away, and both Cerberus formats). The separate aligned budget is intentional: historical Cerberus decimal executes work in coarse batches and overshoots arbitrary limits such as 1,048,576; the harness fails rather than calling unequal attempted work “exact”. The summarizer reports matched `auto` old/new ratios and reports a fastest-current CPU ratio only when that current row used exactly the same attempted-work budget as the historical baseline; unlike work budgets are never normalized into a pretend apples-to-apples result. Protocols added later, such as ALTCHA and HashX, are compared against their authoritative upstream/browser references instead of inventing a nonexistent old baseline.
 
@@ -85,9 +85,9 @@ Current Anubis also ships WASM `sha256` and `argon2id` challenge algorithms. cha
 Example:
 
 ```sh
-uv run tools/run-hardware-matrix.py   --output target/hardware-matrix/$(hostname)-$(date +%Y%m%d-%H%M%S)   --samples 5 --throughput-limit 1048576 --gpu --live
+uv run tools/ci/run-hardware-matrix.py   --output target/hardware-matrix/$(hostname)-$(date +%Y%m%d-%H%M%S)   --samples 5 --throughput-limit 1048576 --gpu --live
 
-uv run tools/summarize-hardware-matrix.py   target/hardware-matrix/sf314-42-*   target/hardware-matrix/cachyasus-*
+uv run tools/ci/summarize-hardware-matrix.py   target/hardware-matrix/sf314-42-*   target/hardware-matrix/cachyasus-*
 ```
 
 Use `--no-cpu --no-live` for direct GPU-only collection on a host whose CPU is busy, or `--no-gpu --no-live` for direct CPU-only collection. The `--cpu`/`--gpu` selectors control direct solver rows; live verifier runs are a separate validation phase and may exercise CPU routing. At least one direct resource class must remain enabled. Retained runs reject a dirty Git tree by default (`--no-require-clean` is for throwaway development smoke only), and the run metadata records every workload/validation parameter alongside the exact commit and hardware identity.

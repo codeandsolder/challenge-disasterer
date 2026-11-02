@@ -7,7 +7,7 @@ use crate::{
 use alloc::{string::String, vec::Vec};
 
 #[derive(serde::Deserialize, Debug, Clone, Copy)]
-/// Cap.js PoW challenge rules.
+/// Cap.js `PoW` challenge rules.
 pub struct ChallengeRules {
     #[serde(rename = "c")]
     /// The count. (JSON key: `c`)
@@ -21,7 +21,7 @@ pub struct ChallengeRules {
 }
 
 #[derive(serde::Deserialize, Debug, Clone)]
-/// Cap.js PoW challenge descriptor.
+/// Cap.js `PoW` challenge descriptor.
 pub struct ChallengeDescriptor {
     #[serde(rename = "challenge")]
     /// The rules. (JSON key: `challenge`)
@@ -31,7 +31,7 @@ pub struct ChallengeDescriptor {
 }
 
 #[derive(serde::Serialize, Debug, Clone, Copy)]
-/// Cap.js PoW response meta data.
+/// Cap.js `PoW` response meta data.
 pub struct SolveCapJsResponseMeta {
     #[cfg(feature = "std")]
     #[serde(rename = "elapsed_us")]
@@ -42,7 +42,7 @@ pub struct SolveCapJsResponseMeta {
 }
 
 #[derive(serde::Serialize, Debug, Clone)]
-/// Cap.js PoW response.
+/// Cap.js `PoW` response.
 pub struct SolveCapJsResponse {
     #[serde(rename = "_meta")]
     /// The meta data.
@@ -54,25 +54,29 @@ pub struct SolveCapJsResponse {
 }
 
 impl ChallengeDescriptor {
-    /// Get the rules of a Cap.js PoW.
+    /// Get the rules of a Cap.js `PoW`.
+    #[must_use]
     pub fn rules(&self) -> &ChallengeRules {
         &self.rules
     }
 
-    /// Solve a Cap.js PoW.
+    /// Solve a Cap.js `PoW`.
+    #[must_use]
     pub fn solve(self) -> (Option<SolveCapJsResponse>, u64) {
         self.solve_with_limit(u64::MAX)
     }
 
-    /// Estimate the workload of a Cap.js PoW.
+    /// Estimate the workload of a Cap.js `PoW`.
+    #[must_use]
     pub fn estimated_workload(&self) -> u64 {
         16u64
             .saturating_pow(self.rules.difficulty as u32)
             .saturating_mul(self.rules.count as u64)
     }
 
-    /// Solve a Cap.js PoW with a limit in parallel.
+    /// Solve a Cap.js `PoW` with a limit in parallel.
     #[cfg(feature = "rayon")]
+    #[must_use]
     pub fn solve_with_limit_parallel(
         self,
         pool: &rayon::ThreadPool,
@@ -114,7 +118,7 @@ impl ChallengeDescriptor {
                         solver.get_attempted_nonces(),
                         core::sync::atomic::Ordering::Relaxed,
                     );
-                    let nonce_f64 = fixup_prefix.map(|x| x.fixup(nonce)).unwrap_or(nonce as f64);
+                    let nonce_f64 = fixup_prefix.map_or(nonce as f64, |x| x.fixup(nonce));
                     *solution = nonce_f64;
                 },
             );
@@ -127,7 +131,8 @@ impl ChallengeDescriptor {
         (Some(response), attempted_nonces)
     }
 
-    /// Solve a Cap.js PoW with a limit.
+    /// Solve a Cap.js `PoW` with a limit.
+    #[must_use]
     pub fn solve_with_limit(self, limit: u64) -> (Option<SolveCapJsResponse>, u64) {
         let emitter = CapJSEmitter::new(self.token.as_bytes());
         let mut attempted_nonces = 0;
@@ -165,7 +170,7 @@ impl ChallengeDescriptor {
             attempted_nonces += solver.get_attempted_nonces();
             response
                 .solutions
-                .push(fixup_prefix.map(|x| x.fixup(nonce)).unwrap_or(nonce as f64));
+                .push(fixup_prefix.map_or(nonce as f64, |x| x.fixup(nonce)));
         }
         #[cfg(feature = "std")]
         {
@@ -178,7 +183,7 @@ impl ChallengeDescriptor {
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
-/// Cap.js PoW response.
+/// Cap.js `PoW` response.
 #[serde(untagged)]
 pub enum CapJsResponse {
     /// The solutions response.
@@ -191,7 +196,7 @@ pub enum CapJsResponse {
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
-/// Cap.js PoW redeemed token.
+/// Cap.js `PoW` redeemed token.
 pub struct CapJsRedeemedToken {
     /// The redeemed token.
     pub token: String,

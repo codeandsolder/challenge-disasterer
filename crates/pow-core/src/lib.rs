@@ -1,7 +1,12 @@
+#![recursion_limit = "256"]
+#![allow(
+    clippy::inline_always,
+    reason = "byte access helpers are deliberately inlined into protocol hot paths"
+)]
 #![feature(portable_simd)]
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
-#![doc = "Internal protocol PoW solver core for challenge-disasterer."]
-#![warn(missing_docs)]
+#![doc = "Internal protocol `PoW` solver core for challenge-disasterer."]
+#![deny(missing_docs)]
 #![deny(unsafe_code)]
 
 use core::num::NonZeroU8;
@@ -39,7 +44,7 @@ pub mod message;
 pub mod solver;
 
 #[cfg(feature = "adapter")]
-/// Data structures and adapters for end-to-end PoW solving without IO dependencies.
+/// Data structures and adapters for end-to-end `PoW` solving without IO dependencies.
 pub mod adapter;
 
 #[cold]
@@ -349,14 +354,14 @@ cfg_if::cfg_if! {
     }
 }
 
-/// Build a prefix for mCaptcha PoW
+/// Build a prefix for mCaptcha `PoW`
 pub fn build_mcaptcha_prefix<E: Extend<u8>>(out: &mut E, string: &str, salt: &str) {
     out.extend(salt.as_bytes().iter().copied());
     out.extend((string.len() as u64).to_le_bytes());
     out.extend(string.as_bytes().iter().copied());
 }
 
-/// Compute a plausible time for a SHA-256 PoW to prevent tainting metrics
+/// Compute a plausible time for a SHA-256 `PoW` to prevent tainting metrics
 ///
 /// # Arguments
 ///
@@ -365,17 +370,22 @@ pub fn build_mcaptcha_prefix<E: Extend<u8>>(out: &mut E, string: &str, salt: &st
 /// # Returns
 ///
 /// The plausible time in milliseconds
-#[expect(unused)]
+#[expect(
+    dead_code,
+    reason = "legacy metric helper retained for protocol accounting parity"
+)]
 pub(crate) fn compute_plausible_time_sha256(hashes: u64) -> u64 {
     hashes / 512
 }
 
-/// Compute the target for an mCaptcha PoW
+/// Compute the target for an mCaptcha `PoW`
+#[must_use]
 pub const fn compute_target_mcaptcha(difficulty_factor: u64) -> u64 {
     u64::MAX - u64::MAX / difficulty_factor
 }
 
 /// Compute a leading-zero-nibble SHA-256 mask (mask & (V\[0] << 32 | V\[1]) == 0)
+#[must_use]
 pub const fn compute_mask_zero_nibbles(difficulty_factor: NonZeroU8) -> u64 {
     let bits = difficulty_factor.get().saturating_mul(4);
     if bits >= 64 {
@@ -385,12 +395,14 @@ pub const fn compute_mask_zero_nibbles(difficulty_factor: NonZeroU8) -> u64 {
     }
 }
 
-/// Compute the mask for a GoAway PoW (mask & (V\[0] << 32) == 0)
+/// Compute the mask for a `GoAway` `PoW` (mask & (V\[0] << 32) == 0)
+#[must_use]
 pub const fn compute_mask_goaway(difficulty_factor: NonZeroU8) -> u64 {
     !(!0u64 >> (difficulty_factor.get()))
 }
 
-/// Compute a mask for a Cerberus PoW (mask & (V\[0] << 32) == 0)
+/// Compute a mask for a Cerberus `PoW` (mask & (V\[0] << 32) == 0)
+#[must_use]
 pub const fn compute_mask_cerberus(difficulty_factor: NonZeroU8) -> u64 {
     let tmp = !(!0u64 >> (difficulty_factor.get() * 2));
     let (tmp_hi, tmp_lo) = ((tmp >> 32) as u32, tmp as u32);
@@ -398,6 +410,7 @@ pub const fn compute_mask_cerberus(difficulty_factor: NonZeroU8) -> u64 {
 }
 
 /// Extract top 128 bits from a 64-bit word array
+#[must_use]
 pub const fn extract128_be(inp: [u32; 8]) -> u128 {
     (inp[0] as u128) << 96 | (inp[1] as u128) << 64 | (inp[2] as u128) << 32 | (inp[3] as u128)
 }
@@ -471,8 +484,14 @@ mod tests {
         encode_hex(
             &mut out,
             [
-                0x12345678, 0x9abcdef0, 0x12345678, 0x9abcdef0, 0x12345678, 0x9abcdef0, 0x12345678,
-                0x9abcdef0,
+                0x1234_5678,
+                0x9abc_def0,
+                0x1234_5678,
+                0x9abc_def0,
+                0x1234_5678,
+                0x9abc_def0,
+                0x1234_5678,
+                0x9abc_def0,
             ],
         );
         assert_eq!(

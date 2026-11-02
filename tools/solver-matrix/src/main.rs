@@ -1084,7 +1084,10 @@ async fn run_gpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
 }
 
 #[cfg(feature = "gpu")]
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "matrix row constructor keeps benchmark dimensions explicit"
+)]
 fn emit_gpu(
     meta: &Meta,
     protocol: &'static str,

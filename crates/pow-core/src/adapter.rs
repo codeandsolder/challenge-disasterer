@@ -24,7 +24,7 @@ impl<'de, const N: usize> serde::Deserialize<'de> for FixedHexString<N> {
         D: serde::Deserializer<'de>,
     {
         struct Visitor<const N: usize>;
-        impl<'de, const N: usize> serde::de::Visitor<'de> for Visitor<N> {
+        impl<const N: usize> serde::de::Visitor<'_> for Visitor<N> {
             type Value = FixedHexString<N>;
 
             fn expecting(&self, formatter: &mut alloc::fmt::Formatter) -> alloc::fmt::Result {

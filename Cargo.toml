@@ -36,13 +36,26 @@ codegen-units = 1
 [profile.test]
 opt-level = 3
 
-[lints.rust]
-unsafe_code = "deny"
-
-[lints.clippy]
-all = { level = "deny", priority = -1 }
+[lints]
+workspace = true
 
 [workspace]
 members = ["crates/anubis-argon2", "crates/pow-core", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench"]
 resolver = "3"
-exclude = ["crates/argon2-fast"]
+exclude = ["vendor/argon2-fast"]
+
+[workspace.metadata.rust-skills2]
+allow-test-panics = true
+allow-test-panics-reason = "Large inherited protocol solver test suite; production and examples remain strict"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"

@@ -498,7 +498,10 @@ fn storage_layout_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutE
     }
 }
 
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "GPU buffer ABI conversion is isolated and validated at this boundary"
+)]
 fn create_persistent_shader_module(
     device: &wgpu::Device,
     is_nvidia: bool,

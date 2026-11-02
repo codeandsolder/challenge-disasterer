@@ -14,6 +14,12 @@ permissions:
   contents: read
 
 jobs:
+  rust-skills2:
+    uses: codeandsolder/rust-skills2/.github/workflows/strict-rust.yml@main
+    with:
+      cargo-args: "--locked --workspace --all-targets --all-features"
+      ban-python-outside-ci: true
+
   rust:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -36,22 +42,22 @@ jobs:
 
       - name: Validate vendored Argon2
         run: |
-          cargo test --manifest-path crates/argon2-fast/Cargo.toml --all-features
-          cargo clippy --manifest-path crates/argon2-fast/Cargo.toml --lib --all-features -- -D warnings
-          cargo fmt --manifest-path crates/argon2-fast/Cargo.toml -- --check
+          cargo test --manifest-path vendor/argon2-fast/Cargo.toml --all-features
+          cargo clippy --manifest-path vendor/argon2-fast/Cargo.toml --lib --all-features -- -D warnings
+          cargo fmt --manifest-path vendor/argon2-fast/Cargo.toml -- --check
 
       - name: Validate vendored Argon2 soft fallback
         env:
           CARGO_TARGET_DIR: target/argon2-soft
           RUSTFLAGS: --cfg argon2_backend="soft"
-        run: cargo test --manifest-path crates/argon2-fast/Cargo.toml --all-features
+        run: cargo test --manifest-path vendor/argon2-fast/Cargo.toml --all-features
 
       - name: Check vendored Argon2 MSRV
         env:
           CARGO_TARGET_DIR: target/argon2-msrv
         run: |
-          rm -f crates/argon2-fast/Cargo.lock
-          cargo +1.85.0 check --manifest-path crates/argon2-fast/Cargo.toml --all-features
+          rm -f vendor/argon2-fast/Cargo.lock
+          cargo +1.85.0 check --manifest-path vendor/argon2-fast/Cargo.toml --all-features
 
       - name: Test
         run: cargo test --locked --workspace --all-features

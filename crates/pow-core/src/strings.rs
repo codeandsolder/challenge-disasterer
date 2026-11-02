@@ -1,3 +1,7 @@
+#![allow(
+    clippy::inline_always,
+    reason = "nonce formatting helpers are deliberately inlined into solver hot paths"
+)]
 pub(crate) static DIGIT_LUT_10000_LE_EVEN: [u32; 10000 / 2] = const {
     let mut out = [0; 10000 / 2];
     let mut i = 0;
@@ -16,7 +20,10 @@ pub(crate) static DIGIT_LUT_10000_LE_EVEN: [u32; 10000 / 2] = const {
     out
 };
 
-#[expect(dead_code)]
+#[expect(
+    dead_code,
+    reason = "formatter helper is retained for protocol variants that do not currently select it"
+)]
 mod static_asserts {
     use super::DIGIT_LUT_10000_LE_EVEN;
 

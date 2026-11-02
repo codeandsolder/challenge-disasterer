@@ -1,12 +1,22 @@
-#![allow(clippy::inconsistent_digit_grouping)]
-#![allow(clippy::collapsible_if)]
+#![allow(
+    clippy::inline_always,
+    reason = "message byte mutation helpers are deliberately inlined into solver hot paths"
+)]
+#![allow(
+    clippy::inconsistent_digit_grouping,
+    reason = "protocol constants mirror upstream numeric grouping"
+)]
+#![allow(
+    clippy::collapsible_if,
+    reason = "nested protocol branches keep independent validity conditions visible"
+)]
 use core::num::{NonZeroU8, NonZeroU32};
 
 use crate::{blake3, sha256};
 
-/// Solves an mCaptcha/Anubis/Cap.js SHA256 PoW where the SHA-256 message is a single block (512 bytes minus padding).
+/// Solves an mCaptcha/Anubis/Cap.js SHA256 `PoW` where the SHA-256 message is a single block (512 bytes minus padding).
 ///
-/// Construct: Proof := (prefix || ASCII_DECIMAL(nonce))
+/// Construct: Proof := (prefix || `ASCII_DECIMAL(nonce)`)
 ///
 /// Currently the mutating part is always 9 digits long.
 #[derive(Debug, Clone)]
@@ -42,6 +52,7 @@ pub struct IEEE754LosslessFixupPrefix {
 impl IEEE754LosslessFixupPrefix {
     /// fixes up a nonce before sending it to the server
     #[inline(always)]
+    #[must_use]
     pub const fn fixup(&self, nonce: u64) -> f64 {
         let mut decimals = 0.00000_000_000_001 * nonce as f64;
         let tens = self.buf[1] - b'0';
@@ -62,6 +73,7 @@ impl AsRef<[u8]> for IEEE754LosslessFixupPrefix {
 
 impl SingleBlockMessage {
     /// creates a new single block message
+    #[must_use]
     pub fn new(mut prefix: &[u8], mut working_set: u32) -> Option<Self> {
         // construct the message buffer
         let mut prefix_state = sha256::IV;
@@ -219,6 +231,7 @@ impl SingleBlockMessage {
     /// Create a new single block message using only IEEE 754 double precision floats that can stringify losslessly
     ///
     /// The caller is expected to append the bytes from the prefix to the nonce before sending it to the server.
+    #[must_use]
     pub fn new_f64(
         mut prefix: &[u8],
         mut working_set: u32,
@@ -256,8 +269,8 @@ impl SingleBlockMessage {
             if working_set >= 32 {
                 return None;
             }
-            let working_set_msb = working_set / 10;
-            let working_set_lsb = working_set % 10;
+            let working_set_tens_digit = working_set / 10;
+            let working_set_ones_digit = working_set % 10;
             let mut tmp_block = [0; 64];
             tmp_block[..prefix.len()].copy_from_slice(prefix);
             let space = 64 - prefix.len();
@@ -269,8 +282,8 @@ impl SingleBlockMessage {
                 padding.cut = 1;
             }
             let mut padding_buf = padding.buf;
-            padding_buf[1] = b'1' + working_set_msb as u8;
-            padding_buf[2] = b'0' + working_set_lsb as u8;
+            padding_buf[1] = b'1' + working_set_tens_digit as u8;
+            padding_buf[2] = b'0' + working_set_ones_digit as u8;
             let pad = &padding_buf.as_slice()[padding.cut..];
             let (pad_left, pad_right) = pad.split_at(space);
             tmp_block[prefix.len()..].copy_from_slice(pad_left);
@@ -346,8 +359,8 @@ impl SingleBlockMessage {
             if ptr % 2 == 1 {
                 if nonce_addend
                     .checked_mul(10_000_000_000 * 2)
-                    .filter(|x| *x < 1_000_000_000_000_000)
-                    .is_some()
+                    .as_ref()
+                    .is_some_and(|x| *x < 1_000_000_000_000_000)
                 {
                     nonce_addend *= 10;
                     let pad = pop_padding_digit();
@@ -360,8 +373,8 @@ impl SingleBlockMessage {
             while (ptr + 2) % 4 != 0 {
                 if nonce_addend
                     .checked_mul(10_000_000_000 * 2)
-                    .filter(|x| *x < 1_000_000_000_000_000)
-                    .is_some()
+                    .as_ref()
+                    .is_some_and(|x| *x < 1_000_000_000_000_000)
                 {
                     nonce_addend *= 10;
                     let pad = pop_padding_digit();
@@ -376,8 +389,8 @@ impl SingleBlockMessage {
             // times 2 because for some reason anubis uses signed nonces ... I wonder if we can send negative nonces
             while nonce_addend
                 .checked_mul(10000 * 1_000_000_000 * 2)
-                .filter(|x| *x < 1_000_000_000_000_000)
-                .is_some()
+                .as_ref()
+                .is_some_and(|x| *x < 1_000_000_000_000_000)
             {
                 let pad0 = pop_padding_digit();
                 let pad1 = pop_padding_digit();
@@ -437,9 +450,9 @@ impl SingleBlockMessage {
     }
 }
 
-/// Solves an mCaptcha/Anubis/Cap.js SHA256 PoW where the SHA-256 message is a double block (1024 bytes minus padding).
+/// Solves an mCaptcha/Anubis/Cap.js SHA256 `PoW` where the SHA-256 message is a double block (1024 bytes minus padding).
 ///
-/// Construct: Proof := (prefix || '1' * k || ASCII_DECIMAL(nonce) || '\x80') | ('\0' * 56 + length)
+/// Construct: Proof := (prefix || '1' * k || `ASCII_DECIMAL(nonce)` || '\x80') | ('\0' * 56 + length)
 ///
 /// Currently the mutating part is always 9 digits long.
 pub struct DoubleBlockMessage {
@@ -461,6 +474,7 @@ impl DoubleBlockMessage {
     pub const DIGIT_IDX: u64 = 54;
 
     /// creates a new double block message
+    #[must_use]
     pub fn new(mut prefix: &[u8], mut working_set: u32) -> Option<Self> {
         // construct the message buffer
         let mut prefix_state = sha256::IV;
@@ -572,6 +586,7 @@ impl DecimalMessage {
     }
 
     /// creates a new decimal message using only IEEE 754 double precision floats that can stringify losslessly
+    #[must_use]
     pub fn new_f64(
         input: &[u8],
         working_set: u32,
@@ -606,6 +621,7 @@ pub struct BinaryMessage {
 
 impl BinaryMessage {
     /// creates a new binary message
+    #[must_use]
     pub fn new(salt: &[u8], nonce_byte_count: NonZeroU8) -> Self {
         assert!(
             nonce_byte_count.get() <= 8,
@@ -659,12 +675,14 @@ pub struct CerberusBinaryMessage {
 
 impl CerberusBinaryMessage {
     /// Create a new Cerberus message
+    #[must_use]
     pub fn new(salt: &[u8], first_word: u32) -> Self {
         let prehash = ::blake3::hash(salt).to_hex();
         Self::new_prehashed(prehash.as_bytes().try_into().unwrap(), first_word)
     }
 
     /// Create a new Cerberus message with a prehashed midstate
+    #[must_use]
     pub fn new_prehashed(prehash: &[u8; 64], first_word: u32) -> Self {
         let mut block = [0; 16];
         for i in 0..16 {
@@ -693,7 +711,7 @@ impl CerberusBinaryMessage {
 #[derive(Debug, Clone)]
 /// A message in the cerberus decimal format (pre 0.4.6)
 ///
-/// Construct: Proof := (prefix || ASCII_GO_INT_DECIMAL(nonce))
+/// Construct: Proof := (prefix || `ASCII_GO_INT_DECIMAL(nonce)`)
 pub struct CerberusDecimalMessage {
     pub(crate) prefix_state: [u32; 8],
     pub(crate) salt_residual: [u8; 64],
@@ -706,6 +724,7 @@ impl CerberusDecimalMessage {
     /// Create a new Cerberus message
     ///
     /// End-to-end salt construction: `${challenge}|${inputNonce}|${ts}|${signature}|`
+    #[must_use]
     pub fn new(salt: &[u8], mut working_set: u32) -> Option<Self> {
         // nonce placement in blake3 is less important than sha256, both early and late salts have strategies to elide computation.
         //
@@ -828,6 +847,7 @@ pub struct GoAwayMessage {
 
 impl GoAwayMessage {
     /// creates a new go-away message
+    #[must_use]
     pub fn new(challenge: [u32; 8], high_word: u32) -> Self {
         Self {
             challenge,
@@ -841,6 +861,7 @@ impl GoAwayMessage {
     }
 
     /// creates a new go-away message from a 32 byte challenge
+    #[must_use]
     pub fn new_bytes(challenge: &[u8; 32], high_word: u32) -> Self {
         Self {
             challenge: core::array::from_fn(|i| {
@@ -856,6 +877,7 @@ impl GoAwayMessage {
     }
 
     /// creates a new go-away message from a 64 byte challenge
+    #[must_use]
     pub fn new_hex(challenge: &[u8; 64], high_word: u32) -> Option<Self> {
         let mut prefix_fixed_up = [0; 32];
         for i in 0..32 {
@@ -880,7 +902,7 @@ impl GoAwayMessage {
     }
 }
 
-/// A shared precomputed state for expanding CapJS batch challenges
+/// A shared precomputed state for expanding `CapJS` batch challenges
 pub struct CapJSEmitter {
     seed: u32,
 }
@@ -905,9 +927,10 @@ const fn capjs_lfsr(state: u32) -> u32 {
 
 impl CapJSEmitter {
     /// Create a new emitter for a given challenge token
+    #[must_use]
     pub const fn new(token: &[u8]) -> Self {
         let mut i = 0;
-        let mut hash = 2166136261;
+        let mut hash = 2_166_136_261;
         while i < token.len() {
             hash = fnv1a(hash, token[i]);
             i += 1;
@@ -1021,7 +1044,7 @@ mod tests {
 
     #[test]
     fn test_fnv1a() {
-        let mut state = 2166136261;
+        let mut state = 2_166_136_261;
         let data = [240, 159, 166, 132, 240, 159, 140, 136];
         data.iter().for_each(|d| {
             state = fnv1a(state, *d);
@@ -1036,22 +1059,22 @@ mod tests {
         const S: usize = 30;
         const D: usize = 8;
         const KNOWN_ANSWER: [([u8; S], [u32; (D + 3) / 8]); C] = [
-            (*b"0301c97a7ffc19cd647d324f84a2d9", [0xd4f0af52]),
-            (*b"e2462bfec006f422ced5d703f2842e", [0xdf66e3e3]),
-            (*b"c9dc0ae6589d3a6605e1344e4e745a", [0x425e36e1]),
-            (*b"b47a610af330f9c76d0597a321c293", [0x3f743fab]),
-            (*b"9c8bdae31d2ee808c5de8bff808d54", [0x0e401a5c]),
-            (*b"488848fd736ecef6fcbb2e6eb7a2f8", [0xcd2ff29f]),
-            (*b"6ff608b772f74727d86eafeebffe4d", [0x2f937817]),
-            (*b"075dc1a5524efc3134dbc075d67d85", [0x0cbea335]),
-            (*b"38f3cb0b73c3f382bbc51e3b184c35", [0xf4e72b04]),
-            (*b"a01611f327205c07b8b5e0b790c35e", [0x29fe9e9b]),
-            (*b"4097bda25357605354f6a05d9f5544", [0xcecadb61]),
-            (*b"f62a5b07141651e21b65a0174385e3", [0x1b5bb71a]),
-            (*b"8b10f44f26b28ee39ab47fd4bc905b", [0x4b836fae]),
-            (*b"0f919a0ca6d088e44e4633428de8dd", [0x0fa70834]),
-            (*b"ea9fd8f221b396723cc2064cfd7cb1", [0xd4038d0a]),
-            (*b"5a94c8bcb3e606dd148e7723972538", [0x0a6a8e21]),
+            (*b"0301c97a7ffc19cd647d324f84a2d9", [0xd4f0_af52]),
+            (*b"e2462bfec006f422ced5d703f2842e", [0xdf66_e3e3]),
+            (*b"c9dc0ae6589d3a6605e1344e4e745a", [0x425e_36e1]),
+            (*b"b47a610af330f9c76d0597a321c293", [0x3f74_3fab]),
+            (*b"9c8bdae31d2ee808c5de8bff808d54", [0x0e40_1a5c]),
+            (*b"488848fd736ecef6fcbb2e6eb7a2f8", [0xcd2f_f29f]),
+            (*b"6ff608b772f74727d86eafeebffe4d", [0x2f93_7817]),
+            (*b"075dc1a5524efc3134dbc075d67d85", [0x0cbe_a335]),
+            (*b"38f3cb0b73c3f382bbc51e3b184c35", [0xf4e7_2b04]),
+            (*b"a01611f327205c07b8b5e0b790c35e", [0x29fe_9e9b]),
+            (*b"4097bda25357605354f6a05d9f5544", [0xceca_db61]),
+            (*b"f62a5b07141651e21b65a0174385e3", [0x1b5b_b71a]),
+            (*b"8b10f44f26b28ee39ab47fd4bc905b", [0x4b83_6fae]),
+            (*b"0f919a0ca6d088e44e4633428de8dd", [0x0fa7_0834]),
+            (*b"ea9fd8f221b396723cc2064cfd7cb1", [0xd403_8d0a]),
+            (*b"5a94c8bcb3e606dd148e7723972538", [0x0a6a_8e21]),
         ];
 
         let emitter = CapJSEmitter::new(TOKEN);

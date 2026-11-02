@@ -422,6 +422,7 @@ impl GpuContext {
     }
 
     /// Human-readable adapter/backend description.
+    #[must_use]
     pub fn adapter(&self) -> &str {
         &self.adapter
     }
@@ -917,6 +918,7 @@ impl SingleBlockSolver {
     ///
     /// GPU workgroups cooperatively stop after a hit, so this is an upper bound on candidates
     /// actually executed by the device.
+    #[must_use]
     pub fn get_attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
@@ -975,6 +977,7 @@ impl DoubleBlockSolver {
         self.limit = limit;
     }
     /// Number of candidates dispatched so far.
+    #[must_use]
     pub fn get_attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
@@ -1084,6 +1087,7 @@ impl DecimalSolver {
         }
     }
     /// Number of candidates dispatched so far.
+    #[must_use]
     pub fn get_attempted_nonces(&self) -> u64 {
         match self {
             Self::SingleBlock(s) => s.get_attempted_nonces(),
@@ -1104,7 +1108,7 @@ impl DecimalSolver {
     }
 }
 
-/// Async GPU GoAway SHA-256 solver.
+/// Async GPU `GoAway` SHA-256 solver.
 pub struct GoAwaySolver {
     message: crate::message::GoAwayMessage,
     attempted_nonces: u64,
@@ -1127,10 +1131,11 @@ impl GoAwaySolver {
         self.limit = limit;
     }
     /// Number of candidates dispatched so far.
+    #[must_use]
     pub fn get_attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
-    /// Solve a GoAway message on the GPU.
+    /// Solve a `GoAway` message on the GPU.
     pub async fn solve<const TYPE: u8>(
         &mut self,
         gpu: &mut GpuContext,
@@ -1214,6 +1219,7 @@ impl BinarySolver {
         self.limit = limit;
     }
     /// Number of candidates dispatched so far.
+    #[must_use]
     pub fn get_attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
@@ -1306,6 +1312,7 @@ impl CerberusSolver {
     }
 
     /// Number of candidates dispatched so far.
+    #[must_use]
     pub fn get_attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
@@ -1419,6 +1426,7 @@ impl AltchaSha256Solver {
     }
 
     /// Number of candidates dispatched so far.
+    #[must_use]
     pub fn get_attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
@@ -1777,7 +1785,7 @@ fn altcha_shader_source() -> String {
         rounds.push_str(&format!("{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"));
     }
     format!(
-        r#"
+        r"
 const IV:array<u32,8>=array<u32,8>(0x6a09e667u,0xbb67ae85u,0x3c6ef372u,0xa54ff53au,0x510e527fu,0x9b05688cu,0x1f83d9abu,0x5be0cd19u);
 struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }};
 @group(0) @binding(0) var<storage,read> P:array<u32>;
@@ -1816,7 +1824,7 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
  }}
  if(target_ok(out[0],out[1])&&atomicExchange(&R.flag,1u)==0u){{R.nonce_lo=candidate;R.nonce_hi=0u;for(var i=0u;i<8u;i=i+1u){{R.hash[i]=out[i];}}}}
 }}
-"#
+"
     )
 }
 
@@ -1848,7 +1856,7 @@ fn cerberus_shader_source() -> String {
         }
     }
     format!(
-        r#"
+        r"
 struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }};
 @group(0) @binding(0) var<storage,read> P:array<u32>;
 @group(0) @binding(1) var<storage,read_write> R:OutBuf;
@@ -1879,7 +1887,7 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
   if((h[0]&P[3])==0u&&(h[1]&P[4])==0u){{if(atomicExchange(&R.flag,1u)==0u){{R.nonce_lo=nlo;R.nonce_hi=nhi;for(var i=0u;i<8u;i=i+1u){{R.hash[i]=h[i];}}}}}}
  }}
 }}
-"#,
+",
         CANCEL_INTERVAL - 1
     )
 }
@@ -1900,7 +1908,7 @@ fn multi_layout_shader_source() -> String {
     let rounds9 = build_rounds(9);
     let rounds13 = build_rounds(13);
     format!(
-        r#"
+        r"
 const IV:array<u32,8>=array<u32,8>(0x6a09e667u,0xbb67ae85u,0x3c6ef372u,0xa54ff53au,0x510e527fu,0x9b05688cu,0x1f83d9abu,0x5be0cd19u);
 override MODE:u32;
 struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }};
@@ -1973,7 +1981,7 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
   }}
  }}
 }}
-"#,
+",
         CANCEL_INTERVAL - 1
     )
 }
@@ -2097,7 +2105,7 @@ fn generic_single_block_shader_source() -> String {
         rounds.push_str(&format!("{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"));
     }
     format!(
-        r#"
+        r"
 struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }};
 @group(0) @binding(0) var<storage,read> P:array<u32>;
 @group(0) @binding(1) var<storage,read_write> R:OutBuf;
@@ -2147,7 +2155,7 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
   }}
  }}
 }}
-"#,
+",
         CANCEL_INTERVAL - 1
     )
 }
@@ -2162,7 +2170,7 @@ fn shader_source() -> String {
         rounds.push_str(&format!("{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"));
     }
     format!(
-        r#"
+        r"
 struct InParams {{ s0:u32,s1:u32,s2:u32,s3:u32,s4:u32,s5:u32,s6:u32,s7:u32,base_lo:u32,base_hi:u32,bitlen:u32,mask0:u32,mask1:u32 }};
 struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }};
 @group(0) @binding(0) var<uniform> P:InParams;
@@ -2185,7 +2193,7 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
   let ns=step+1u;if(ns<{STEPS}u){{nw4=nw4^GM[countTrailingZeros(ns)];}}
  }}
 }}
-"#,
+",
         CANCEL_INTERVAL - 1
     )
 }

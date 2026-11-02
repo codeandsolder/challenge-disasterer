@@ -228,7 +228,7 @@ impl_decimal_solver!(
     [SingleBlockSolver, DoubleBlockSolver] => DecimalSolver
 );
 
-/// Safe GoAway solver.
+/// Safe `GoAway` solver.
 ///
 /// Current implementation: generic sha2 crate fallback.
 pub struct GoAwaySolver {
@@ -509,7 +509,7 @@ impl crate::solver::Solver for CerberusSolver {
                     }
                 }
             }
-        };
+        }
 
         None
     }

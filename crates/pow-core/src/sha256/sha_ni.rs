@@ -1,4 +1,21 @@
-#![cfg_attr(target_feature = "avx512f", allow(dead_code, unused))]
+#![allow(
+    clippy::inline_always,
+    reason = "SHA-NI instruction wrappers must inline into the compression kernel"
+)]
+#![cfg_attr(
+    target_feature = "avx512f",
+    allow(
+        dead_code,
+        reason = "SHA-NI backend is inactive in forced AVX-512 validation builds"
+    )
+)]
+#![cfg_attr(
+    target_feature = "avx512f",
+    allow(
+        unused_imports,
+        reason = "SHA-NI imports are inactive in forced AVX-512 validation builds"
+    )
+)]
 
 // these are mainly adapted from the sha2 crate as well,
 // the core logic is verbatim, but shuffling and batch message loading overhead is removed
@@ -41,7 +58,7 @@ macro_rules! schedule {
 }
 
 #[inline(always)]
-pub(crate) fn prepare_state(state: &[u32; 8]) -> [__m128i; 2] {
+pub fn prepare_state(state: &[u32; 8]) -> [__m128i; 2] {
     [
         u32x4::from_array([state[5], state[4], state[1], state[0]]).into(),
         u32x4::from_array([state[7], state[6], state[3], state[2]]).into(),
@@ -49,39 +66,38 @@ pub(crate) fn prepare_state(state: &[u32; 8]) -> [__m128i; 2] {
 }
 
 #[inline(always)]
-pub(crate) fn feedback_ab(a: u32, b: u32) -> __m128i {
+pub fn feedback_ab(a: u32, b: u32) -> __m128i {
     u32x4::from_array([0, 0, b, a]).into()
 }
 
 #[inline(always)]
-pub(crate) fn add_words(a: __m128i, b: __m128i) -> __m128i {
+pub fn add_words(a: __m128i, b: __m128i) -> __m128i {
     let a: u32x4 = a.into();
     let b: u32x4 = b.into();
     (a + b).into()
 }
 
 #[inline(always)]
-pub(crate) fn extract_ab(state: __m128i) -> u64 {
+pub fn extract_ab(state: __m128i) -> u64 {
     let state: u64x2 = state.into();
     state.to_array()[1]
 }
 
-#[allow(unused_variables)]
 pub trait Plucker: Sized {
     #[inline(always)]
-    fn pluck_qword0(&mut self, lane: usize, w: u32x4) -> u32x4 {
+    fn pluck_qword0(&mut self, _lane: usize, w: u32x4) -> u32x4 {
         w
     }
     #[inline(always)]
-    fn pluck_qword1(&mut self, lane: usize, w: u32x4) -> u32x4 {
+    fn pluck_qword1(&mut self, _lane: usize, w: u32x4) -> u32x4 {
         w
     }
     #[inline(always)]
-    fn pluck_qword2(&mut self, lane: usize, w: u32x4) -> u32x4 {
+    fn pluck_qword2(&mut self, _lane: usize, w: u32x4) -> u32x4 {
         w
     }
     #[inline(always)]
-    fn pluck_qword3(&mut self, lane: usize, w: u32x4) -> u32x4 {
+    fn pluck_qword3(&mut self, _lane: usize, w: u32x4) -> u32x4 {
         w
     }
 }
@@ -94,15 +110,12 @@ impl Plucker for () {}
     reason = "isolated SHA-NI instruction kernel; callers require SHA and SSE4.1"
 )]
 #[inline(always)]
-pub(crate) fn multiway_arx_abef_cdgh<
-    const BEGIN_ROUND_BY_4: usize,
-    const LANES: usize,
-    P: Plucker,
->(
+pub fn multiway_arx_abef_cdgh<const BEGIN_ROUND_BY_4: usize, const LANES: usize, P: Plucker>(
     state: [&mut [__m128i; 2]; LANES],
     block_template: &[u32; 16],
     mut plucker: P,
 ) {
+    // SAFETY: this isolated kernel is called only under the SHA-NI/SSE4.1 feature contract documented on the function.
     unsafe {
         macro_rules! rounds4 {
             ($abef:ident, $cdgh:ident, $rest:expr, $i:expr) => {{
@@ -273,9 +286,22 @@ mod tests {
     #[test]
     fn test_multiway_arx() {
         let input_block = [
-            0x61626380, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-            0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-            0x00000000, 0x00000018,
+            0x6162_6380,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0018,
         ];
 
         let state = crate::sha256::IV;

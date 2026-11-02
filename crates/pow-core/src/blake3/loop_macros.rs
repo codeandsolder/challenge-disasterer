@@ -1,5 +1,5 @@
 #[rustfmt::skip]
-#[allow(unused_macros)]
+#[allow(unused_macros, reason = "shared BLAKE3 loop macro is target-dependent")]
 macro_rules! repeat7 {
     ($i:ident, $b:block) => {
         { let $i = 0; $b; }
@@ -12,7 +12,7 @@ macro_rules! repeat7 {
     };
 }
 #[rustfmt::skip]
-#[allow(unused_macros)]
+#[allow(unused_macros, reason = "shared BLAKE3 loop macro is target-dependent")]
 macro_rules! repeat8 {
     ($i:ident, $b:block) => {
         { let $i = 0; $b; }

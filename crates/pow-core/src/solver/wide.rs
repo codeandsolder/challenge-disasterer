@@ -1,3 +1,11 @@
+#![allow(
+    clippy::inline_always,
+    reason = "wide portable-SIMD solver helpers are hot kernels whose inlining is benchmark-sensitive"
+)]
+#![allow(
+    clippy::similar_names,
+    reason = "HMAC ipad and opad are canonical distinct terms"
+)]
 use core::simd::{
     Simd,
     cmp::{SimdPartialEq as _, SimdPartialOrd as _},
@@ -45,7 +53,7 @@ fn target_match<const LANES: usize, const TYPE: u8>(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub(crate) struct BinaryWork<'a> {
+pub struct BinaryWork<'a> {
     pub(crate) attempted_nonces: &'a mut u64,
     pub(crate) limit: u64,
     pub(crate) prefix_state: [u32; 8],
@@ -57,7 +65,7 @@ pub(crate) struct BinaryWork<'a> {
 
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn solve_binary_impl<
+pub fn solve_binary_impl<
     const LANES: usize,
     const TYPE: u8,
     const FIRST_NONCE_WORD_IDX: usize,
@@ -167,7 +175,7 @@ pub(crate) fn solve_binary_impl<
 }
 
 #[inline(always)]
-pub(crate) fn solve_goaway_impl<const LANES: usize, const TYPE: u8>(
+pub fn solve_goaway_impl<const LANES: usize, const TYPE: u8>(
     attempted_nonces: &mut u64,
     limit: u64,
     challenge: [u32; 8],
@@ -230,7 +238,7 @@ pub(crate) fn solve_goaway_impl<const LANES: usize, const TYPE: u8>(
 }
 
 #[inline(always)]
-pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
+pub fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
     message: &mut crate::message::DoubleBlockMessage,
     attempted_nonces: &mut u64,
     limit: u64,
@@ -357,7 +365,7 @@ pub(crate) fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
 }
 
 #[inline(always)]
-pub(crate) fn solve_single_block_impl<
+pub fn solve_single_block_impl<
     const LANES: usize,
     const DIGIT_WORD_IDX0: usize,
     const DIGIT_WORD_IDX1_INCREMENT: bool,
@@ -801,7 +809,7 @@ fn solve_altcha_pbkdf2_impl<const LANES: usize, const TYPE: u8>(
 
 #[inline]
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn solve_altcha_fallback<const TYPE: u8>(
+pub fn solve_altcha_fallback<const TYPE: u8>(
     message: &crate::message::AltchaMessage,
     attempted_nonces: &mut u64,
     limit: u64,
@@ -820,7 +828,7 @@ pub(crate) fn solve_altcha_fallback<const TYPE: u8>(
 
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn solve_altcha_impl<const LANES: usize, const TYPE: u8>(
+pub fn solve_altcha_impl<const LANES: usize, const TYPE: u8>(
     message: &crate::message::AltchaMessage,
     attempted_nonces: &mut u64,
     limit: u64,
@@ -1124,7 +1132,7 @@ fn solve_cerberus_binary_impl<const LANES: usize, B: CerberusCompression<LANES>>
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[inline(always)]
-pub(crate) fn solve_cerberus_decimal_avx2<
+pub fn solve_cerberus_decimal_avx2<
     const CENTER_WORD_IDX: usize,
     const LANE_ID_WORD_IDX: usize,
     const CONSTANT_WORD_COUNT: usize,
@@ -1147,7 +1155,7 @@ pub(crate) fn solve_cerberus_decimal_avx2<
 
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn solve_cerberus_decimal_wide16<
+pub fn solve_cerberus_decimal_wide16<
     const CENTER_WORD_IDX: usize,
     const LANE_ID_WORD_IDX: usize,
     const CONSTANT_WORD_COUNT: usize,
@@ -1170,7 +1178,7 @@ pub(crate) fn solve_cerberus_decimal_wide16<
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[inline(always)]
-pub(crate) fn solve_cerberus_binary_avx2(
+pub fn solve_cerberus_binary_avx2(
     message: &crate::message::CerberusMessage,
     attempted_nonces: &mut u64,
     limit: u64,
@@ -1188,7 +1196,7 @@ pub(crate) fn solve_cerberus_binary_avx2(
 
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn solve_cerberus_binary_wide16(
+pub fn solve_cerberus_binary_wide16(
     message: &crate::message::CerberusMessage,
     attempted_nonces: &mut u64,
     limit: u64,

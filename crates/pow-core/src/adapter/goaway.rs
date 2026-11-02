@@ -1,4 +1,4 @@
-//! GoAway specific protocol structures.
+//! `GoAway` specific protocol structures.
 
 use alloc::string::String;
 
@@ -9,7 +9,7 @@ use crate::{
 };
 
 #[derive(serde::Deserialize, Debug)]
-/// GoAway "js-pow-sha256" PoW challenge configuration.
+/// `GoAway` "js-pow-sha256" `PoW` challenge configuration.
 pub struct GoAwayConfig {
     /// The challenge. (JSON key: `challenge`)
     pub challenge: String,
@@ -19,27 +19,32 @@ pub struct GoAwayConfig {
 }
 
 impl GoAwayConfig {
-    /// Get the challenge of a GoAway "js-pow-sha256" PoW.
+    /// Get the challenge of a `GoAway` "js-pow-sha256" `PoW`.
+    #[must_use]
     pub fn challenge(&self) -> &str {
         &self.challenge
     }
 
-    /// Get the difficulty of a GoAway "js-pow-sha256" PoW.
+    /// Get the difficulty of a `GoAway` "js-pow-sha256" `PoW`.
+    #[must_use]
     pub fn difficulty(&self) -> core::num::NonZeroU8 {
         self.difficulty
     }
 
-    /// Estimate the workload of a GoAway "js-pow-sha256" PoW.
+    /// Estimate the workload of a `GoAway` "js-pow-sha256" `PoW`.
+    #[must_use]
     pub fn estimated_workload(&self) -> u64 {
         2u64.pow(self.difficulty.get().into())
     }
 
-    /// Solve a GoAway "js-pow-sha256" PoW.
+    /// Solve a `GoAway` "js-pow-sha256" `PoW`.
+    #[must_use]
     pub fn solve(&self) -> (Option<(u64, [u32; 8])>, u64) {
         self.solve_with_limit(u64::MAX)
     }
 
-    /// Solve a GoAway "js-pow-sha256" PoW with a limit.
+    /// Solve a `GoAway` "js-pow-sha256" `PoW` with a limit.
+    #[must_use]
     pub fn solve_with_limit(&self, limit: u64) -> (Option<(u64, [u32; 8])>, u64) {
         let mask = compute_mask_goaway(self.difficulty);
 

@@ -170,7 +170,10 @@ fn decimal_solver(
         Implementation::Avx512 => Ok(Box::new(pow_buster::solver::avx512::DecimalSolver::from(
             message,
         ))),
-        #[allow(unreachable_patterns)]
+        #[allow(
+            unreachable_patterns,
+            reason = "feature-gated implementation variants make the fallback unreachable on some targets"
+        )]
         _ => bail!("implementation unavailable on this target"),
     }
 }
@@ -223,7 +226,10 @@ fn goaway_solver(
         Implementation::Avx512 => Ok(Box::new(pow_buster::solver::avx512::GoAwaySolver::from(
             message,
         ))),
-        #[allow(unreachable_patterns)]
+        #[allow(
+            unreachable_patterns,
+            reason = "feature-gated implementation variants make the fallback unreachable on some targets"
+        )]
         _ => bail!("implementation unavailable on this target"),
     }
 }

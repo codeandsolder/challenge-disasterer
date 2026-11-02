@@ -88,7 +88,10 @@ impl Sm75Cuda {
         Err(anyhow!("sm_75 HashX search exhausted u32 nonce space"))
     }
 
-    #[allow(unsafe_code)]
+    #[allow(
+        unsafe_code,
+        reason = "CUDA driver FFI is isolated behind validated launch arguments"
+    )]
     fn launch(
         &mut self,
         function: &cudarc::driver::CudaFunction,

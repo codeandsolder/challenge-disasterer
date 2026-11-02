@@ -30,4 +30,4 @@ for _ in $(seq 1 100); do
 done
 curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null
 
-python3 "$ROOT/tools/linear-e2e.py" "http://127.0.0.1:$PORT"
+python3 "$ROOT/ci/linear-e2e.py" "http://127.0.0.1:$PORT"

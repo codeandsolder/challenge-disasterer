@@ -1,3 +1,7 @@
+#![allow(
+    clippy::inline_always,
+    reason = "AVX2 solver helper inlining is part of the measured hot-kernel layout"
+)]
 use crate::message::{
     AltchaMessage, BinaryMessage, CerberusMessage, DecimalMessage, DoubleBlockMessage,
     GoAwayMessage, SingleBlockMessage,
@@ -122,6 +126,7 @@ impl crate::solver::Solver for SingleBlockSolver {
 
         macro_rules! dispatch {
             ($idx0:literal, $idx1_inc:literal) => {
+                // SAFETY: RequiredFeatures::get() has already proved AVX2 support for this dispatch; every called kernel requires only that feature set.
                 unsafe {
                     if self.message.digit_index % 4 == 2 {
                         // if we have to much search space it doesn't matter
@@ -297,7 +302,10 @@ impl From<crate::solver::safe::BinarySolver> for BinarySolver {
 impl BinarySolver {
     #[inline(never)]
     #[target_feature(enable = "avx2")]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "hot solver kernel keeps protocol inputs explicit to avoid aggregate shuffling"
+    )]
     fn solve_impl<
         const TYPE: u8,
         const FIRST_NONCE_WORD_IDX: usize,
@@ -398,6 +406,7 @@ impl crate::solver::Solver for BinarySolver {
 
         macro_rules! dispatch {
             ($skipped_rounds:expr) => {
+                // SAFETY: RequiredFeatures::get() has already proved AVX2 support for this dispatch; every called kernel requires only that feature set.
                 unsafe {
                     if cur_block == 1 {
                         if let Some(nonce) = self.solve_impl::<TYPE, { $skipped_rounds }, true>(
@@ -466,7 +475,7 @@ impl crate::solver::Solver for BinarySolver {
     }
 }
 
-/// AVX2 GoAway solver.
+/// AVX2 `GoAway` solver.
 ///
 ///
 /// Current implementation: 8 way SIMD with 1-round hotstart granularity.
@@ -578,6 +587,7 @@ impl CerberusSolver {
     }
 
     /// Get the attempted nonces.
+    #[must_use]
     pub fn get_attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
@@ -642,6 +652,7 @@ impl crate::solver::Solver for CerberusSolver {
             return None;
         }
         match &self.message {
+            // SAFETY: RequiredFeatures::get() has already proved AVX2 support for this dispatch; every called kernel requires only that feature set.
             CerberusMessage::Binary(_) => unsafe { self.solve_binary_impl(target, mask) },
             CerberusMessage::Decimal(message) => {
                 // two digits as lane ID, N=\x00, ? is prefix
@@ -695,12 +706,14 @@ impl crate::solver::Solver for CerberusSolver {
                         macro_rules! dispatch {
                             ($center_word_idx:literal) => {
                                 if position_mod < 2 {
+                                    // SAFETY: RequiredFeatures::get() has already proved AVX2 support for this dispatch; every called kernel requires only that feature set.
                                     unsafe {
                                         self.solve_decimal_impl::<$center_word_idx, { $center_word_idx - 1 }, {$center_word_idx - 1}>(
                                         msg, target, mask,
                                         )
                                     }
                                 } else {
+                                    // SAFETY: RequiredFeatures::get() has already proved AVX2 support for this dispatch; every called kernel requires only that feature set.
                                     unsafe {
                                         self.solve_decimal_impl::<$center_word_idx, { $center_word_idx + 1 }, $center_word_idx>(
                                         msg, target, mask,
