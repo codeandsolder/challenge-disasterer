@@ -1,3 +1,4 @@
+#![feature(portable_simd)]
 #![deny(unsafe_code)]
 
 //! Safe host for the official `HashWX` WebAssembly implementation.
@@ -9,9 +10,14 @@
 //! hand that module back to Wasmtime/Cranelift, which supplies host-native code
 //! generation without architecture-specific or executable-memory code here.
 
+mod host_simd;
+mod portable;
+mod tables;
+pub use portable::PortableHashWx;
+
 use std::{fmt, sync::OnceLock};
 
-use wasmtime::{Engine, Extern, Instance, Memory, Module, Store, TypedFunc};
+use wasmtime::{Engine, Extern, Instance, Memory, MemoryType, Module, Store, TypedFunc};
 
 pub const SEED_SIZE: usize = 32;
 const HASHWX_WASM: &[u8] = include_bytes!("../vendor/hashwx.wasm");
@@ -86,6 +92,9 @@ pub struct HashWx {
     exec_final: TypedFunc<i32, i64>,
     free: TypedFunc<i32, ()>,
     compiled_exec: Option<TypedFunc<(i32, i32), ()>>,
+    batch_memory: Option<Memory>,
+    batch_exec: Option<TypedFunc<(i32, i32), ()>>,
+    host_key: [u64; 2],
 }
 
 impl HashWx {
@@ -157,6 +166,9 @@ impl HashWx {
             exec_final,
             free,
             compiled_exec: None,
+            batch_memory: None,
+            batch_exec: None,
+            host_key: [0; 2],
         })
     }
 
@@ -171,6 +183,10 @@ impl HashWx {
     /// Returns an error if seed memory cannot be written or the generated WebAssembly
     /// function cannot be compiled and instantiated.
     pub fn make(&mut self, seed: &[u8; SEED_SIZE]) -> Result<()> {
+        self.host_key = [
+            u64::from_le_bytes(seed[16..24].try_into().expect("8-byte HashWX key half")),
+            u64::from_le_bytes(seed[24..32].try_into().expect("8-byte HashWX key half")),
+        ];
         self.memory
             .write(&mut self.store, self.seed_ptr, seed)
             .map_err(|source| error(format!("write HashWX seed: {source}")))?;
@@ -191,6 +207,16 @@ impl HashWx {
             let instance = Instance::new(&mut self.store, &module, &[Extern::Memory(self.memory)])?;
             self.compiled_exec =
                 Some(instance.get_typed_func::<(i32, i32), ()>(&mut self.store, "exec")?);
+
+            let batch_memory = match self.batch_memory {
+                Some(memory) => memory,
+                None => Memory::new(&mut self.store, MemoryType::new(1, Some(1)))?,
+            };
+            let batch_instance =
+                Instance::new(&mut self.store, &module, &[Extern::Memory(batch_memory)])?;
+            self.batch_exec =
+                Some(batch_instance.get_typed_func::<(i32, i32), ()>(&mut self.store, "exec")?);
+            self.batch_memory = Some(batch_memory);
         }
         Ok(())
     }
@@ -200,6 +226,55 @@ impl HashWx {
     /// # Errors
     /// Returns an error if no compiled function has been generated yet or execution of
     /// the selected runtime fails.
+    /// Hash four nonces through one generated compiled function.
+    ///
+    /// Register initialization and finalization are vectorized in safe portable SIMD;
+    /// the seed-specialized HashWX VM body remains Wasmtime/Cranelift JIT code.
+    ///
+    /// # Errors
+    /// Returns an error for interpreted contexts, missing generated code, invalid
+    /// linear-memory bounds, or a Wasmtime execution failure.
+    pub fn hash4(&mut self, inputs: [u64; 4]) -> Result<[u64; 4]> {
+        if self.runtime != Runtime::Compiled {
+            return Err(error("batched HashWX requires the compiled runtime"));
+        }
+        let exec = self
+            .batch_exec
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| error("HashWX function has not been generated"))?;
+        let memory = self
+            .batch_memory
+            .ok_or_else(|| error("HashWX batch memory has not been allocated"))?;
+        let mut registers = host_simd::initialize(self.host_key, inputs);
+        const REGISTER_OFFSET: usize = 0;
+        const SCRATCH_OFFSET: i32 = 128;
+        let register_bytes = 9 * core::mem::size_of::<u64>();
+
+        for lane in &mut registers {
+            {
+                let memory = memory.data_mut(&mut self.store);
+                let destination = memory
+                    .get_mut(REGISTER_OFFSET..REGISTER_OFFSET + register_bytes)
+                    .ok_or_else(|| error("HashWX register block is outside linear memory"))?;
+                for (chunk, value) in destination.chunks_exact_mut(8).zip(lane.iter()) {
+                    chunk.copy_from_slice(&value.to_le_bytes());
+                }
+            }
+            exec.call(&mut self.store, (0, SCRATCH_OFFSET))?;
+            {
+                let memory = memory.data(&self.store);
+                let source = memory
+                    .get(REGISTER_OFFSET..REGISTER_OFFSET + 8 * core::mem::size_of::<u64>())
+                    .ok_or_else(|| error("HashWX register block is outside linear memory"))?;
+                for (value, chunk) in lane[..8].iter_mut().zip(source.chunks_exact(8)) {
+                    *value = u64::from_le_bytes(chunk.try_into().expect("8-byte HashWX register"));
+                }
+            }
+        }
+        Ok(host_simd::finalize(&registers))
+    }
+
     pub fn hash(&mut self, input: u64) -> Result<u64> {
         match self.runtime {
             Runtime::Interpreted => Ok(self
