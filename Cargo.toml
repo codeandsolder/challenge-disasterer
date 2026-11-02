@@ -21,7 +21,7 @@ cudarc = { version = "0.19.10", default-features = false, features = ["std", "dr
 hex = "0.4"
 itoa = "1"
 hashwx = { workspace = true }
-num-bigint = "0.4"
+num-bigint = "0.5"
 num_cpus = "1.17"
 pbkdf2 = "0.13"
 pow-buster = { package = "challenge-pow-core", path = "crates/pow-core", default-features = true, features = ["json"] }
