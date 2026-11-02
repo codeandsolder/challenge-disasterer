@@ -37,7 +37,7 @@ impl<
 > SingleBlockLaneIdPlucker<'_, DIGIT_WORD_IDX0_DIV_4, DIGIT_WORD_IDX0_MOD_4, DIGIT_WORD_IDX1_INC>
 {
     #[inline(always)]
-    fn fetch_msg_or(&self, idx: usize, lane: usize) -> u32 {
+    const fn fetch_msg_or(&self, idx: usize, lane: usize) -> u32 {
         if idx == DIGIT_WORD_IDX0_DIV_4 * 4 + DIGIT_WORD_IDX0_MOD_4 {
             self.lane_0_or_value[lane]
         } else if DIGIT_WORD_IDX1_INC

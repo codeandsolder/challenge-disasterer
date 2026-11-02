@@ -589,13 +589,13 @@ impl From<CerberusMessage> for CerberusSolver {
 
 impl CerberusSolver {
     /// Set the limit.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
 
     /// Get the attempted nonces.
     #[must_use]
-    pub fn attempted_nonces(&self) -> u64 {
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 }
@@ -708,8 +708,8 @@ impl crate::solver::Solver for CerberusSolver {
 
                         macro_rules! dispatch {
                             ($center_word_idx:literal) => {
-                                // SAFETY: the RequiredFeatures gate above proves AVX2 before dispatch.
                                 if position_mod < 2 {
+                                    // SAFETY: the RequiredFeatures gate above proves AVX2 before dispatch.
                                     unsafe {
                                         self.solve_decimal_impl::<$center_word_idx, { $center_word_idx - 1 }, {$center_word_idx - 1}>(
                                         msg, target, mask,

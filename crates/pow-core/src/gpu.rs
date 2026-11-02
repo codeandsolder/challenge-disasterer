@@ -1037,7 +1037,7 @@ impl SingleBlockSolver {
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -1058,7 +1058,7 @@ impl SingleBlockSolver {
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_nonce_only<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<u64>, GpuError> {
@@ -1104,7 +1104,7 @@ impl DoubleBlockSolver {
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -1172,7 +1172,7 @@ impl DoubleBlockSolver {
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_nonce_only<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<u64>, GpuError> {
@@ -1223,7 +1223,7 @@ impl DecimalSolver {
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -1268,7 +1268,7 @@ impl GoAwaySolver {
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -1321,7 +1321,7 @@ impl GoAwaySolver {
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_nonce_only<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<u64>, GpuError> {
@@ -1364,7 +1364,7 @@ impl BinarySolver {
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -1419,7 +1419,7 @@ impl BinarySolver {
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_nonce_only<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<u64>, GpuError> {
@@ -1468,7 +1468,7 @@ impl CerberusSolver {
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -1541,7 +1541,7 @@ impl CerberusSolver {
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_nonce_only<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<u64>, GpuError> {
@@ -1571,13 +1571,13 @@ impl From<crate::message::AltchaMessage> for AltchaSha256Solver {
 
 impl AltchaSha256Solver {
     /// Set the maximum number of candidates dispatched.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
 
     /// Number of candidates dispatched so far.
     #[must_use]
-    pub fn attempted_nonces(&self) -> u64 {
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
@@ -1588,7 +1588,7 @@ impl AltchaSha256Solver {
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -1643,7 +1643,7 @@ impl AltchaSha256Solver {
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_nonce_only<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<u64>, GpuError> {

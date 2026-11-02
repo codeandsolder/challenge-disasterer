@@ -308,7 +308,7 @@ pub fn solve_double_block_impl<const LANES: usize, const TYPE: u8>(
     let mut partial_state = message.prefix_state;
     crate::sha256::sha2_arx::<0>(&mut partial_state, &message.message[..13]);
 
-    let bit_length = u64::try_from(message.message_length).ok()?.checked_mul(8)?;
+    let bit_length = message.message_length.checked_mul(8)?;
     let mut terminal_message_schedule = [0; 64];
     terminal_message_schedule[14] = crate::high_u32(bit_length);
     terminal_message_schedule[15] = crate::low_u32(bit_length);
@@ -651,7 +651,7 @@ pub fn solve_single_block_impl<
 
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
-fn altcha_be_word(bytes: &[u8; 16], word: usize) -> u32 {
+const fn altcha_be_word(bytes: &[u8; 16], word: usize) -> u32 {
     let offset = word * 4;
     u32::from_be_bytes([
         bytes[offset],
