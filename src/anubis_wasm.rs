@@ -311,68 +311,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sha256_solver_matches_upstream_little_endian_nonce_rule() {
+    fn sha256_solver_matches_upstream_little_endian_nonce_rule() -> anyhow::Result<()> {
         let challenge = Challenge {
             data: "0011223344556680".to_owned(),
             difficulty: 4,
         };
-        let result = solve_sha256(&challenge, Some("safe")).unwrap();
+        let result = solve_sha256(&challenge, Some("safe"))?;
         assert!(verify_sha256(&challenge, &result.answer));
+        Ok(())
     }
 
     #[test]
-    fn sha256_solver_matches_upstream_big_endian_nonce_rule() {
+    fn sha256_solver_matches_upstream_big_endian_nonce_rule() -> anyhow::Result<()> {
         let challenge = Challenge {
             data: "001122334455667f".to_owned(),
             difficulty: 4,
         };
-        let result = solve_sha256(&challenge, Some("safe")).unwrap();
+        let result = solve_sha256(&challenge, Some("safe"))?;
         assert!(verify_sha256(&challenge, &result.answer));
+        Ok(())
     }
 
     #[test]
-    fn argon2id_solver_matches_upstream_reference() {
+    fn argon2id_solver_matches_upstream_reference() -> anyhow::Result<()> {
         let challenge = Challenge {
             data: "0011223344556677".to_owned(),
             difficulty: 1,
         };
-        let result = solve_argon2id(&challenge, None, 1).unwrap();
+        let result = solve_argon2id(&challenge, None, 1)?;
         assert!(verify_argon2id(&challenge, &result.answer));
+        Ok(())
     }
 
     #[test]
-    fn argon2id_legacy_implementation_name_remains_accepted() {
+    fn argon2id_legacy_implementation_name_remains_accepted() -> anyhow::Result<()> {
         let challenge = Challenge {
             data: "0011223344556677".to_owned(),
             difficulty: 1,
         };
-        let result = solve_argon2id(&challenge, Some("argon2-0.5.3"), 1).unwrap();
+        let result = solve_argon2id(&challenge, Some("argon2-0.5.3"), 1)?;
         assert_eq!(result.implementation, ARGON2_IMPLEMENTATION);
         assert!(verify_argon2id(&challenge, &result.answer));
+        Ok(())
     }
 
     #[test]
-    fn argon2id_reused_memory_matches_fresh_hashes() {
-        let data = hex::decode("0011223344556680").unwrap();
+    fn argon2id_reused_memory_matches_fresh_hashes() -> anyhow::Result<()> {
+        let data = hex::decode("0011223344556680")?;
         let mut memory = Argon2Memory::new();
         for nonce in [0, 1, 2, 17] {
             assert_eq!(
-                argon2id_hash_with_memory(&data, nonce, &mut memory).unwrap(),
-                argon2id_hash(&data, nonce).unwrap()
+                argon2id_hash_with_memory(&data, nonce, &mut memory)?,
+                argon2id_hash(&data, nonce)?
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn argon2id_parallel_search_preserves_lowest_nonce() {
+    fn argon2id_parallel_search_preserves_lowest_nonce() -> anyhow::Result<()> {
         let challenge = Challenge {
             data: "0011223344556677".to_owned(),
             difficulty: 3,
         };
-        let serial = solve_argon2id(&challenge, None, 1).unwrap();
-        let parallel = solve_argon2id(&challenge, None, 4).unwrap();
+        let serial = solve_argon2id(&challenge, None, 1)?;
+        let parallel = solve_argon2id(&challenge, None, 4)?;
         assert_eq!(parallel.answer.nonce, serial.answer.nonce);
         assert_eq!(parallel.answer.hash, serial.answer.hash);
         assert!(verify_argon2id(&challenge, &parallel.answer));
+        Ok(())
     }
 }

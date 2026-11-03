@@ -1597,22 +1597,25 @@ async fn solve_altcha_gpu(
 mod tests {
     use super::*;
 
-    #[test]
-    fn altcha_prefix_target_places_bytes_at_hash_front() {
-        assert_eq!(
-            prefix_target("12ab").unwrap(),
-            (0x12ab_0000_0000_0000, 0xffff_0000_0000_0000)
-        );
+    fn require_error<T>(result: anyhow::Result<T>, message: &str) -> anyhow::Result<anyhow::Error> {
+        result.err().ok_or_else(|| anyhow::anyhow!("{message}"))
     }
 
     #[test]
-    fn haphash_solver_returns_nonce_for_protocol_prefix() {
+    fn altcha_prefix_target_places_bytes_at_hash_front() -> anyhow::Result<()> {
+        let target = prefix_target("12ab").context("valid fixed ALTCHA prefix")?;
+        assert_eq!(target, (0x12ab_0000_0000_0000, 0xffff_0000_0000_0000));
+        Ok(())
+    }
+
+    #[test]
+    fn haphash_solver_returns_nonce_for_protocol_prefix() -> anyhow::Result<()> {
         let result = solve_haphash(
             json!({"prefix":"127.0.0.1;example.test;1759954402;","difficulty":1}),
             Implementation::Safe,
-        )
-        .unwrap();
+        )?;
         assert!(result.answer["nonce"].is_string());
+        Ok(())
     }
 
     #[test]
@@ -1634,28 +1637,31 @@ mod tests {
     }
 
     #[test]
-    fn haphash_zero_difficulty_is_trivial_for_accelerated_solver() {
+    fn haphash_zero_difficulty_is_trivial_for_accelerated_solver() -> anyhow::Result<()> {
         let result = solve_haphash(
             json!({"prefix":"127.0.0.1;example.test;1759954402;","difficulty":0}),
             Implementation::Auto,
-        )
-        .unwrap();
+        )?;
         assert!(result.answer["nonce"].is_string());
         assert_eq!(result.answer["attempted_nonces"], 1);
+        Ok(())
     }
 
     #[test]
-    fn haphash_rejects_unsatisfiable_difficulty_above_digest_width() {
-        let error = solve_haphash(
-            json!({"prefix":"127.0.0.1;example.test;1759954402;","difficulty":65}),
-            Implementation::Safe,
-        )
-        .expect_err("difficulty above 64 nibbles must be rejected");
+    fn haphash_rejects_unsatisfiable_difficulty_above_digest_width() -> anyhow::Result<()> {
+        let error = require_error(
+            solve_haphash(
+                json!({"prefix":"127.0.0.1;example.test;1759954402;","difficulty":65}),
+                Implementation::Safe,
+            ),
+            "difficulty above 64 nibbles must be rejected",
+        )?;
         assert!(error.to_string().contains("64-nibble SHA-256 digest width"));
+        Ok(())
     }
 
     #[test]
-    fn altcha_fast_path_declines_nonstandard_nonce_shape() {
+    fn altcha_fast_path_declines_nonstandard_nonce_shape() -> anyhow::Result<()> {
         let challenge = AltchaChallenge {
             parameters: altcha::ChallengeParameters {
                 algorithm: "SHA-256".to_owned(),
@@ -1672,15 +1678,12 @@ mod tests {
             },
             signature: None,
         };
-        assert!(
-            try_solve_altcha_fast(&challenge, Implementation::Safe)
-                .expect("fast-path eligibility check")
-                .is_none()
-        );
+        assert!(try_solve_altcha_fast(&challenge, Implementation::Safe)?.is_none());
+        Ok(())
     }
 
     #[test]
-    fn altcha_string_counter_derivation_covers_js_safe_integer_max() {
+    fn altcha_string_counter_derivation_covers_js_safe_integer_max() -> anyhow::Result<()> {
         let parameters = altcha::ChallengeParameters {
             algorithm: "SHA-256".to_owned(),
             cost: 2,
@@ -1694,20 +1697,21 @@ mod tests {
             parallelism: None,
             salt: hex::encode((16_u8..32).collect::<Vec<_>>()),
         };
-        let nonce = hex::decode(&parameters.nonce).expect("fixed nonce");
-        let salt = hex::decode(&parameters.salt).expect("fixed salt");
+        let nonce = hex::decode(&parameters.nonce)?;
+        let salt = hex::decode(&parameters.salt)?;
         let mut password = nonce;
         password.extend_from_slice(b"9007199254740991");
-        let derived = altcha_derive_key(&parameters, &salt, &password)
-            .expect("derive max-safe-integer string counter");
+        let derived = altcha_derive_key(&parameters, &salt, &password)?;
         assert_eq!(
             hex::encode(derived),
             "fb46d9456a5caf40eb17da502cdec45ac202cc4f30f50ee667bddb40904be548"
         );
+        Ok(())
     }
 
     #[test]
-    fn altcha_generic_modes_match_upstream_empty_prefix_and_case_insensitive_algorithm() {
+    fn altcha_generic_modes_match_upstream_empty_prefix_and_case_insensitive_algorithm()
+    -> anyhow::Result<()> {
         let challenge = AltchaChallenge {
             parameters: altcha::ChallengeParameters {
                 algorithm: "sha-256".to_owned(),
@@ -1728,77 +1732,91 @@ mod tests {
             (AltchaCounterMode::Uint32, "altcha-generic"),
             (AltchaCounterMode::String, "altcha-string"),
         ] {
-            let result = solve_altcha_generic(&challenge, mode).expect("generic ALTCHA solve");
+            let result = solve_altcha_generic(&challenge, mode)?;
             assert_eq!(result.answer["counter"], 0);
             assert_eq!(result.implementation, implementation);
         }
+        Ok(())
     }
 
     #[test]
-    fn altcha_reference_is_uint32_only_and_has_one_canonical_name() {
-        let error = solve(
-            "altcha",
-            json!({"parameters": {}, "counterMode": "string"}),
-            Some("reference"),
-        )
-        .expect_err("reference must not advertise partial string-counter coverage");
+    fn altcha_reference_is_uint32_only_and_has_one_canonical_name() -> anyhow::Result<()> {
+        let error = require_error(
+            solve(
+                "altcha",
+                json!({"parameters": {}, "counterMode": "string"}),
+                Some("reference"),
+            ),
+            "reference must not advertise partial string-counter coverage",
+        )?;
         assert!(error.to_string().contains("uint32 counter mode only"));
 
-        let error = solve("altcha", json!({"parameters": {}}), Some("altcha-rust"))
-            .expect_err("obsolete ALTCHA reference alias must stay rejected");
+        let error = require_error(
+            solve("altcha", json!({"parameters": {}}), Some("altcha-rust")),
+            "obsolete ALTCHA reference alias must stay rejected",
+        )?;
         assert!(
             error
                 .to_string()
                 .contains("unsupported classic implementation")
         );
+        Ok(())
     }
 
     #[test]
-    fn cerberus_and_goaway_reject_unrepresentable_difficulties() {
-        let cerberus = solve_cerberus(
-            json!({
-                "challenge": "domain-test",
-                "difficulty": 17,
-                "nonce": 1,
-                "ts": 1,
-                "signature": "domain-test",
-                "version": "0.4.9"
-            }),
-            Implementation::Safe,
-        )
-        .expect_err("current Cerberus clients only define up to 16 dubits");
+    fn cerberus_and_goaway_reject_unrepresentable_difficulties() -> anyhow::Result<()> {
+        let cerberus = require_error(
+            solve_cerberus(
+                json!({
+                    "challenge": "domain-test",
+                    "difficulty": 17,
+                    "nonce": 1,
+                    "ts": 1,
+                    "signature": "domain-test",
+                    "version": "0.4.9"
+                }),
+                Implementation::Safe,
+            ),
+            "current Cerberus clients only define up to 16 dubits",
+        )?;
         assert!(cerberus.to_string().contains("above 16 dubits"));
 
-        let goaway = solve_goaway(
-            json!({
-                "challenge": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                "difficulty": 257
-            }),
-            Implementation::Safe,
-        )
-        .expect_err("go-away support must reject unsatisfiable difficulty above 256 bits");
+        let goaway = require_error(
+            solve_goaway(
+                json!({
+                    "challenge": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    "difficulty": 257
+                }),
+                Implementation::Safe,
+            ),
+            "go-away support must reject unsatisfiable difficulty above 256 bits",
+        )?;
         assert!(goaway.to_string().contains("256-bit SHA-256 digest width"));
+        Ok(())
     }
 
     #[test]
-    fn mcaptcha_rejects_zero_difficulty_factor() {
-        let error = solve_mcaptcha(
-            json!({
-                "config": {
-                    "string": "schema-test",
-                    "difficulty_factor": 0,
-                    "salt": "schema-test-salt"
-                },
-                "key": "schema-test"
-            }),
-            Implementation::Auto,
-        )
-        .expect_err("zero mCaptcha difficulty must be rejected before target calculation");
+    fn mcaptcha_rejects_zero_difficulty_factor() -> anyhow::Result<()> {
+        let error = require_error(
+            solve_mcaptcha(
+                json!({
+                    "config": {
+                        "string": "schema-test",
+                        "difficulty_factor": 0,
+                        "salt": "schema-test-salt"
+                    },
+                    "key": "schema-test"
+                }),
+                Implementation::Auto,
+            ),
+            "zero mCaptcha difficulty must be rejected before target calculation",
+        )?;
         assert!(error.to_string().contains("must be positive"));
+        Ok(())
     }
 
     #[test]
-    fn protocol_nonce_json_types_match_wire_contracts() {
+    fn protocol_nonce_json_types_match_wire_contracts() -> anyhow::Result<()> {
         let mcaptcha = solve_mcaptcha(
             json!({
                 "config": {
@@ -1809,8 +1827,7 @@ mod tests {
                 "key": "schema-test"
             }),
             Implementation::Auto,
-        )
-        .expect("easy mCaptcha solve");
+        )?;
         assert!(mcaptcha.answer["nonce"].is_u64());
 
         let goaway = solve_goaway(
@@ -1819,8 +1836,8 @@ mod tests {
                 "difficulty": 1
             }),
             Implementation::Auto,
-        )
-        .expect("easy go-away solve");
+        )?;
         assert!(goaway.answer["nonce"].is_string());
+        Ok(())
     }
 }
