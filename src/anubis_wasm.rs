@@ -10,8 +10,8 @@ use std::{
 
 use anubis_argon2::Memory as Argon2Memory;
 use anyhow::{Context, ensure};
-use pow_buster::message::BinaryMessage;
-use pow_buster::solver::SOLVE_TYPE_MASK;
+use challenge_solvers::message::BinaryMessage;
+use challenge_solvers::solver::SOLVE_TYPE_MASK;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -195,7 +195,7 @@ pub fn solve_sha256(challenge: &Challenge, implementation: Option<&str>) -> anyh
 
 #[cfg(feature = "gpu")]
 pub async fn solve_sha256_gpu(
-    gpu: &pow_buster::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     challenge: &Challenge,
 ) -> anyhow::Result<Result> {
     challenge.validate()?;
@@ -203,7 +203,7 @@ pub async fn solve_sha256_gpu(
     let nonce_bytes = NonZeroU8::new(4).context("four-byte Anubis nonce width is nonzero")?;
     let message = BinaryMessage::new(&data, nonce_bytes)
         .context("Anubis nonce width exceeds the binary solver layout")?;
-    let mut solver = pow_buster::gpu::BinarySolver::from(message);
+    let mut solver = challenge_solvers::gpu::BinarySolver::from(message);
     solver.set_limit(SEARCH_SPACE);
 
     let started = Instant::now();

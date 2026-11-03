@@ -1,4 +1,4 @@
-//! WebGPU/native GPU solver backend for pow-buster message families.
+//! WebGPU/native GPU solver backend for challenge-solvers message families.
 //!
 //! The same Rust implementation targets native `wgpu` backends and browser WebGPU on `wasm32`.
 
@@ -133,11 +133,11 @@ struct GpuPipelines {
 impl GpuPipelines {
     fn create(device: &wgpu::Device) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("pow-buster-anubis"),
+            label: Some("challenge-solvers-anubis"),
             source: wgpu::ShaderSource::Wgsl(Cow::Owned(shader_source())),
         });
         let anubis = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("pow-buster-anubis"),
+            label: Some("challenge-solvers-anubis"),
             layout: None,
             module: &shader,
             entry_point: Some("solve"),
@@ -146,11 +146,11 @@ impl GpuPipelines {
         });
 
         let generic_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("pow-buster-sha256-single-block"),
+            label: Some("challenge-solvers-sha256-single-block"),
             source: wgpu::ShaderSource::Wgsl(Cow::Owned(generic_single_block_shader_source())),
         });
         let generic = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("pow-buster-sha256-single-block"),
+            label: Some("challenge-solvers-sha256-single-block"),
             layout: None,
             module: &generic_shader,
             entry_point: Some("solve"),
@@ -159,7 +159,7 @@ impl GpuPipelines {
         });
 
         let multi_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("pow-buster-sha256-multi-layout"),
+            label: Some("challenge-solvers-sha256-multi-layout"),
             source: wgpu::ShaderSource::Wgsl(Cow::Owned(multi_layout_shader_source())),
         });
         let create_multi = |label, mode| {
@@ -176,16 +176,16 @@ impl GpuPipelines {
                 cache: None,
             })
         };
-        let double = create_multi("pow-buster-sha256-double-block", 1.0);
-        let goaway = create_multi("pow-buster-sha256-goaway", 2.0);
-        let binary = create_multi("pow-buster-sha256-binary", 3.0);
+        let double = create_multi("challenge-solvers-sha256-double-block", 1.0);
+        let goaway = create_multi("challenge-solvers-sha256-goaway", 2.0);
+        let binary = create_multi("challenge-solvers-sha256-binary", 3.0);
 
         let cerberus_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("pow-buster-cerberus"),
+            label: Some("challenge-solvers-cerberus"),
             source: wgpu::ShaderSource::Wgsl(Cow::Owned(cerberus_shader_source())),
         });
         let cerberus = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("pow-buster-cerberus"),
+            label: Some("challenge-solvers-cerberus"),
             layout: None,
             module: &cerberus_shader,
             entry_point: Some("solve"),
@@ -194,11 +194,11 @@ impl GpuPipelines {
         });
 
         let altcha_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("pow-buster-altcha"),
+            label: Some("challenge-solvers-altcha"),
             source: wgpu::ShaderSource::Wgsl(Cow::Owned(altcha_shader_source())),
         });
         let altcha = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("pow-buster-altcha"),
+            label: Some("challenge-solvers-altcha"),
             layout: None,
             module: &altcha_shader,
             entry_point: Some("solve"),
@@ -228,19 +228,19 @@ struct GpuBuffers {
 impl GpuBuffers {
     fn create(device: &wgpu::Device) -> Self {
         let anubis_input = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pow-buster-anubis-input"),
+            label: Some("challenge-solvers-anubis-input"),
             size: 64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let generic_input = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pow-buster-sha256-single-block-input"),
+            label: Some("challenge-solvers-sha256-single-block-input"),
             size: 256,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let output = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pow-buster-anubis-output"),
+            label: Some("challenge-solvers-anubis-output"),
             size: 48,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_SRC
@@ -248,7 +248,7 @@ impl GpuBuffers {
             mapped_at_creation: false,
         });
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pow-buster-anubis-staging"),
+            label: Some("challenge-solvers-anubis-staging"),
             size: 48,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -293,37 +293,37 @@ impl GpuBindings {
             };
         Self {
             anubis: create(
-                "pow-buster-anubis",
+                "challenge-solvers-anubis",
                 &pipelines.anubis,
                 &buffers.anubis_input,
             ),
             generic: create(
-                "pow-buster-sha256-single-block",
+                "challenge-solvers-sha256-single-block",
                 &pipelines.generic,
                 &buffers.generic_input,
             ),
             double: create(
-                "pow-buster-sha256-double-block",
+                "challenge-solvers-sha256-double-block",
                 &pipelines.double,
                 &buffers.generic_input,
             ),
             goaway: create(
-                "pow-buster-sha256-goaway",
+                "challenge-solvers-sha256-goaway",
                 &pipelines.goaway,
                 &buffers.generic_input,
             ),
             binary: create(
-                "pow-buster-sha256-binary",
+                "challenge-solvers-sha256-binary",
                 &pipelines.binary,
                 &buffers.generic_input,
             ),
             cerberus: create(
-                "pow-buster-cerberus",
+                "challenge-solvers-cerberus",
                 &pipelines.cerberus,
                 &buffers.generic_input,
             ),
             altcha: create(
-                "pow-buster-altcha",
+                "challenge-solvers-altcha",
                 &pipelines.altcha,
                 &buffers.generic_input,
             ),
@@ -464,11 +464,11 @@ impl GpuContext {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("pow-buster-anubis-warmup"),
+                label: Some("challenge-solvers-anubis-warmup"),
             });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("pow-buster-anubis-warmup"),
+                label: Some("challenge-solvers-anubis-warmup"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline);
@@ -477,32 +477,32 @@ impl GpuContext {
         }
         for (label, pipeline, bind_group) in [
             (
-                "pow-buster-sha256-single-block-warmup",
+                "challenge-solvers-sha256-single-block-warmup",
                 &self.generic_pipeline,
                 &self.generic_bind_group,
             ),
             (
-                "pow-buster-sha256-double-block-warmup",
+                "challenge-solvers-sha256-double-block-warmup",
                 &self.double_pipeline,
                 &self.double_bind_group,
             ),
             (
-                "pow-buster-sha256-goaway-warmup",
+                "challenge-solvers-sha256-goaway-warmup",
                 &self.goaway_pipeline,
                 &self.goaway_bind_group,
             ),
             (
-                "pow-buster-sha256-binary-warmup",
+                "challenge-solvers-sha256-binary-warmup",
                 &self.binary_pipeline,
                 &self.binary_bind_group,
             ),
             (
-                "pow-buster-cerberus-warmup",
+                "challenge-solvers-cerberus-warmup",
                 &self.cerberus_pipeline,
                 &self.cerberus_bind_group,
             ),
             (
-                "pow-buster-altcha-warmup",
+                "challenge-solvers-altcha-warmup",
                 &self.altcha_pipeline,
                 &self.altcha_bind_group,
             ),
@@ -597,11 +597,11 @@ impl GpuContext {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("pow-buster-anubis-solve"),
+                    label: Some("challenge-solvers-anubis-solve"),
                 });
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("pow-buster-anubis-solve"),
+                    label: Some("challenge-solvers-anubis-solve"),
                     timestamp_writes: None,
                 });
                 pass.set_pipeline(&self.pipeline);
@@ -635,14 +635,14 @@ impl GpuContext {
     }
 
     /// Solve a parsed Anubis challenge descriptor.
-    #[cfg(feature = "adapter")]
+    #[cfg(feature = "anubis")]
     ///
     /// # Errors
     ///
     /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_anubis_descriptor(
         &self,
-        descriptor: &crate::adapter::anubis::ChallengeDescriptor,
+        descriptor: &crate::anubis::ChallengeDescriptor,
     ) -> Result<GpuSolution, GpuError> {
         if descriptor.rules().algorithm() == "preact" {
             return Err(GpuError::new(
@@ -726,11 +726,11 @@ impl GpuContext {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("pow-buster-sha256-fast-single-block"),
+                    label: Some("challenge-solvers-sha256-fast-single-block"),
                 });
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("pow-buster-sha256-fast-single-block"),
+                    label: Some("challenge-solvers-sha256-fast-single-block"),
                     timestamp_writes: None,
                 });
                 pass.set_pipeline(&self.pipeline);
@@ -815,11 +815,11 @@ impl GpuContext {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("pow-buster-sha256-generic-single-block"),
+                    label: Some("challenge-solvers-sha256-generic-single-block"),
                 });
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("pow-buster-sha256-generic-single-block"),
+                    label: Some("challenge-solvers-sha256-generic-single-block"),
                     timestamp_writes: None,
                 });
                 pass.set_pipeline(&self.generic_pipeline);
@@ -861,17 +861,17 @@ impl GpuContext {
             .write_buffer(&self.generic_in_buf, 0, bytemuck::cast_slice(params));
         let (label, pipeline, bind_group) = match params[0] {
             1 => (
-                "pow-buster-sha256-double-block",
+                "challenge-solvers-sha256-double-block",
                 &self.double_pipeline,
                 &self.double_bind_group,
             ),
             2 => (
-                "pow-buster-sha256-goaway",
+                "challenge-solvers-sha256-goaway",
                 &self.goaway_pipeline,
                 &self.goaway_bind_group,
             ),
             3 => (
-                "pow-buster-sha256-binary",
+                "challenge-solvers-sha256-binary",
                 &self.binary_pipeline,
                 &self.binary_bind_group,
             ),
@@ -917,11 +917,11 @@ impl GpuContext {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("pow-buster-cerberus"),
+                label: Some("challenge-solvers-cerberus"),
             });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("pow-buster-cerberus"),
+                label: Some("challenge-solvers-cerberus"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.cerberus_pipeline);
@@ -952,11 +952,11 @@ impl GpuContext {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("pow-buster-altcha"),
+                label: Some("challenge-solvers-altcha"),
             });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("pow-buster-altcha"),
+                label: Some("challenge-solvers-altcha"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.altcha_pipeline);

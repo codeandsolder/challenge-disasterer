@@ -11,21 +11,19 @@ use anyhow::{Context, anyhow, bail, ensure};
 use argon2::{
     Algorithm as Argon2Algorithm, Argon2, Params as Argon2Params, Version as Argon2Version,
 };
-use hashwx::HashWx;
-use num_bigint::BigUint;
-use pbkdf2::pbkdf2_hmac;
-use pow_buster::{
-    AltchaSha256Solver, DecimalSolver,
-    adapter::{
-        capjs::ChallengeDescriptor as CapJsChallenge,
-        cerberus::ChallengeDescriptor as CerberusChallenge, goaway::GoAwayConfig,
-        mcaptcha::PoWConfig,
-    },
-    build_mcaptcha_prefix, compute_mask_goaway, compute_mask_zero_nibbles, compute_target_mcaptcha,
-    extract128_be,
+use challenge_solvers::{
+    AltchaSha256Solver, DecimalSolver, build_mcaptcha_prefix,
+    capjs::ChallengeDescriptor as CapJsChallenge,
+    cerberus::ChallengeDescriptor as CerberusChallenge,
+    compute_mask_goaway, compute_mask_zero_nibbles, compute_target_mcaptcha, extract128_be,
+    goaway::GoAwayConfig,
+    mcaptcha::PoWConfig,
     message::{AltchaMessage, CapJSEmitter, CerberusMessage, DecimalMessage, GoAwayMessage},
     solver::{SOLVE_TYPE_GT, SOLVE_TYPE_LEADING_ZERO_BITS, SOLVE_TYPE_MASK, Solver, SolverDyn},
 };
+use hashwx::HashWx;
+use num_bigint::BigUint;
+use pbkdf2::pbkdf2_hmac;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256, Sha384, Sha512};
@@ -195,21 +193,21 @@ fn decimal_solver(
     require_x86_feature(implementation)?;
     match implementation {
         Implementation::Auto => Ok(Box::new(DecimalSolver::from(message))),
-        Implementation::Safe => Ok(Box::new(pow_buster::solver::safe::DecimalSolver::from(
-            message,
-        ))),
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        Implementation::Avx2 => Ok(Box::new(pow_buster::solver::avx2::DecimalSolver::from(
-            message,
-        ))),
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        Implementation::ShaNi => Ok(Box::new(pow_buster::solver::sha_ni::DecimalSolver::from(
-            message,
-        ))),
+        Implementation::Safe => Ok(Box::new(
+            challenge_solvers::solver::safe::DecimalSolver::from(message),
+        )),
         #[cfg(target_arch = "x86_64")]
-        Implementation::Avx512 => Ok(Box::new(pow_buster::solver::avx512::DecimalSolver::from(
-            message,
-        ))),
+        Implementation::Avx2 => Ok(Box::new(
+            challenge_solvers::solver::x86::Avx2DecimalSolver::from(message),
+        )),
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        Implementation::ShaNi => Ok(Box::new(
+            challenge_solvers::solver::sha_ni::DecimalSolver::from(message),
+        )),
+        #[cfg(target_arch = "x86_64")]
+        Implementation::Avx512 => Ok(Box::new(
+            challenge_solvers::solver::x86::Avx512DecimalSolver::from(message),
+        )),
         #[cfg_attr(
             target_arch = "x86_64",
             expect(
@@ -223,7 +221,7 @@ fn decimal_solver(
 
 pub fn binary_solver(
     implementation: Implementation,
-    message: pow_buster::message::BinaryMessage,
+    message: challenge_solvers::message::BinaryMessage,
 ) -> anyhow::Result<Box<dyn DynPow>> {
     ensure!(
         !matches!(implementation, Implementation::ShaNi),
@@ -231,18 +229,18 @@ pub fn binary_solver(
     );
     require_x86_feature(implementation)?;
     match implementation {
-        Implementation::Auto => Ok(Box::new(pow_buster::BinarySolver::from(message))),
-        Implementation::Safe => Ok(Box::new(pow_buster::solver::safe::BinarySolver::from(
-            message,
-        ))),
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        Implementation::Avx2 => Ok(Box::new(pow_buster::solver::avx2::BinarySolver::from(
-            message,
-        ))),
+        Implementation::Auto => Ok(Box::new(challenge_solvers::BinarySolver::from(message))),
+        Implementation::Safe => Ok(Box::new(
+            challenge_solvers::solver::safe::BinarySolver::from(message),
+        )),
         #[cfg(target_arch = "x86_64")]
-        Implementation::Avx512 => Ok(Box::new(pow_buster::solver::avx512::BinarySolver::from(
-            message,
-        ))),
+        Implementation::Avx2 => Ok(Box::new(
+            challenge_solvers::solver::x86::Avx2BinarySolver::from(message),
+        )),
+        #[cfg(target_arch = "x86_64")]
+        Implementation::Avx512 => Ok(Box::new(
+            challenge_solvers::solver::x86::Avx512BinarySolver::from(message),
+        )),
         _ => bail!("implementation unavailable for binary SHA-256"),
     }
 }
@@ -253,22 +251,22 @@ fn goaway_solver(
 ) -> anyhow::Result<Box<dyn DynPow>> {
     require_x86_feature(implementation)?;
     match implementation {
-        Implementation::Auto => Ok(Box::new(pow_buster::GoAwaySolver::from(message))),
-        Implementation::Safe => Ok(Box::new(pow_buster::solver::safe::GoAwaySolver::from(
-            message,
-        ))),
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        Implementation::Avx2 => Ok(Box::new(pow_buster::solver::avx2::GoAwaySolver::from(
-            message,
-        ))),
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        Implementation::ShaNi => Ok(Box::new(pow_buster::solver::sha_ni::GoAwaySolver::from(
-            message,
-        ))),
+        Implementation::Auto => Ok(Box::new(challenge_solvers::GoAwaySolver::from(message))),
+        Implementation::Safe => Ok(Box::new(
+            challenge_solvers::solver::safe::GoAwaySolver::from(message),
+        )),
         #[cfg(target_arch = "x86_64")]
-        Implementation::Avx512 => Ok(Box::new(pow_buster::solver::avx512::GoAwaySolver::from(
-            message,
-        ))),
+        Implementation::Avx2 => Ok(Box::new(
+            challenge_solvers::solver::x86::Avx2GoAwaySolver::from(message),
+        )),
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        Implementation::ShaNi => Ok(Box::new(
+            challenge_solvers::solver::sha_ni::GoAwaySolver::from(message),
+        )),
+        #[cfg(target_arch = "x86_64")]
+        Implementation::Avx512 => Ok(Box::new(
+            challenge_solvers::solver::x86::Avx512GoAwaySolver::from(message),
+        )),
         #[cfg_attr(
             target_arch = "x86_64",
             expect(
@@ -290,18 +288,18 @@ fn cerberus_solver(
     );
     require_x86_feature(implementation)?;
     match implementation {
-        Implementation::Auto => Ok(Box::new(pow_buster::CerberusSolver::from(message))),
-        Implementation::Safe => Ok(Box::new(pow_buster::solver::safe::CerberusSolver::from(
-            message,
-        ))),
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        Implementation::Avx2 => Ok(Box::new(pow_buster::solver::avx2::CerberusSolver::from(
-            message,
-        ))),
+        Implementation::Auto => Ok(Box::new(challenge_solvers::CerberusSolver::from(message))),
+        Implementation::Safe => Ok(Box::new(
+            challenge_solvers::solver::safe::CerberusSolver::from(message),
+        )),
         #[cfg(target_arch = "x86_64")]
-        Implementation::Avx512 => Ok(Box::new(pow_buster::solver::avx512::CerberusSolver::from(
-            message,
-        ))),
+        Implementation::Avx2 => Ok(Box::new(
+            challenge_solvers::solver::x86::Avx2CerberusSolver::from(message),
+        )),
+        #[cfg(target_arch = "x86_64")]
+        Implementation::Avx512 => Ok(Box::new(
+            challenge_solvers::solver::x86::Avx512CerberusSolver::from(message),
+        )),
         _ => bail!("implementation unavailable for Cerberus"),
     }
 }
@@ -318,15 +316,15 @@ fn altcha_solver(
     match implementation {
         Implementation::Auto => Ok(Box::new(AltchaSha256Solver::from(message))),
         Implementation::Safe => Ok(Box::new(
-            pow_buster::solver::safe::AltchaSha256Solver::from(message),
+            challenge_solvers::solver::safe::AltchaSha256Solver::from(message),
         )),
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(target_arch = "x86_64")]
         Implementation::Avx2 => Ok(Box::new(
-            pow_buster::solver::avx2::AltchaSha256Solver::from(message),
+            challenge_solvers::solver::x86::Avx2AltchaSha256Solver::from(message),
         )),
         #[cfg(target_arch = "x86_64")]
         Implementation::Avx512 => Ok(Box::new(
-            pow_buster::solver::avx512::AltchaSha256Solver::from(message),
+            challenge_solvers::solver::x86::Avx512AltchaSha256Solver::from(message),
         )),
         _ => bail!("implementation unavailable for ALTCHA"),
     }
@@ -474,7 +472,7 @@ fn solve_cap_decimal_cpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_cap_decimal_gpu(
-    gpu: &pow_buster::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     prefix: &[u8],
     target: u64,
     mask: u64,
@@ -484,7 +482,7 @@ async fn solve_cap_decimal_gpu(
         let Some((message, fixup)) = DecimalMessage::new_f64(prefix, bank) else {
             break;
         };
-        let mut solver = pow_buster::gpu::DecimalSolver::from(message);
+        let mut solver = challenge_solvers::gpu::DecimalSolver::from(message);
         solver.set_limit(u64::MAX);
         let result = solver.solve::<SOLVE_TYPE_MASK>(gpu, target, mask).await?;
         attempted = attempted.saturating_add(solver.attempted_nonces());
@@ -1239,7 +1237,7 @@ fn encode_words_be(words: [u32; 8]) -> String {
 
 #[cfg(feature = "gpu")]
 pub async fn solve_gpu(
-    gpu: &pow_buster::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     kind: &str,
     challenge: Value,
 ) -> anyhow::Result<Result> {
@@ -1256,7 +1254,7 @@ pub async fn solve_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_cerberus_gpu(
-    gpu: &pow_buster::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let descriptor: CerberusChallenge =
@@ -1272,7 +1270,7 @@ async fn solve_cerberus_gpu(
         let Some(message) = descriptor.build_msg(bank) else {
             break;
         };
-        let mut solver = pow_buster::gpu::CerberusSolver::from(message);
+        let mut solver = challenge_solvers::gpu::CerberusSolver::from(message);
         solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
         solution = solver
             .solve::<SOLVE_TYPE_MASK>(gpu, 0, descriptor.mask())
@@ -1297,7 +1295,7 @@ async fn solve_cerberus_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_goaway_gpu(
-    gpu: &pow_buster::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let config: GoAwayConfig =
@@ -1323,7 +1321,7 @@ async fn solve_goaway_gpu(
     let mut solution = None;
     for high_word in 0_u32.. {
         message.set_high_word(high_word);
-        let mut solver = pow_buster::gpu::GoAwaySolver::from(message.clone());
+        let mut solver = challenge_solvers::gpu::GoAwaySolver::from(message.clone());
         solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
         solution = if let Some(mask) = accelerated_mask {
             solver.solve::<SOLVE_TYPE_MASK>(gpu, 0, mask).await?
@@ -1349,7 +1347,7 @@ async fn solve_goaway_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_capjs_v2_gpu(
-    gpu: &pow_buster::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let envelope: CapV2Envelope =
@@ -1411,7 +1409,7 @@ async fn solve_capjs_v2_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_capjs_gpu(
-    gpu: &pow_buster::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     if challenge.get("format").and_then(Value::as_u64) == Some(2) {
@@ -1462,7 +1460,7 @@ async fn solve_capjs_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_haphash_gpu(
-    gpu: &pow_buster::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let challenge: HaphashChallenge =
@@ -1487,7 +1485,7 @@ async fn solve_haphash_gpu(
         let Some(message) = DecimalMessage::new(prefix, bank) else {
             break;
         };
-        let mut solver = pow_buster::gpu::DecimalSolver::from(message);
+        let mut solver = challenge_solvers::gpu::DecimalSolver::from(message);
         solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
         let result = if let Some(mask) = fast_mask {
             solver.solve::<SOLVE_TYPE_MASK>(gpu, 0, mask).await?
@@ -1516,7 +1514,7 @@ async fn solve_haphash_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_mcaptcha_gpu(
-    gpu: &pow_buster::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let request: McaptchaRequest =
@@ -1533,7 +1531,7 @@ async fn solve_mcaptcha_gpu(
         let Some(message) = DecimalMessage::new(&prefix, bank) else {
             break;
         };
-        let mut solver = pow_buster::gpu::DecimalSolver::from(message);
+        let mut solver = challenge_solvers::gpu::DecimalSolver::from(message);
         solver.set_limit(DEFAULT_LIMIT.saturating_sub(attempted_nonces));
         let result = solver.solve::<SOLVE_TYPE_GT>(gpu, target, u64::MAX).await?;
         attempted_nonces = attempted_nonces.saturating_add(solver.attempted_nonces());
@@ -1560,7 +1558,7 @@ async fn solve_mcaptcha_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_altcha_gpu(
-    gpu: &pow_buster::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     ensure!(
@@ -1571,7 +1569,7 @@ async fn solve_altcha_gpu(
         serde_json::from_value(challenge).context("invalid ALTCHA v2 challenge")?;
     let (message, target, mask, key_length) = altcha_fast_case(&challenge)
         .context("ALTCHA challenge shape is unsupported by the WGPU fast path")?;
-    let mut solver = pow_buster::gpu::AltchaSha256Solver::from(message);
+    let mut solver = challenge_solvers::gpu::AltchaSha256Solver::from(message);
     solver.set_limit(u64::from(u32::MAX) + 1);
     let started = Instant::now();
     let solution = solver
@@ -1621,19 +1619,19 @@ mod tests {
     #[test]
     fn haphash_full_digest_predicate_covers_zero_through_64_nibbles() {
         let zero = [0_u32; 8];
-        assert!(pow_buster::hash_has_leading_zero_bits(&zero, 0));
-        assert!(pow_buster::hash_has_leading_zero_bits(&zero, 256));
+        assert!(challenge_solvers::hash_has_leading_zero_bits(&zero, 0));
+        assert!(challenge_solvers::hash_has_leading_zero_bits(&zero, 256));
 
         let mut digest = [0_u32; 8];
         digest[2] = 0x0fff_ffff;
-        assert!(pow_buster::hash_has_leading_zero_bits(&digest, 68));
-        assert!(!pow_buster::hash_has_leading_zero_bits(&digest, 69));
+        assert!(challenge_solvers::hash_has_leading_zero_bits(&digest, 68));
+        assert!(!challenge_solvers::hash_has_leading_zero_bits(&digest, 69));
 
         digest.fill(0);
         digest[7] = 1;
-        assert!(pow_buster::hash_has_leading_zero_bits(&digest, 255));
-        assert!(!pow_buster::hash_has_leading_zero_bits(&digest, 256));
-        assert!(!pow_buster::hash_has_leading_zero_bits(&zero, 257));
+        assert!(challenge_solvers::hash_has_leading_zero_bits(&digest, 255));
+        assert!(!challenge_solvers::hash_has_leading_zero_bits(&digest, 256));
+        assert!(!challenge_solvers::hash_has_leading_zero_bits(&zero, 257));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 mod wasm_bench {
     use std::time::Instant;
 
-    use pow_core::{
+    use challenge_solvers::{
         message::{
             CerberusBinaryMessage, CerberusDecimalMessage, CerberusMessage, DecimalMessage,
             DoubleBlockMessage, GoAwayMessage, SingleBlockMessage,

@@ -63,15 +63,22 @@ macro_rules! impl_decimal_solver {
     };
 }
 
-/// AVX-512 solver
+/// Unified x86-64 solver facade.
 #[cfg(feature = "portable-simd")]
 #[cfg(target_arch = "x86_64")]
-pub mod avx512;
+pub mod x86;
 
-/// AVX2 solver
+/// Shared stateful wrappers for portable wide-SIMD x86 backends.
 #[cfg(feature = "portable-simd")]
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-pub mod avx2;
+#[cfg(target_arch = "x86_64")]
+#[doc(hidden)]
+pub mod wide_backend;
+
+/// Audited x86 target-feature entry points for the portable wide-SIMD kernels.
+#[cfg(feature = "portable-simd")]
+#[cfg(target_arch = "x86_64")]
+#[doc(hidden)]
+pub mod wide_backend_arch;
 
 #[cfg(feature = "portable-simd")]
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
@@ -87,6 +94,14 @@ pub mod simd128;
 #[cfg(feature = "portable-simd")]
 #[cfg(any(target_arch = "x86_64", target_arch = "wasm32"))]
 pub(crate) mod wide;
+
+#[cfg(all(
+    feature = "portable-simd",
+    feature = "internals",
+    target_arch = "x86_64"
+))]
+#[doc(hidden)]
+pub mod width_bench;
 
 /// Safe solver
 pub mod safe;
