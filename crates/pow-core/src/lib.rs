@@ -1,4 +1,4 @@
-#![feature(portable_simd)]
+#![cfg_attr(feature = "portable-simd", feature(portable_simd))]
 #![cfg_attr(feature = "gpu", recursion_limit = "256")]
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 #![doc = "Internal protocol `PoW` solver core for challenge-disasterer."]
@@ -17,6 +17,7 @@ use serde_json as _;
 /// GPU solver backend using native `wgpu` or browser WebGPU.
 pub mod gpu;
 
+#[cfg(feature = "portable-simd")]
 #[cfg(any(target_arch = "x86_64", target_arch = "x86", target_arch = "wasm32"))]
 cfg_if::cfg_if! {
     if #[cfg(feature = "internals")] {
@@ -56,6 +57,7 @@ pub(crate) const fn high_u32(value: u64) -> u32 {
     u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]])
 }
 
+#[cfg(feature = "portable-simd")]
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[expect(
     clippy::inline_always,
@@ -66,6 +68,7 @@ pub(crate) const fn read_be_word_byte(words: &[u32; 16], byte_index: usize) -> u
     words[byte_index / 4].to_be_bytes()[byte_index % 4]
 }
 
+#[cfg(feature = "portable-simd")]
 #[expect(
     clippy::inline_always,
     reason = "byte insertion is an inner-loop primitive in solver kernels"
@@ -99,6 +102,32 @@ pub(crate) fn write_le_word_byte(words: &mut [u32; 16], byte_index: usize, byte:
     *word = (*word & !mask) | (u32::from(byte) << shift);
 }
 
+#[cfg(not(feature = "portable-simd"))]
+/// Scalar SHA-256 solver for ALTCHA-compatible challenges.
+pub type AltchaSha256Solver = crate::solver::safe::AltchaSha256Solver;
+#[cfg(not(feature = "portable-simd"))]
+/// Scalar single-block SHA-256 solver.
+pub type SingleBlockSolver = crate::solver::safe::SingleBlockSolver;
+#[cfg(not(feature = "portable-simd"))]
+/// Scalar double-block SHA-256 solver.
+pub type DoubleBlockSolver = crate::solver::safe::DoubleBlockSolver;
+#[cfg(not(feature = "portable-simd"))]
+/// Scalar decimal-nonce SHA-256 solver.
+pub type DecimalSolver = crate::solver::safe::DecimalSolver;
+#[cfg(not(feature = "portable-simd"))]
+/// Scalar binary-nonce SHA-256 solver.
+pub type BinarySolver = crate::solver::safe::BinarySolver;
+#[cfg(not(feature = "portable-simd"))]
+/// Scalar `GoAway` SHA-256 solver.
+pub type GoAwaySolver = crate::solver::safe::GoAwaySolver;
+#[cfg(not(feature = "portable-simd"))]
+/// Scalar Cerberus solver.
+pub type CerberusSolver = crate::solver::safe::CerberusSolver;
+#[cfg(not(feature = "portable-simd"))]
+/// Active solver backend name.
+pub const SOLVER_NAME: &str = "Fallback";
+
+#[cfg(feature = "portable-simd")]
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 cfg_if::cfg_if! {
     if #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))] {
@@ -120,6 +149,7 @@ cfg_if::cfg_if! {
     }
 }
 
+#[cfg(feature = "portable-simd")]
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 cfg_if::cfg_if! {
     if #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))] {
@@ -335,6 +365,7 @@ cfg_if::cfg_if! {
     }
 }
 
+#[cfg(feature = "portable-simd")]
 #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "wasm32")] {
@@ -416,6 +447,115 @@ pub const fn compute_mask_zero_nibbles(difficulty_factor: NonZeroU8) -> u64 {
     } else {
         !(!0u64 >> bits)
     }
+}
+
+/// Error returned when a decimal SHA-256 leading-zero request is outside the optimized domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecimalSha256Error {
+    /// The optimized leading-zero-nibble solver supports at most 16 nibbles.
+    DifficultyAbove16(u8),
+}
+
+impl core::fmt::Display for DecimalSha256Error {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::DifficultyAbove16(difficulty) => write!(
+                formatter,
+                "decimal SHA-256 difficulty {difficulty} exceeds the supported 16 leading nibbles"
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for DecimalSha256Error {}
+
+/// One decimal-nonce SHA-256 solution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecimalSha256Solution {
+    /// Decimal nonce appended to the prefix.
+    pub nonce: u64,
+    /// SHA-256 digest as eight big-endian words, matching the solver representation.
+    pub digest: [u32; 8],
+}
+
+/// Bounded search result and exact amount of work performed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecimalSha256Search {
+    /// First solution found within the search budget, if any.
+    pub solution: Option<DecimalSha256Solution>,
+    /// Exact number of candidate nonces hashed.
+    pub attempted: u64,
+}
+
+/// Solve `SHA-256(prefix || ASCII_DECIMAL(nonce))` for leading zero nibbles.
+///
+/// `limit` bounds the number of candidate nonces attempted across all search banks.
+/// The returned counter is the exact number of candidates attempted.
+///
+/// # Errors
+///
+/// Returns [`DecimalSha256Error::DifficultyAbove16`] when `difficulty` exceeds the
+/// optimized solver's 64-bit comparison domain.
+pub fn solve_decimal_sha256_zero_nibbles(
+    prefix: &[u8],
+    difficulty: u8,
+    limit: u64,
+) -> Result<DecimalSha256Search, DecimalSha256Error> {
+    use crate::{
+        message::DecimalMessage,
+        solver::{SOLVE_TYPE_MASK, Solver},
+    };
+    use sha2::Digest as _;
+
+    if difficulty > 16 {
+        return Err(DecimalSha256Error::DifficultyAbove16(difficulty));
+    }
+    let Some(difficulty) = NonZeroU8::new(difficulty) else {
+        if limit == 0 {
+            return Ok(DecimalSha256Search {
+                solution: None,
+                attempted: 0,
+            });
+        }
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(prefix);
+        hasher.update(b"0");
+        let digest: [u8; 32] = hasher.finalize().into();
+        let chunks = digest.as_chunks::<4>().0;
+        let digest_words = core::array::from_fn(|index| u32::from_be_bytes(chunks[index]));
+        return Ok(DecimalSha256Search {
+            solution: Some(DecimalSha256Solution {
+                nonce: 0,
+                digest: digest_words,
+            }),
+            attempted: 1,
+        });
+    };
+    let mask = compute_mask_zero_nibbles(difficulty);
+    let mut result = None;
+    let mut attempted_nonces = 0;
+    let mut remaining_limit = limit;
+
+    for search_bank in 0.. {
+        let Some(message) = DecimalMessage::new(prefix, search_bank) else {
+            break;
+        };
+        let mut solver = DecimalSolver::from(message);
+        solver.set_limit(remaining_limit);
+        result = solver.solve::<{ SOLVE_TYPE_MASK }>(0, mask);
+        let attempted = solver.attempted_nonces();
+        attempted_nonces += attempted;
+        remaining_limit = remaining_limit.saturating_sub(attempted);
+        if result.is_some() || remaining_limit == 0 {
+            break;
+        }
+    }
+
+    Ok(DecimalSha256Search {
+        solution: result.map(|(nonce, digest)| DecimalSha256Solution { nonce, digest }),
+        attempted: attempted_nonces,
+    })
 }
 
 /// Test the full SHA-256 digest against go-away's leading-zero-bit rule.
@@ -579,6 +719,48 @@ mod tests {
             0xfffu64.reverse_bits(),
         );
         assert_eq!(compute_mask_zero_nibbles(nonzero(16)?), u64::MAX,);
+        Ok(())
+    }
+
+    #[test]
+    fn decimal_sha256_zero_nibbles_is_bounded_and_verifiable() -> anyhow::Result<()> {
+        use sha2::Digest;
+        use std::io::Write as _;
+
+        let prefix = b"stable-scalar-boundary";
+        let search = solve_decimal_sha256_zero_nibbles(prefix, 1, 4096)?;
+        let solution = search.solution.ok_or_else(|| {
+            anyhow::anyhow!("difficulty-1 solve unexpectedly exhausted its limit")
+        })?;
+        let nonce = solution.nonce;
+        let digest_words = solution.digest;
+        let attempted = search.attempted;
+        assert!(attempted <= 4096);
+
+        let mut message = prefix.to_vec();
+        write!(message, "{nonce}")?;
+        let expected: [u8; 32] = sha2::Sha256::digest(&message).into();
+        let mut actual = [0_u8; 32];
+        for (chunk, word) in actual.as_chunks_mut::<4>().0.iter_mut().zip(digest_words) {
+            chunk.copy_from_slice(&word.to_be_bytes());
+        }
+        assert_eq!(actual, expected);
+        assert_eq!(actual[0] >> 4, 0);
+
+        let zero = solve_decimal_sha256_zero_nibbles(prefix, 0, 1)?;
+        let zero_solution = zero
+            .solution
+            .ok_or_else(|| anyhow::anyhow!("difficulty-0 solve unexpectedly failed"))?;
+        assert_eq!(zero_solution.nonce, 0);
+        assert_eq!(zero.attempted, 1);
+
+        let empty_budget = solve_decimal_sha256_zero_nibbles(prefix, 16, 0)?;
+        assert!(empty_budget.solution.is_none());
+        assert_eq!(empty_budget.attempted, 0);
+        assert_eq!(
+            solve_decimal_sha256_zero_nibbles(prefix, 17, 1),
+            Err(DecimalSha256Error::DifficultyAbove16(17))
+        );
         Ok(())
     }
 

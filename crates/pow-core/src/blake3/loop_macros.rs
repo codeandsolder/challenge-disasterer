@@ -10,6 +10,7 @@ macro_rules! repeat7 {
         { let $i = 6; $b; }
     };
 }
+#[cfg(feature = "portable-simd")]
 #[rustfmt::skip]
 macro_rules! repeat8 {
     ($i:ident, $b:block) => {
