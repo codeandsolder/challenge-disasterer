@@ -841,9 +841,10 @@ mod tests {
 
     use super::*;
     #[test]
-    fn test_single_block_attempt_accounting() {
+    fn test_single_block_attempt_accounting() -> anyhow::Result<()> {
         for limit in [1, 8, 9, 17] {
-            let message = SingleBlockMessage::new(&[b'a'; 64], 0).expect("single block");
+            let message = SingleBlockMessage::new(&[b'a'; 64], 0)
+                .ok_or_else(|| anyhow::anyhow!("single-block fixture is invalid"))?;
             let mut solver = SingleBlockSolver::from(message);
             solver.set_limit(limit);
             assert!(
@@ -853,10 +854,11 @@ mod tests {
             );
             assert_eq!(solver.attempted_nonces(), limit);
         }
+        Ok(())
     }
 
     #[test]
-    fn test_vector_tail_attempt_limits() {
+    fn test_vector_tail_attempt_limits() -> anyhow::Result<()> {
         fn check<S: crate::solver::Solver<Output = [u32; 8]>>(mut solver: S) {
             solver.set_limit(1);
             assert!(
@@ -876,55 +878,67 @@ mod tests {
         }
 
         let salt = [b'a'; 32];
+        let nonce_width =
+            NonZeroU8::new(4).ok_or_else(|| anyhow::anyhow!("nonce width is nonzero"))?;
         check(BinarySolver::from(
-            BinaryMessage::new(&salt, 4.try_into().unwrap()).expect("four-byte test nonce width"),
+            BinaryMessage::new(&salt, nonce_width)
+                .ok_or_else(|| anyhow::anyhow!("binary fixture is invalid"))?,
         ));
         check(GoAwaySolver::from(GoAwayMessage::new_bytes(&salt, 0)));
+        Ok(())
     }
 
     #[cfg(feature = "compare-64bit")]
     #[test]
-    fn test_full64_lt_comparisons() {
+    fn test_full64_lt_comparisons() -> anyhow::Result<()> {
         const TARGET: u64 = 1u64 << 63;
-        fn check<S: crate::solver::Solver<Output = [u32; 8]>>(mut solver: S) {
+        fn check<S: crate::solver::Solver<Output = [u32; 8]>>(mut solver: S) -> anyhow::Result<()> {
             solver.set_limit(1_000_000);
             let (_, hash) = solver
                 .solve::<{ crate::solver::SOLVE_TYPE_LT }>(TARGET, u64::MAX)
-                .expect("full-width LT solver should find an easy target");
+                .ok_or_else(|| anyhow::anyhow!("full-width LT solver found no easy target"))?;
             let value = (u64::from(hash[0]) << 32) | u64::from(hash[1]);
             assert!(value < TARGET, "{value:#018x} is not below {TARGET:#018x}");
+            Ok(())
         }
 
         let salt = [b'a'; 64];
         check(SingleBlockSolver::from(
-            SingleBlockMessage::new(&salt, 0).expect("single block"),
-        ));
+            SingleBlockMessage::new(&salt, 0)
+                .ok_or_else(|| anyhow::anyhow!("single-block fixture is invalid"))?,
+        ))?;
         let double = (0..64)
             .find_map(|len| DoubleBlockMessage::new(&salt[..len], 0))
-            .expect("double block shape");
-        check(DoubleBlockSolver::from(double));
+            .ok_or_else(|| anyhow::anyhow!("no double-block fixture shape"))?;
+        check(DoubleBlockSolver::from(double))?;
+        let nonce_width =
+            NonZeroU8::new(4).ok_or_else(|| anyhow::anyhow!("nonce width is nonzero"))?;
         check(BinarySolver::from(
-            BinaryMessage::new(&salt, 4.try_into().unwrap()).expect("four-byte test nonce width"),
-        ));
-        check(GoAwaySolver::from(GoAwayMessage::new_bytes(
-            (&salt[..32]).try_into().unwrap(),
-            0,
-        )));
+            BinaryMessage::new(&salt, nonce_width)
+                .ok_or_else(|| anyhow::anyhow!("binary fixture is invalid"))?,
+        ))?;
+        let challenge: &[u8; 32] = (&salt[..32]).try_into()?;
+        check(GoAwaySolver::from(GoAwayMessage::new_bytes(challenge, 0)))?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_decimal() {
-        crate::solver::tests::test_decimal_validator::<DecimalSolver, _>(|prefix, search_space| {
-            if let Some(solver) = SingleBlockMessage::new(prefix, search_space).map(Into::into) {
-                Some(DecimalSolver::SingleBlock(solver))
-            } else {
-                DoubleBlockMessage::new(prefix, search_space).map(Into::into)
-            }
-        });
+    fn test_solve_decimal() -> anyhow::Result<()> {
+        crate::solver::tests::test_decimal_validator::<DecimalSolver, _>(
+            |prefix, search_space| {
+                if let Some(solver) = SingleBlockMessage::new(prefix, search_space).map(Into::into)
+                {
+                    Some(DecimalSolver::SingleBlock(solver))
+                } else {
+                    DoubleBlockMessage::new(prefix, search_space).map(Into::into)
+                }
+            },
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_decimal_f64() {
+    fn test_solve_decimal_f64() -> anyhow::Result<()> {
         crate::solver::tests::test_decimal_validator_f64_safe::<DecimalSolver, _>(
             |prefix, search_space| {
                 if let Some((solver, p)) =
@@ -936,22 +950,24 @@ mod tests {
                         .map(|x| (DecimalSolver::DoubleBlock(x.into()), None))
                 }
             },
-        );
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_cerberus_decimal() {
+    fn test_solve_cerberus_decimal() -> anyhow::Result<()> {
         for i in 0..=1 {
             crate::solver::tests::test_cerberus_decimal_validator::<CerberusSolver, _>(|prefix| {
                 Some(CerberusMessage::Decimal(CerberusDecimalMessage::new(prefix, i)?).into())
-            });
+            })?;
         }
+        Ok(())
     }
 
     #[test]
-    fn test_cerberus_decimal_exact_limit() {
+    fn test_cerberus_decimal_exact_limit() -> anyhow::Result<()> {
         let message = CerberusDecimalMessage::new(b"cerberus-decimal-benchmark|", 0)
-            .expect("valid Cerberus decimal message");
+            .ok_or_else(|| anyhow::anyhow!("Cerberus decimal fixture is invalid"))?;
         let mut solver = CerberusSolver::from(CerberusMessage::Decimal(message));
         solver.set_limit(17);
         assert!(
@@ -960,27 +976,30 @@ mod tests {
                 .is_none()
         );
         assert_eq!(solver.attempted_nonces(), 17);
+        Ok(())
     }
 
     #[test]
-    fn test_solve_cerberus_binary() {
+    fn test_solve_cerberus_binary() -> anyhow::Result<()> {
         for i in 0..=1 {
             crate::solver::tests::test_cerberus_binary_validator::<CerberusSolver, _>(|prefix| {
                 Some(CerberusMessage::Binary(CerberusBinaryMessage::new(prefix, i)).into())
-            });
+            })?;
         }
+        Ok(())
     }
     #[test]
-    fn test_solve_binary() {
+    fn test_solve_binary() -> anyhow::Result<()> {
         crate::solver::tests::test_binary_validator::<BinarySolver, _>(
             |prefix, nonce_byte_count| {
                 BinaryMessage::new(prefix, nonce_byte_count).map(BinarySolver::from)
             },
-        )
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_goaway() {
+    fn test_solve_goaway() -> anyhow::Result<()> {
         crate::solver::tests::test_goaway_validator::<GoAwaySolver, _>(|prefix| {
             GoAwaySolver::from(GoAwayMessage::new(
                 core::array::from_fn(|i| {
@@ -993,13 +1012,15 @@ mod tests {
                 }),
                 0,
             ))
-        });
+        })?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_altcha() {
+    fn test_solve_altcha() -> anyhow::Result<()> {
         crate::solver::tests::test_altcha_validator::<AltchaSha256Solver, _>(|message| {
             Some(AltchaSha256Solver::from(message))
-        });
+        })?;
+        Ok(())
     }
 }

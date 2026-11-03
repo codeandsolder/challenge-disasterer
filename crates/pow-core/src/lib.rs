@@ -467,7 +467,7 @@ pub const fn compute_mask_cerberus(difficulty_factor: NonZeroU8) -> u64 {
     } else {
         !(!0u32 >> bits)
     };
-    (mask.swap_bytes() as u64) << 32
+    u64::from(mask.swap_bytes()) << 32
 }
 
 /// Extract top 128 bits from a 64-bit word array
@@ -522,19 +522,22 @@ pub fn encode_hex_le(out: &mut [u8; 64], inp: [u32; 8]) {
 mod tests {
     use super::*;
 
+    fn nonzero(value: u8) -> anyhow::Result<NonZeroU8> {
+        NonZeroU8::new(value).ok_or_else(|| anyhow::anyhow!("expected nonzero test value"))
+    }
+
     pub fn build_prefix_official<W: std::io::Write>(
         out: &mut W,
         string: &str,
         salt: &str,
     ) -> std::io::Result<()> {
         out.write_all(salt.as_bytes())?;
-        match bincode::serialize_into(out, string) {
-            Ok(_) => (),
-            Err(e) => match *e {
-                bincode::ErrorKind::Io(e) => return Err(e),
-                _ => unreachable!(),
-            },
-        };
+        if let Err(error) = bincode::serialize_into(out, string) {
+            return match *error {
+                bincode::ErrorKind::Io(error) => Err(error),
+                other => Err(std::io::Error::other(other.to_string())),
+            };
+        }
         Ok(())
     }
 
@@ -561,62 +564,63 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_mask_zero_nibbles() {
+    fn test_compute_mask_zero_nibbles() -> anyhow::Result<()> {
         assert_eq!(
-            compute_mask_zero_nibbles(NonZeroU8::new(1).unwrap()),
+            compute_mask_zero_nibbles(nonzero(1)?),
             0xfu64.reverse_bits(),
         );
         assert_eq!(
-            compute_mask_zero_nibbles(NonZeroU8::new(2).unwrap()),
+            compute_mask_zero_nibbles(nonzero(2)?),
             0xffu64.reverse_bits(),
         );
         assert_eq!(
-            compute_mask_zero_nibbles(NonZeroU8::new(3).unwrap()),
+            compute_mask_zero_nibbles(nonzero(3)?),
             0xfffu64.reverse_bits(),
         );
-        assert_eq!(
-            compute_mask_zero_nibbles(NonZeroU8::new(16).unwrap()),
-            u64::MAX,
-        );
+        assert_eq!(compute_mask_zero_nibbles(nonzero(16)?), u64::MAX,);
+        Ok(())
     }
 
     #[test]
-    fn test_bincode_string_serialize() {
+    fn test_bincode_string_serialize() -> anyhow::Result<()> {
         let string = "hello";
         let mut homegrown = Vec::new();
         build_mcaptcha_prefix(&mut homegrown, string, "z")
-            .expect("small test string fits u64 length");
+            .ok_or_else(|| anyhow::anyhow!("small test string length is not representable"))?;
         let mut official = Vec::new();
-        build_prefix_official(&mut official, string, "z").unwrap();
+        build_prefix_official(&mut official, string, "z")?;
         assert_eq!(homegrown, official);
+        Ok(())
     }
 
     #[test]
-    fn test_cerberus_mask() {
-        fn check_small(hash: &[u8; 32], n: usize) -> bool {
-            // https://github.com/sjtug/cerberus/blob/ee8f903f1311da7022aec68c8686739b40f4a168/pow/src/check_dubit.rs
-            let first_word: u32 = (hash[0] as u32) << 24
-                | (hash[1] as u32) << 16
-                | (hash[2] as u32) << 8
-                | (hash[3] as u32);
-            first_word.leading_zeros() >= (n as u32 * 2)
+    fn test_cerberus_mask() -> anyhow::Result<()> {
+        fn check_small(hash: &[u8; 32], n: u32) -> bool {
+            // <https://github.com/sjtug/cerberus/blob/ee8f903f1311da7022aec68c8686739b40f4a168/pow/src/check_dubit.rs>
+            let first_word = u32::from(hash[0]) << 24
+                | u32::from(hash[1]) << 16
+                | u32::from(hash[2]) << 8
+                | u32::from(hash[3]);
+            first_word.leading_zeros() >= n * 2
         }
 
-        for i in 1..8 {
-            let mask = compute_mask_cerberus(NonZeroU8::new(i).unwrap());
-            eprintln!("mask: {:016x}", mask);
+        for i in 1_u8..8 {
+            let mask = compute_mask_cerberus(nonzero(i)?);
+            eprintln!("mask: {mask:016x}");
         }
 
         // hash[0] is the LSB of the H0 register
 
-        let mask = compute_mask_cerberus(NonZeroU8::new(7).unwrap());
-        let (mask_hi, mask_lo) = ((mask >> 32) as u32, mask as u32);
+        let mask = compute_mask_cerberus(nonzero(7)?);
+        let mask_hi = u32::try_from(mask >> 32)?;
+        let mask_lo = u32::try_from(mask & u64::from(u32::MAX))?;
         assert_eq!(mask_lo, 0);
         let hash_partial = (!mask_hi).to_le_bytes();
         eprintln!("hash_partial: {:02x?}", hash_partial);
         let mut test = [0; 32];
         test[..4].copy_from_slice(&hash_partial);
         assert!(check_small(&test, 7));
+        Ok(())
     }
 }
 
@@ -624,14 +628,16 @@ mod tests {
 mod challenge_domain_tests {
     use super::*;
 
+    fn nonzero(value: u8) -> anyhow::Result<NonZeroU8> {
+        NonZeroU8::new(value).ok_or_else(|| anyhow::anyhow!("expected nonzero test value"))
+    }
+
     #[test]
-    fn goaway_mask_covers_full_u64_domain() {
-        assert_eq!(compute_mask_goaway(NonZeroU8::new(1).unwrap()), 1_u64 << 63);
-        assert_eq!(
-            compute_mask_goaway(NonZeroU8::new(33).unwrap()),
-            u64::MAX << 31
-        );
-        assert_eq!(compute_mask_goaway(NonZeroU8::new(64).unwrap()), u64::MAX);
+    fn goaway_mask_covers_full_u64_domain() -> anyhow::Result<()> {
+        assert_eq!(compute_mask_goaway(nonzero(1)?), 1_u64 << 63);
+        assert_eq!(compute_mask_goaway(nonzero(33)?), u64::MAX << 31);
+        assert_eq!(compute_mask_goaway(nonzero(64)?), u64::MAX);
+        Ok(())
     }
 
     #[test]
@@ -656,13 +662,11 @@ mod challenge_domain_tests {
     }
 
     #[test]
-    fn cerberus_mask_clamps_to_the_upstream_32_bit_check() {
-        let full = compute_mask_cerberus(NonZeroU8::new(16).unwrap());
+    fn cerberus_mask_clamps_to_the_upstream_32_bit_check() -> anyhow::Result<()> {
+        let full = compute_mask_cerberus(nonzero(16)?);
         assert_eq!(full, u64::from(u32::MAX) << 32);
-        assert_eq!(compute_mask_cerberus(NonZeroU8::new(17).unwrap()), full);
-        assert_eq!(
-            compute_mask_cerberus(NonZeroU8::new(u8::MAX).unwrap()),
-            full
-        );
+        assert_eq!(compute_mask_cerberus(nonzero(17)?), full);
+        assert_eq!(compute_mask_cerberus(nonzero(u8::MAX)?), full);
+        Ok(())
     }
 }

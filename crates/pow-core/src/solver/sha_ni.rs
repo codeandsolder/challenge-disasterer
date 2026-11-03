@@ -1014,39 +1014,48 @@ mod tests {
     }
 
     #[test]
-    fn test_goaway_scalar_tail_returns_exact_digest() {
+    fn test_goaway_scalar_tail_returns_exact_digest() -> anyhow::Result<()> {
         use sha2::{Digest, Sha256};
 
-        let challenge = core::array::from_fn(|i| i as u8);
+        let mut challenge = [0_u8; 32];
+        for (i, byte) in challenge.iter_mut().enumerate() {
+            *byte = u8::try_from(i)?;
+        }
         let nonce = 5u64;
         let mut hasher = Sha256::new();
         hasher.update(challenge);
         hasher.update(nonce.to_be_bytes());
         let hash = hasher.finalize();
-        let target = u64::from_be_bytes(hash[..8].try_into().expect("SHA-256 prefix"));
+        let target = u64::from_be_bytes(hash[..8].try_into()?);
         let expected = core::array::from_fn(|i| {
-            u32::from_be_bytes(hash[i * 4..i * 4 + 4].try_into().expect("SHA-256 word"))
+            let base = i * 4;
+            u32::from_be_bytes([hash[base], hash[base + 1], hash[base + 2], hash[base + 3]])
         });
 
         let mut solver = GoAwaySolver::from(GoAwayMessage::new_bytes(&challenge, 0));
         solver.set_limit(nonce + 1);
         let (found_nonce, found_hash) = solver
             .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(target, u64::MAX)
-            .expect("tail candidate should match exact target");
+            .ok_or_else(|| anyhow::anyhow!("tail candidate did not match exact target"))?;
         assert_eq!(found_nonce, nonce);
         assert_eq!(found_hash, expected);
         assert_eq!(solver.attempted_nonces(), nonce + 1);
+        Ok(())
     }
 
     #[test]
-    fn test_solve_decimal() {
-        crate::solver::tests::test_decimal_validator::<DecimalSolver, _>(|prefix, search_space| {
-            if let Some(solver) = SingleBlockMessage::new(prefix, search_space).map(Into::into) {
-                Some(DecimalSolver::SingleBlock(solver))
-            } else {
-                DoubleBlockMessage::new(prefix, search_space).map(Into::into)
-            }
-        });
+    fn test_solve_decimal() -> anyhow::Result<()> {
+        crate::solver::tests::test_decimal_validator::<DecimalSolver, _>(
+            |prefix, search_space| {
+                if let Some(solver) = SingleBlockMessage::new(prefix, search_space).map(Into::into)
+                {
+                    Some(DecimalSolver::SingleBlock(solver))
+                } else {
+                    DoubleBlockMessage::new(prefix, search_space).map(Into::into)
+                }
+            },
+        )?;
+        Ok(())
     }
 
     #[test]
@@ -1099,38 +1108,40 @@ mod tests {
     }
 
     #[test]
-    fn test_anubis_reduced_radix_nonce_path() {
+    fn test_anubis_reduced_radix_nonce_path() -> anyhow::Result<()> {
         use core::num::NonZeroU8;
         use std::io::Write;
 
         use sha2::Digest;
 
         let prefix = [b'a'; 128];
-        let message = SingleBlockMessage::new(&prefix, 0).expect("single-block message");
+        let message = SingleBlockMessage::new(&prefix, 0)
+            .ok_or_else(|| anyhow::anyhow!("single-block message is invalid"))?;
         assert!(message.approx_working_set_count.get() >= 100);
 
         let mut solver = SingleBlockSolver::from(message);
         solver.set_limit(4_000_000);
-        let mask = crate::compute_mask_zero_nibbles(NonZeroU8::new(4).unwrap());
+        let mask = crate::compute_mask_zero_nibbles(
+            NonZeroU8::new(4).ok_or_else(|| anyhow::anyhow!("difficulty is nonzero"))?,
+        );
         let (nonce, hash) = solver
             .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(0, mask)
-            .expect("reduced-radix SHA-NI path should find an Anubis solution");
+            .ok_or_else(|| anyhow::anyhow!("reduced-radix SHA-NI path found no Anubis solution"));
 
         let mut input = prefix.to_vec();
-        write!(input, "{nonce}").unwrap();
+        write!(input, "{nonce}")?;
         let expected = sha2::Sha256::digest(&input);
         let actual: Vec<u8> = hash.into_iter().flat_map(u32::to_be_bytes).collect();
         assert_eq!(actual, expected.as_slice());
-        assert_eq!(
-            u64::from_be_bytes(actual[..8].try_into().unwrap()) & mask,
-            0
-        );
+        assert_eq!(u64::from_be_bytes(actual[..8].try_into()?) & mask, 0);
+        Ok(())
     }
 
     #[test]
-    fn test_anubis_reduced_radix_wraps_cleanly() {
+    fn test_anubis_reduced_radix_wraps_cleanly() -> anyhow::Result<()> {
         let prefix = [b'a'; 128];
-        let message = SingleBlockMessage::new(&prefix, 0).expect("single-block message");
+        let message = SingleBlockMessage::new(&prefix, 0)
+            .ok_or_else(|| anyhow::anyhow!("single-block message is invalid"))?;
         assert!(message.approx_working_set_count.get() >= 100);
 
         let mut solver = SingleBlockSolver::from(message);
@@ -1149,10 +1160,11 @@ mod tests {
                 b'0'
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn test_solve_decimal_f64() {
+    fn test_solve_decimal_f64() -> anyhow::Result<()> {
         crate::solver::tests::test_decimal_validator_f64_safe::<DecimalSolver, _>(
             |prefix, search_space| {
                 if let Some((solver, p)) =
@@ -1164,11 +1176,12 @@ mod tests {
                         .map(|x| (DecimalSolver::DoubleBlock(x.into()), None))
                 }
             },
-        );
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_goaway() {
+    fn test_solve_goaway() -> anyhow::Result<()> {
         crate::solver::tests::test_goaway_validator::<GoAwaySolver, _>(|prefix| {
             GoAwaySolver::from(GoAwayMessage::new(
                 core::array::from_fn(|i| {
@@ -1181,6 +1194,7 @@ mod tests {
                 }),
                 0,
             ))
-        });
+        })?;
+        Ok(())
     }
 }

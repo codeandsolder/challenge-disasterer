@@ -121,9 +121,7 @@ pub const fn do_message_schedule_k_w(w: &mut [u32; 64]) {
 }
 
 #[cfg(test)]
-pub fn deterministic_test_word(row: usize, column: usize, domain: u32) -> u32 {
-    let row = row as u32;
-    let column = column as u32;
+pub const fn deterministic_test_word(row: u32, column: u32, domain: u32) -> u32 {
     domain
         .wrapping_add(row.wrapping_mul(0x9e37_79b9))
         .rotate_left(column & 31)

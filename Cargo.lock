@@ -509,6 +509,7 @@ dependencies = [
 name = "challenge-pow-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bincode",
  "blake3",
  "bytemuck",

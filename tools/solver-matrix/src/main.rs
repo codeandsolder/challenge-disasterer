@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "gpu", recursion_limit = "256")]
+
 use std::{
     num::{NonZeroU8, NonZeroU32, NonZeroU64},
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -1099,7 +1101,7 @@ fn run_gpu_matrix<'a>(
     args: &'a Args,
 ) -> core::pin::Pin<Box<dyn core::future::Future<Output = Result<()>> + 'a>> {
     Box::pin(async move {
-        let mut gpu = pow_core::gpu::GpuContext::create()
+        let gpu = pow_core::gpu::GpuContext::create()
             .await
             .context("create generalized WGPU context")?;
         gpu.warm_up()
@@ -1108,12 +1110,12 @@ fn run_gpu_matrix<'a>(
         let adapter = gpu.adapter().to_owned();
 
         for sample in 0..args.samples {
-            run_gpu_anubis_haphash_cases(meta, args, &mut gpu, adapter.as_str(), sample).await?;
-            run_gpu_wasm_mcaptcha_cases(meta, args, &mut gpu, adapter.as_str(), sample).await?;
-            run_gpu_capjs_cases(meta, args, &mut gpu, adapter.as_str(), sample).await?;
-            run_gpu_goaway_case(meta, args, &mut gpu, adapter.as_str(), sample).await?;
-            run_gpu_cerberus_cases(meta, args, &mut gpu, adapter.as_str(), sample).await?;
-            run_gpu_altcha_cases(meta, args, &mut gpu, adapter.as_str(), sample).await?;
+            run_gpu_anubis_haphash_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
+            run_gpu_wasm_mcaptcha_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
+            run_gpu_capjs_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
+            run_gpu_goaway_case(meta, args, &gpu, adapter.as_str(), sample).await?;
+            run_gpu_cerberus_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
+            run_gpu_altcha_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
         }
         Ok(())
     })
@@ -1123,7 +1125,7 @@ fn run_gpu_matrix<'a>(
 async fn run_gpu_anubis_haphash_cases(
     meta: &Meta,
     args: &Args,
-    gpu: &mut pow_core::gpu::GpuContext,
+    gpu: &pow_core::gpu::GpuContext,
     adapter: &str,
     sample: u32,
 ) -> Result<()> {
@@ -1203,7 +1205,7 @@ async fn run_gpu_anubis_haphash_cases(
 async fn run_gpu_wasm_mcaptcha_cases(
     meta: &Meta,
     args: &Args,
-    gpu: &mut pow_core::gpu::GpuContext,
+    gpu: &pow_core::gpu::GpuContext,
     adapter: &str,
     sample: u32,
 ) -> Result<()> {
@@ -1292,7 +1294,7 @@ async fn run_gpu_wasm_mcaptcha_cases(
 async fn run_gpu_capjs_cases(
     meta: &Meta,
     args: &Args,
-    gpu: &mut pow_core::gpu::GpuContext,
+    gpu: &pow_core::gpu::GpuContext,
     adapter: &str,
     sample: u32,
 ) -> Result<()> {
@@ -1372,7 +1374,7 @@ async fn run_gpu_capjs_cases(
 async fn run_gpu_goaway_case(
     meta: &Meta,
     args: &Args,
-    gpu: &mut pow_core::gpu::GpuContext,
+    gpu: &pow_core::gpu::GpuContext,
     adapter: &str,
     sample: u32,
 ) -> Result<()> {
@@ -1414,7 +1416,7 @@ async fn run_gpu_goaway_case(
 async fn run_gpu_cerberus_cases(
     meta: &Meta,
     args: &Args,
-    gpu: &mut pow_core::gpu::GpuContext,
+    gpu: &pow_core::gpu::GpuContext,
     adapter: &str,
     sample: u32,
 ) -> Result<()> {
@@ -1486,7 +1488,7 @@ async fn run_gpu_cerberus_cases(
 async fn run_gpu_altcha_cases(
     meta: &Meta,
     args: &Args,
-    gpu: &mut pow_core::gpu::GpuContext,
+    gpu: &pow_core::gpu::GpuContext,
     adapter: &str,
     sample: u32,
 ) -> Result<()> {

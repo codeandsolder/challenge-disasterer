@@ -91,13 +91,21 @@ mod tests {
     use super::*;
     use crate::sha256::{IV, deterministic_test_word, digest_block, do_message_schedule_k_w};
 
-    fn check_digest_block_equivalence<const LANES: usize>() {
-        let mut states: [[u32; 8]; LANES] = core::array::from_fn(|lane| {
-            core::array::from_fn(|word| deterministic_test_word(lane, word, 0x5354_4154))
-        });
-        let blocks: [[u32; 16]; LANES] = core::array::from_fn(|lane| {
-            core::array::from_fn(|word| deterministic_test_word(lane, word, 0x424c_4f43))
-        });
+    fn check_digest_block_equivalence<const LANES: usize>() -> Result<(), core::num::TryFromIntError>
+    {
+        let mut states = [[0_u32; 8]; LANES];
+        let mut blocks = [[0_u32; 16]; LANES];
+        for lane_index in 0..LANES {
+            let lane = u32::try_from(lane_index)?;
+            for word in 0..8 {
+                states[lane_index][word] =
+                    deterministic_test_word(lane, u32::try_from(word)?, 0x5354_4154);
+            }
+            for word in 0..16 {
+                blocks[lane_index][word] =
+                    deterministic_test_word(lane, u32::try_from(word)?, 0x424c_4f43);
+            }
+        }
         let mut state_simd: [Simd<u32, LANES>; 8] = core::array::from_fn(|word| {
             Simd::from_array(core::array::from_fn(|lane| states[lane][word]))
         });
@@ -117,6 +125,7 @@ mod tests {
         let actual: [[u32; 8]; LANES] =
             core::array::from_fn(|lane| core::array::from_fn(|word| state_simd[word][lane]));
         assert_eq!(states, actual);
+        Ok(())
     }
 
     fn check_broadcast_block<const LANES: usize>() {
@@ -149,9 +158,10 @@ mod tests {
     }
 
     #[test]
-    fn multiway_matches_scalar_for_8_and_16_lanes() {
-        check_digest_block_equivalence::<8>();
-        check_digest_block_equivalence::<16>();
+    fn multiway_matches_scalar_for_8_and_16_lanes() -> Result<(), core::num::TryFromIntError> {
+        check_digest_block_equivalence::<8>()?;
+        check_digest_block_equivalence::<16>()?;
+        Ok(())
     }
 
     #[test]

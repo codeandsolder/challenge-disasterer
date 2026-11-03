@@ -824,36 +824,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_solve_cerberus_decimal() {
+    fn test_solve_cerberus_decimal() -> anyhow::Result<()> {
         for i in 0..=1 {
             crate::solver::tests::test_cerberus_decimal_validator::<CerberusSolver, _>(|prefix| {
                 Some(CerberusMessage::Decimal(CerberusDecimalMessage::new(prefix, i)?).into())
-            });
+            })?;
         }
+        Ok(())
     }
 
     #[test]
-    fn test_solve_cerberus_binary() {
+    fn test_solve_cerberus_binary() -> anyhow::Result<()> {
         for i in 0..=1 {
             crate::solver::tests::test_cerberus_binary_validator::<CerberusSolver, _>(|prefix| {
                 Some(CerberusMessage::Binary(CerberusBinaryMessage::new(prefix, i)).into())
-            });
+            })?;
         }
+        Ok(())
     }
 
     #[test]
-    fn test_solve_decimal() {
-        crate::solver::tests::test_decimal_validator::<DecimalSolver, _>(|prefix, search_space| {
-            if let Some(solver) = SingleBlockMessage::new(prefix, search_space).map(Into::into) {
-                Some(DecimalSolver::SingleBlock(solver))
-            } else {
-                DoubleBlockMessage::new(prefix, search_space).map(Into::into)
-            }
-        });
+    fn test_solve_decimal() -> anyhow::Result<()> {
+        crate::solver::tests::test_decimal_validator::<DecimalSolver, _>(
+            |prefix, search_space| {
+                if let Some(solver) = SingleBlockMessage::new(prefix, search_space).map(Into::into)
+                {
+                    Some(DecimalSolver::SingleBlock(solver))
+                } else {
+                    DoubleBlockMessage::new(prefix, search_space).map(Into::into)
+                }
+            },
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_decimal_f64() {
+    fn test_solve_decimal_f64() -> anyhow::Result<()> {
         crate::solver::tests::test_decimal_validator_f64_safe::<DecimalSolver, _>(
             |prefix, search_space| {
                 if let Some((solver, p)) =
@@ -865,20 +871,22 @@ mod tests {
                         .map(|x| (DecimalSolver::DoubleBlock(x.into()), None))
                 }
             },
-        );
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_binary() {
+    fn test_solve_binary() -> anyhow::Result<()> {
         crate::solver::tests::test_binary_validator::<BinarySolver, _>(
             |prefix, nonce_byte_count| {
                 BinaryMessage::new(prefix, nonce_byte_count).map(BinarySolver::from)
             },
-        )
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_goaway() {
+    fn test_solve_goaway() -> anyhow::Result<()> {
         crate::solver::tests::test_goaway_validator::<GoAwaySolver, _>(|prefix| {
             GoAwaySolver::from(GoAwayMessage::new(
                 core::array::from_fn(|i| {
@@ -891,14 +899,16 @@ mod tests {
                 }),
                 0,
             ))
-        });
+        })?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_altcha() {
+    fn test_solve_altcha() -> anyhow::Result<()> {
         crate::solver::tests::test_altcha_validator::<AltchaSha256Solver, _>(|message| {
             Some(AltchaSha256Solver::from(message))
-        });
+        })?;
+        Ok(())
     }
 }
 
@@ -908,13 +918,13 @@ mod feature_guard_tests {
     use crate::solver::Solver as _;
 
     #[test]
-    fn direct_backend_fails_closed_without_avx512() {
+    fn direct_backend_fails_closed_without_avx512() -> anyhow::Result<()> {
         if <RequiredFeatures as crate::solver::CpuIDToken>::get() {
-            return;
+            return Ok(());
         }
 
         let message = SingleBlockMessage::new(b"avx512-feature-guard", 0)
-            .expect("single-block feature-guard fixture");
+            .ok_or_else(|| anyhow::anyhow!("single-block feature-guard fixture is invalid"))?;
         let mut solver = SingleBlockSolver::from(message);
         solver.set_limit(16);
 
@@ -924,5 +934,6 @@ mod feature_guard_tests {
                 .is_none()
         );
         assert_eq!(solver.attempted_nonces(), 0);
+        Ok(())
     }
 }

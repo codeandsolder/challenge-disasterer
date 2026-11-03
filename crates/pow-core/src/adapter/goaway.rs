@@ -132,19 +132,17 @@ mod tests {
     }
 
     #[test]
-    fn zero_difficulty_is_trivially_solved() {
+    fn zero_difficulty_is_trivially_solved() -> anyhow::Result<()> {
         let config = GoAwayConfig {
             challenge: "00".repeat(32),
             difficulty: 0,
         };
         let (result, attempted) = config.solve_with_limit(1);
         assert_eq!(attempted, 1);
-        assert_eq!(
-            result
-                .expect("difficulty zero must accept the first nonce")
-                .0,
-            0
-        );
+        let (nonce, _) =
+            result.ok_or_else(|| anyhow::anyhow!("difficulty zero returned no solution"))?;
+        assert_eq!(nonce, 0);
+        Ok(())
     }
 
     #[test]

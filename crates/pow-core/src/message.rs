@@ -1045,7 +1045,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_double_block_addend_f64_safe() {
+    fn test_double_block_addend_f64_safe() -> anyhow::Result<()> {
         let salt = [b'a'; 64];
         for len in 0..64 {
             if let Some((single_solver, _fixup_prefix)) =
@@ -1055,30 +1055,24 @@ mod tests {
             } else if let Some(double_solver) = DoubleBlockMessage::new(&salt[..len], 0) {
                 assert!(double_solver.nonce_addend <= 1_000_000_000_000_000);
             } else {
-                let single_solver = SingleBlockMessage::new(&salt[..len], 0);
-                let double_solver = DoubleBlockMessage::new(&salt[..len], 0);
-                panic!(
-                    "no messagger for length {}: (u64 single block: {:?}, u64 double block: {:?})",
-                    len,
-                    single_solver.is_some(),
-                    double_solver.is_some()
-                );
+                anyhow::bail!("no message representation for length {len}");
             }
         }
+        Ok(())
     }
 
     #[test]
     fn test_fnv1a() {
         let mut state = 2_166_136_261;
         let data = [240, 159, 166, 132, 240, 159, 140, 136];
-        data.iter().for_each(|d| {
-            state = fnv1a(state, *d);
-        });
+        for d in data {
+            state = fnv1a(state, d);
+        }
         assert_eq!(state, 2_868_248_295);
     }
 
     #[test]
-    fn test_capjs_emitter() {
+    fn test_capjs_emitter() -> anyhow::Result<()> {
         const TOKEN: &[u8] = b"challenge token";
         const C: usize = 16;
         const S: usize = 30;
@@ -1107,11 +1101,7 @@ mod tests {
             let real_i = i + 1;
             let mut salt_out = [0; S];
             let mut target_out = [0; (D + 3) / 8];
-            emitter.emit(
-                &mut salt_out,
-                &mut target_out,
-                u32::try_from(real_i).expect("test index fits u32"),
-            );
+            emitter.emit(&mut salt_out, &mut target_out, u32::try_from(real_i)?);
             assert_eq!(
                 salt_out,
                 salt.as_slice(),
@@ -1120,5 +1110,6 @@ mod tests {
             );
             assert_eq!(target_out, *target);
         }
+        Ok(())
     }
 }

@@ -257,7 +257,13 @@ mod tests {
             let mut output = [0u32; 8];
             for chunk in chunks {
                 let block = core::array::from_fn(|i| {
-                    u32::from_le_bytes(chunk[i * 4..i * 4 + 4].try_into().unwrap())
+                    let base = i * 4;
+                    u32::from_le_bytes([
+                        chunk[base],
+                        chunk[base + 1],
+                        chunk[base + 2],
+                        chunk[base + 3],
+                    ])
                 });
 
                 let this_flag = if ctr == 0 { FLAG_CHUNK_START } else { 0 }
@@ -271,12 +277,17 @@ mod tests {
                 ctr += 1;
             }
 
-            let output: [u32; 8] = output[..8].try_into().unwrap();
             let mut expected = [0u32; 8];
-            for i in 0..8 {
-                expected[i] = u32::from_le_bytes(hash[i * 4..i * 4 + 4].try_into().unwrap());
+            for (i, word) in expected.iter_mut().enumerate() {
+                let base = i * 4;
+                *word = u32::from_le_bytes([
+                    hash[base],
+                    hash[base + 1],
+                    hash[base + 2],
+                    hash[base + 3],
+                ]);
             }
-            assert_eq!(output, expected, "output mismatch (blockc: {})", blockc);
+            assert_eq!(output, expected, "output mismatch (blockc: {blockc})");
         }
     }
 }
