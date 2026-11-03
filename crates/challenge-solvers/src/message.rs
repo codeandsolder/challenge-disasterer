@@ -1027,14 +1027,14 @@ pub struct AltchaMessage {
     pub key_length: NonZeroU32,
 }
 
-#[cfg(feature = "adapter")]
-impl From<crate::adapter::altcha::ChallengeDescriptor> for AltchaMessage {
-    fn from(descriptor: crate::adapter::altcha::ChallengeDescriptor) -> Self {
+#[cfg(feature = "altcha")]
+impl From<crate::altcha::ChallengeDescriptor> for AltchaMessage {
+    fn from(descriptor: crate::altcha::ChallengeDescriptor) -> Self {
         Self {
             nonce: descriptor.nonce.0,
             salt: descriptor.salt.0,
             cost: descriptor.cost,
-            pbkdf2: descriptor.algorithm == crate::adapter::altcha::Algorithm::SHA256Pbkdf2,
+            pbkdf2: descriptor.algorithm == crate::altcha::Algorithm::SHA256Pbkdf2,
             key_length: descriptor.key_length,
         }
     }

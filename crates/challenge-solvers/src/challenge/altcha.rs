@@ -1,7 +1,7 @@
 //! Altcha specific protocol structures.
 use core::num::NonZeroU32;
 
-use crate::adapter::FixedHexString;
+use crate::protocol::FixedHexString;
 
 #[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 /// Altcha supported algorithms.

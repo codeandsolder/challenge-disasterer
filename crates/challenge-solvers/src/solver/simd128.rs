@@ -344,7 +344,8 @@ impl CerberusSolver {
         target: u64,
         mask: u64,
     ) -> Option<(u64, u64)> {
-        crate::solver::wide::solve_cerberus_decimal_wide4::<
+        crate::solver::wide::solve_cerberus_decimal_wide::<
+            4,
             CENTER_WORD_IDX,
             LANE_ID_WORD_IDX,
             CONSTANT_WORD_COUNT,
@@ -360,7 +361,7 @@ impl CerberusSolver {
 
     #[inline(never)]
     fn solve_binary_impl(&mut self, target: u64, mask: u64) -> Option<u64> {
-        crate::solver::wide::solve_cerberus_binary_wide4(
+        crate::solver::wide::solve_cerberus_binary_wide::<4>(
             &self.message,
             &mut self.attempted_nonces,
             self.limit,

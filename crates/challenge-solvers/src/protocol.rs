@@ -1,16 +1,12 @@
+#[cfg(feature = "altcha")]
 use core::ops::Deref;
 
-pub mod altcha;
-pub mod anubis;
-pub mod capjs;
-pub mod cerberus;
-pub mod goaway;
-pub mod mcaptcha;
-
+#[cfg(feature = "altcha")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// A fixed length hex string
 pub struct FixedHexString<const N: usize>(pub [u8; N]);
 
+#[cfg(feature = "altcha")]
 impl<const N: usize> Deref for FixedHexString<N> {
     type Target = [u8; N];
     fn deref(&self) -> &Self::Target {
@@ -18,6 +14,7 @@ impl<const N: usize> Deref for FixedHexString<N> {
     }
 }
 
+#[cfg(feature = "altcha")]
 impl<'de, const N: usize> serde::Deserialize<'de> for FixedHexString<N> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -82,7 +79,7 @@ impl<'de, const N: usize> serde::Deserialize<'de> for FixedHexString<N> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "altcha"))]
 mod tests {
     use super::*;
 

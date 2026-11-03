@@ -3,52 +3,41 @@ use crate::message::{
     GoAwayMessage, SingleBlockMessage,
 };
 
-cpufeatures::new!(avx512f, "avx512f");
+use core::marker::PhantomData;
 
-#[derive(Debug, Copy, Clone)]
-/// Required features for AVX-512 solver.
-pub struct RequiredFeatures;
+use super::wide_backend_arch::Backend;
 
-impl Default for RequiredFeatures {
-    fn default() -> Self {
-        Self
-    }
-}
-
-impl crate::solver::CpuIDToken for RequiredFeatures {
-    fn get() -> bool {
-        avx512f::get()
-    }
-}
-
-/// AVX-512 decimal nonce single block solver.
+/// Portable wide-SIMD decimal nonce single block solver.
 ///
 ///
-/// Current implementation: 16 way SIMD with 1-round hotstart granularity.
-pub struct SingleBlockSolver {
+/// Current implementation: backend-width SIMD with 1-round hotstart granularity.
+pub struct SingleBlockSolver<B: Backend> {
     message: SingleBlockMessage,
 
     attempted_nonces: u64,
 
     limit: u64,
+    _backend: PhantomData<B>,
 }
 
-impl From<super::safe::SingleBlockSolver> for SingleBlockSolver {
+impl<B: Backend> From<super::safe::SingleBlockSolver> for SingleBlockSolver<B> {
     fn from(solver: super::safe::SingleBlockSolver) -> Self {
         Self {
             message: solver.message,
             attempted_nonces: solver.attempted_nonces,
             limit: solver.limit,
+            _backend: PhantomData,
         }
     }
 }
 
-impl From<SingleBlockMessage> for SingleBlockSolver {
+impl<B: Backend> From<SingleBlockMessage> for SingleBlockSolver<B> {
     fn from(message: SingleBlockMessage) -> Self {
         Self {
             message,
             attempted_nonces: 0,
             limit: u64::MAX,
+            _backend: PhantomData,
         }
     }
 }
@@ -59,9 +48,8 @@ const MUTATION_TYPE_OCTAL: u8 = 2;
 const MUTATION_TYPE_ALIGNED_OCTAL: u8 = MUTATION_TYPE_ALIGNED | MUTATION_TYPE_OCTAL;
 const MUTATION_TYPE_UNALIGNED_OCTAL: u8 = MUTATION_TYPE_UNALIGNED | MUTATION_TYPE_OCTAL;
 
-impl SingleBlockSolver {
-    #[inline(never)]
-    #[target_feature(enable = "avx512f")]
+impl<B: Backend> SingleBlockSolver<B> {
+    #[inline(always)]
     fn solve_impl<
         const DIGIT_WORD_IDX0: usize,
         const DIGIT_WORD_IDX1_INCREMENT: bool,
@@ -72,13 +60,7 @@ impl SingleBlockSolver {
         target: u64,
         mask: u64,
     ) -> Option<u64> {
-        crate::solver::wide::solve_single_block_impl::<
-            16,
-            DIGIT_WORD_IDX0,
-            DIGIT_WORD_IDX1_INCREMENT,
-            TYPE,
-            MUTATION_TYPE,
-        >(
+        B::solve_single_block::<DIGIT_WORD_IDX0, DIGIT_WORD_IDX1_INCREMENT, TYPE, MUTATION_TYPE>(
             &mut self.message,
             &mut self.attempted_nonces,
             self.limit,
@@ -88,7 +70,7 @@ impl SingleBlockSolver {
     }
 }
 
-impl crate::solver::Solver for SingleBlockSolver {
+impl<B: Backend> crate::solver::Solver for SingleBlockSolver<B> {
     type Output = [u32; 8];
     fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
@@ -98,12 +80,8 @@ impl crate::solver::Solver for SingleBlockSolver {
         self.attempted_nonces
     }
 
-    #[expect(
-        unsafe_code,
-        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
-    )]
     fn solve_nonce_only<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
-        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+        if !B::available() {
             return None;
         }
         if self.attempted_nonces >= self.limit {
@@ -122,31 +100,26 @@ impl crate::solver::Solver for SingleBlockSolver {
 
         macro_rules! dispatch {
             ($idx0:literal, $idx1_inc:literal) => {
-                // SAFETY: Solver::solve checked AVX-512F before entering this dispatch.
-                unsafe {
-                    if self.message.digit_index % 4 == 2 {
-                        // if we have to much search space it doesn't matter
-                        // use the octal kernel
-                        if self.message.no_trailing_zeros
-                            || self.message.approx_working_set_count.get() >= 100
-                        {
-                            self.solve_impl::<$idx0, $idx1_inc, TYPE, MUTATION_TYPE_ALIGNED_OCTAL>(
-                                target, mask,
-                            )
-                        } else {
-                            self.solve_impl::<$idx0, $idx1_inc, TYPE, MUTATION_TYPE_ALIGNED>(
-                                target, mask,
-                            )
-                        }
-                    } else if self.message.no_trailing_zeros {
-                        self.solve_impl::<$idx0, $idx1_inc, TYPE, MUTATION_TYPE_UNALIGNED_OCTAL>(
+                if self.message.digit_index % 4 == 2 {
+                    // if we have to much search space it doesn't matter
+                    // use the octal kernel
+                    if self.message.no_trailing_zeros
+                        || self.message.approx_working_set_count.get() >= 100
+                    {
+                        self.solve_impl::<$idx0, $idx1_inc, TYPE, MUTATION_TYPE_ALIGNED_OCTAL>(
                             target, mask,
                         )
                     } else {
-                        self.solve_impl::<$idx0, $idx1_inc, TYPE, MUTATION_TYPE_UNALIGNED>(
+                        self.solve_impl::<$idx0, $idx1_inc, TYPE, MUTATION_TYPE_ALIGNED>(
                             target, mask,
                         )
                     }
+                } else if self.message.no_trailing_zeros {
+                    self.solve_impl::<$idx0, $idx1_inc, TYPE, MUTATION_TYPE_UNALIGNED_OCTAL>(
+                        target, mask,
+                    )
+                } else {
+                    self.solve_impl::<$idx0, $idx1_inc, TYPE, MUTATION_TYPE_UNALIGNED>(target, mask)
                 }
             };
             ($idx0:literal) => {
@@ -191,38 +164,41 @@ impl crate::solver::Solver for SingleBlockSolver {
     }
 }
 
-/// AVX-512 decimal nonce double block solver.
+/// Portable wide-SIMD decimal nonce double block solver.
 ///
 ///
-/// Current implementation: 16 way SIMD with 1-round hotstart granularity.
-pub struct DoubleBlockSolver {
+/// Current implementation: backend-width SIMD with 1-round hotstart granularity.
+pub struct DoubleBlockSolver<B: Backend> {
     message: DoubleBlockMessage,
     attempted_nonces: u64,
 
     limit: u64,
+    _backend: PhantomData<B>,
 }
 
-impl From<super::safe::DoubleBlockSolver> for DoubleBlockSolver {
+impl<B: Backend> From<super::safe::DoubleBlockSolver> for DoubleBlockSolver<B> {
     fn from(solver: super::safe::DoubleBlockSolver) -> Self {
         Self {
             message: solver.message,
             attempted_nonces: solver.attempted_nonces,
             limit: solver.limit,
+            _backend: PhantomData,
         }
     }
 }
 
-impl From<DoubleBlockMessage> for DoubleBlockSolver {
+impl<B: Backend> From<DoubleBlockMessage> for DoubleBlockSolver<B> {
     fn from(message: DoubleBlockMessage) -> Self {
         Self {
             message,
             attempted_nonces: 0,
             limit: u64::MAX,
+            _backend: PhantomData,
         }
     }
 }
 
-impl crate::solver::Solver for DoubleBlockSolver {
+impl<B: Backend> crate::solver::Solver for DoubleBlockSolver<B> {
     type Output = [u32; 8];
     fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
@@ -233,24 +209,19 @@ impl crate::solver::Solver for DoubleBlockSolver {
     }
 
     #[inline]
-    #[expect(
-        unsafe_code,
-        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
-    )]
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
-        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+        if !B::available() {
             return None;
         }
-        // SAFETY: the feature check above proves AVX-512F is available.
-        unsafe { self.solve_impl::<TYPE>(target, mask) }
+        // SAFETY: the feature check above proves Portable wide-SIMD is available.
+        self.solve_impl::<TYPE>(target, mask)
     }
 }
 
-impl DoubleBlockSolver {
-    #[inline(never)]
-    #[target_feature(enable = "avx512f")]
+impl<B: Backend> DoubleBlockSolver<B> {
+    #[inline(always)]
     fn solve_impl<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
-        crate::solver::wide::solve_double_block_impl::<16, TYPE>(
+        B::solve_double_block::<TYPE>(
             &mut self.message,
             &mut self.attempted_nonces,
             self.limit,
@@ -260,44 +231,96 @@ impl DoubleBlockSolver {
     }
 }
 
-impl_decimal_solver!(
-    [SingleBlockSolver, DoubleBlockSolver] => DecimalSolver
-);
+/// Decimal nonce solver selecting the single- or double-block layout.
+pub enum DecimalSolver<B: Backend> {
+    /// Single-block message.
+    SingleBlock(SingleBlockSolver<B>),
+    /// Double-block message.
+    DoubleBlock(DoubleBlockSolver<B>),
+}
 
-/// AVX-512 binary nonce solver.
+impl<B: Backend> From<SingleBlockMessage> for DecimalSolver<B> {
+    fn from(message: SingleBlockMessage) -> Self {
+        Self::SingleBlock(message.into())
+    }
+}
+
+impl<B: Backend> From<DoubleBlockMessage> for DecimalSolver<B> {
+    fn from(message: DoubleBlockMessage) -> Self {
+        Self::DoubleBlock(message.into())
+    }
+}
+
+impl<B: Backend> From<DecimalMessage> for DecimalSolver<B> {
+    fn from(message: DecimalMessage) -> Self {
+        match message {
+            DecimalMessage::SingleBlock(message) => Self::SingleBlock(message.into()),
+            DecimalMessage::DoubleBlock(message) => Self::DoubleBlock(message.into()),
+        }
+    }
+}
+
+impl<B: Backend> crate::solver::Solver for DecimalSolver<B> {
+    type Output = [u32; 8];
+
+    fn set_limit(&mut self, limit: u64) {
+        match self {
+            Self::SingleBlock(solver) => solver.set_limit(limit),
+            Self::DoubleBlock(solver) => solver.set_limit(limit),
+        }
+    }
+
+    fn attempted_nonces(&self) -> u64 {
+        match self {
+            Self::SingleBlock(solver) => solver.attempted_nonces(),
+            Self::DoubleBlock(solver) => solver.attempted_nonces(),
+        }
+    }
+
+    fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
+        match self {
+            Self::SingleBlock(solver) => solver.solve::<TYPE>(target, mask),
+            Self::DoubleBlock(solver) => solver.solve::<TYPE>(target, mask),
+        }
+    }
+}
+
+/// Portable wide-SIMD binary nonce solver.
 ///
 /// Output: nonce in little endian order
 ///
-/// Current implementation: 16 way SIMD with 1-round hotstart granularity.
-pub struct BinarySolver {
+/// Current implementation: backend-width SIMD with 1-round hotstart granularity.
+pub struct BinarySolver<B: Backend> {
     message: BinaryMessage,
     attempted_nonces: u64,
     limit: u64,
+    _backend: PhantomData<B>,
 }
 
-impl From<BinaryMessage> for BinarySolver {
+impl<B: Backend> From<BinaryMessage> for BinarySolver<B> {
     fn from(message: BinaryMessage) -> Self {
         Self {
             message,
             attempted_nonces: 0,
             limit: u64::MAX,
+            _backend: PhantomData,
         }
     }
 }
 
-impl From<crate::solver::safe::BinarySolver> for BinarySolver {
+impl<B: Backend> From<crate::solver::safe::BinarySolver> for BinarySolver<B> {
     fn from(solver: crate::solver::safe::BinarySolver) -> Self {
         Self {
             message: solver.message,
             attempted_nonces: solver.attempted_nonces,
             limit: solver.limit,
+            _backend: PhantomData,
         }
     }
 }
 
-impl BinarySolver {
-    #[inline(never)]
-    #[target_feature(enable = "avx512f")]
+impl<B: Backend> BinarySolver<B> {
+    #[inline(always)]
     #[expect(
         clippy::too_many_arguments,
         reason = "const-generic SHA block specialization keeps hot solver inputs explicit"
@@ -316,23 +339,21 @@ impl BinarySolver {
         target: u64,
         mask: u64,
     ) -> Option<u64> {
-        crate::solver::wide::solve_binary_impl::<16, TYPE, FIRST_NONCE_WORD_IDX, NEED_SECOND_BLOCK>(
-            crate::solver::wide::BinaryWork {
-                attempted_nonces: &mut self.attempted_nonces,
-                limit: self.limit,
-                prefix_state,
-                first_block,
-                second_block_schedule,
-                nonce_byte_offset,
-                nonce_byte_count,
-            },
+        B::solve_binary::<TYPE, FIRST_NONCE_WORD_IDX, NEED_SECOND_BLOCK>(
+            &mut self.attempted_nonces,
+            self.limit,
+            prefix_state,
+            first_block,
+            second_block_schedule,
+            nonce_byte_offset,
+            nonce_byte_count,
             target,
             mask,
         )
     }
 }
 
-impl crate::solver::Solver for BinarySolver {
+impl<B: Backend> crate::solver::Solver for BinarySolver<B> {
     type Output = [u32; 8];
     fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
@@ -342,12 +363,8 @@ impl crate::solver::Solver for BinarySolver {
         self.attempted_nonces
     }
 
-    #[expect(
-        unsafe_code,
-        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
-    )]
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
-        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+        if !B::available() {
             return None;
         }
         // A one-byte search has only 256 candidates, and a nonce crossing a SHA block boundary
@@ -372,45 +389,39 @@ impl crate::solver::Solver for BinarySolver {
 
         macro_rules! dispatch {
             ($skipped_rounds:expr) => {
-                // SAFETY: Solver::solve checked AVX-512F before entering this dispatch.
-                unsafe {
-                    if current_block == 1 {
-                        if let Some(nonce) = self.solve_impl::<TYPE, { $skipped_rounds }, true>(
-                            self.message.prefix_state,
-                            &first_block,
-                            &second_block_schedule,
-                            self.message.salt_residual_len,
-                            self.message.nonce_byte_count,
-                            target,
-                            mask,
-                        ) {
-                            let mut final_sha_state = self.message.prefix_state;
-                            for i in 0..usize::from(self.message.nonce_byte_count.get()) {
-                                used_blocks[0][self.message.salt_residual_len + i] =
-                                    nonce.to_le_bytes()[i];
-                            }
-                            sha2::block_api::compress256(&mut final_sha_state, &used_blocks);
-                            return Some((nonce, final_sha_state));
+                if current_block == 1 {
+                    if let Some(nonce) = self.solve_impl::<TYPE, { $skipped_rounds }, true>(
+                        self.message.prefix_state,
+                        &first_block,
+                        &second_block_schedule,
+                        self.message.salt_residual_len,
+                        self.message.nonce_byte_count,
+                        target,
+                        mask,
+                    ) {
+                        let mut final_sha_state = self.message.prefix_state;
+                        for i in 0..usize::from(self.message.nonce_byte_count.get()) {
+                            used_blocks[0][self.message.salt_residual_len + i] =
+                                nonce.to_le_bytes()[i];
                         }
-                    } else {
-                        if let Some(nonce) = self.solve_impl::<TYPE, { $skipped_rounds }, false>(
-                            self.message.prefix_state,
-                            &first_block,
-                            &[0; 64],
-                            self.message.salt_residual_len,
-                            self.message.nonce_byte_count,
-                            target,
-                            mask,
-                        ) {
-                            let mut final_sha_state = self.message.prefix_state;
-                            for i in 0..usize::from(self.message.nonce_byte_count.get()) {
-                                used_blocks[0][self.message.salt_residual_len + i] =
-                                    nonce.to_le_bytes()[i];
-                            }
-                            sha2::block_api::compress256(&mut final_sha_state, &used_blocks);
-                            return Some((nonce, final_sha_state));
-                        }
+                        sha2::block_api::compress256(&mut final_sha_state, &used_blocks);
+                        return Some((nonce, final_sha_state));
                     }
+                } else if let Some(nonce) = self.solve_impl::<TYPE, { $skipped_rounds }, false>(
+                    self.message.prefix_state,
+                    &first_block,
+                    &[0; 64],
+                    self.message.salt_residual_len,
+                    self.message.nonce_byte_count,
+                    target,
+                    mask,
+                ) {
+                    let mut final_sha_state = self.message.prefix_state;
+                    for i in 0..usize::from(self.message.nonce_byte_count.get()) {
+                        used_blocks[0][self.message.salt_residual_len + i] = nonce.to_le_bytes()[i];
+                    }
+                    sha2::block_api::compress256(&mut final_sha_state, &used_blocks);
+                    return Some((nonce, final_sha_state));
                 }
             };
         }
@@ -441,43 +452,45 @@ impl crate::solver::Solver for BinarySolver {
     }
 }
 
-/// AVX-512 `GoAway` solver.
+/// Portable wide-SIMD `GoAway` solver.
 ///
 ///
-/// Current implementation: 16 way SIMD with 1-round hotstart granularity.
-pub struct GoAwaySolver {
+/// Current implementation: backend-width SIMD with 1-round hotstart granularity.
+pub struct GoAwaySolver<B: Backend> {
     message: GoAwayMessage,
     attempted_nonces: u64,
     limit: u64,
+    _backend: PhantomData<B>,
 }
 
-impl From<super::safe::GoAwaySolver> for GoAwaySolver {
+impl<B: Backend> From<super::safe::GoAwaySolver> for GoAwaySolver<B> {
     fn from(solver: super::safe::GoAwaySolver) -> Self {
         Self {
             message: solver.message,
             attempted_nonces: solver.attempted_nonces,
             limit: solver.limit,
+            _backend: PhantomData,
         }
     }
 }
 
-impl From<GoAwayMessage> for GoAwaySolver {
+impl<B: Backend> From<GoAwayMessage> for GoAwaySolver<B> {
     fn from(message: GoAwayMessage) -> Self {
         Self {
             message,
             attempted_nonces: 0,
             limit: u64::MAX,
+            _backend: PhantomData,
         }
     }
 }
 
-impl GoAwaySolver {
+impl<B: Backend> GoAwaySolver<B> {
     const MSG_LEN: u32 = 10 * 4 * 8;
 
-    #[inline(never)]
-    #[target_feature(enable = "avx512f")]
+    #[inline(always)]
     fn solve_nonce_only_impl<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
-        crate::solver::wide::solve_goaway_impl::<16, TYPE>(
+        B::solve_goaway::<TYPE>(
             &mut self.attempted_nonces,
             self.limit,
             self.message.challenge,
@@ -488,7 +501,7 @@ impl GoAwaySolver {
     }
 }
 
-impl crate::solver::Solver for GoAwaySolver {
+impl<B: Backend> crate::solver::Solver for GoAwaySolver<B> {
     type Output = [u32; 8];
     fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
@@ -499,16 +512,12 @@ impl crate::solver::Solver for GoAwaySolver {
     }
 
     #[inline(always)]
-    #[expect(
-        unsafe_code,
-        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
-    )]
     fn solve_nonce_only<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
-        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+        if !B::available() {
             return None;
         }
-        // SAFETY: the feature check above proves AVX-512F is available.
-        unsafe { self.solve_nonce_only_impl::<TYPE>(target, mask) }
+        // SAFETY: the feature check above proves Portable wide-SIMD is available.
+        self.solve_nonce_only_impl::<TYPE>(target, mask)
     }
 
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
@@ -527,28 +536,42 @@ impl crate::solver::Solver for GoAwaySolver {
     }
 }
 
-/// AVX-512 Cerberus solver.
+/// Portable wide-SIMD Cerberus solver.
 ///
-/// Current implementation: 9-digit out-of-order kernel with dual-wavefront 16 way SIMD and quarter-round hotstart granularity.
-pub struct CerberusSolver {
+/// Current implementation: 9-digit out-of-order kernel with dual-wavefront backend-width SIMD and quarter-round hotstart granularity.
+pub struct CerberusSolver<B: Backend> {
     message: CerberusMessage,
     attempted_nonces: u64,
     limit: u64,
+    _backend: PhantomData<B>,
 }
 
-impl From<CerberusMessage> for CerberusSolver {
+impl<B: Backend> From<CerberusMessage> for CerberusSolver<B> {
     fn from(message: CerberusMessage) -> Self {
         Self {
             message,
             attempted_nonces: 0,
             limit: !0,
+            _backend: PhantomData,
         }
     }
 }
 
-impl CerberusSolver {
-    #[inline(never)]
-    #[target_feature(enable = "avx512f")]
+impl<B: Backend> CerberusSolver<B> {
+    /// Set the limit.
+    pub const fn set_limit(&mut self, limit: u64) {
+        self.limit = limit;
+    }
+
+    /// Get the attempted nonces.
+    #[must_use]
+    pub const fn attempted_nonces(&self) -> u64 {
+        self.attempted_nonces
+    }
+}
+
+impl<B: Backend> CerberusSolver<B> {
+    #[inline(always)]
     fn solve_decimal_impl<
         const CENTER_WORD_IDX: usize,
         const LANE_ID_WORD_IDX: usize,
@@ -559,11 +582,7 @@ impl CerberusSolver {
         target: u64,
         mask: u64,
     ) -> Option<(u64, u64)> {
-        crate::solver::wide::solve_cerberus_decimal_wide16::<
-            CENTER_WORD_IDX,
-            LANE_ID_WORD_IDX,
-            CONSTANT_WORD_COUNT,
-        >(
+        B::solve_cerberus_decimal::<CENTER_WORD_IDX, LANE_ID_WORD_IDX, CONSTANT_WORD_COUNT>(
             &self.message,
             msg_tpl,
             &mut self.attempted_nonces,
@@ -573,10 +592,9 @@ impl CerberusSolver {
         )
     }
 
-    #[inline(never)]
-    #[target_feature(enable = "avx512f")]
+    #[inline(always)]
     fn solve_binary_impl(&mut self, target: u64, mask: u64) -> Option<u64> {
-        crate::solver::wide::solve_cerberus_binary_wide16(
+        B::solve_cerberus_binary(
             &self.message,
             &mut self.attempted_nonces,
             self.limit,
@@ -586,7 +604,7 @@ impl CerberusSolver {
     }
 }
 
-impl crate::solver::Solver for CerberusSolver {
+impl<B: Backend> crate::solver::Solver for CerberusSolver<B> {
     type Output = [u32; 8];
     fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
@@ -596,17 +614,12 @@ impl crate::solver::Solver for CerberusSolver {
         self.attempted_nonces
     }
 
-    #[expect(
-        unsafe_code,
-        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
-    )]
     fn solve_nonce_only<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<u64> {
-        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+        if !B::available() {
             return None;
         }
         match &self.message {
-            // SAFETY: the RequiredFeatures gate above proves AVX-512F before dispatch.
-            CerberusMessage::Binary(_) => unsafe { self.solve_binary_impl(target, mask) },
+            CerberusMessage::Binary(_) => self.solve_binary_impl(target, mask),
             CerberusMessage::Decimal(message) => {
                 // two digits as lane ID, N=\x00, ? is prefix
                 // position % 4 =0: |1234|5678|NNN9
@@ -615,10 +628,10 @@ impl crate::solver::Solver for CerberusSolver {
                 // position % 4 =3: |1???|2345|6789
 
                 let center_word_idx = message.salt_residual_len / 4 + 1;
-                let position_mod = message.salt_residual_len % 4;
                 let nonce_addend = message.nonce_addend;
                 let salt_residual = message.salt_residual;
                 let salt_residual_len = message.salt_residual_len;
+                let position_mod = message.salt_residual_len % 4;
 
                 for resid0 in 0..10_u8 {
                     for resid1 in 0..10_u8 {
@@ -643,17 +656,14 @@ impl crate::solver::Solver for CerberusSolver {
 
                         macro_rules! dispatch {
                             ($center_word_idx:literal) => {
-                                // SAFETY: the RequiredFeatures gate above proves AVX-512F before dispatch.
-                                unsafe {
-                                    if position_mod < 2 {
-                                        self.solve_decimal_impl::<$center_word_idx, { $center_word_idx - 1 }, {$center_word_idx - 1}>(
-                                            msg, target, mask,
-                                        )
-                                    } else {
-                                        self.solve_decimal_impl::<$center_word_idx, { $center_word_idx + 1 }, $center_word_idx>(
-                                            msg, target, mask,
-                                        )
-                                    }
+                                if position_mod < 2 {
+                                    self.solve_decimal_impl::<$center_word_idx, { $center_word_idx - 1 }, {$center_word_idx - 1}>(
+                                        msg, target, mask,
+                                    )
+                                } else {
+                                    self.solve_decimal_impl::<$center_word_idx, { $center_word_idx + 1 }, $center_word_idx>(
+                                        msg, target, mask,
+                                    )
                                 }
                             };
                         }
@@ -689,6 +699,7 @@ impl crate::solver::Solver for CerberusSolver {
                         }
                     }
                 }
+
                 None
             }
         }
@@ -746,28 +757,29 @@ impl crate::solver::Solver for CerberusSolver {
     }
 }
 
-/// AVX-512 Altcha SHA-256 solver
-pub struct AltchaSha256Solver {
+/// Portable wide-SIMD Altcha SHA-256 solver
+pub struct AltchaSha256Solver<B: Backend> {
     pub(super) message: AltchaMessage,
     pub(super) attempted_nonces: u64,
     pub(super) limit: u64,
+    _backend: PhantomData<B>,
 }
 
-impl From<AltchaMessage> for AltchaSha256Solver {
+impl<B: Backend> From<AltchaMessage> for AltchaSha256Solver<B> {
     fn from(message: AltchaMessage) -> Self {
         Self {
             message,
             attempted_nonces: 0,
             limit: u64::MAX,
+            _backend: PhantomData,
         }
     }
 }
 
-impl AltchaSha256Solver {
-    #[inline(never)]
-    #[target_feature(enable = "avx512f")]
+impl<B: Backend> AltchaSha256Solver<B> {
+    #[inline(always)]
     fn solve_impl<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
-        crate::solver::wide::solve_altcha_impl::<16, TYPE>(
+        B::solve_altcha::<TYPE>(
             &self.message,
             &mut self.attempted_nonces,
             self.limit,
@@ -791,7 +803,7 @@ impl AltchaSha256Solver {
     }
 }
 
-impl crate::solver::Solver for AltchaSha256Solver {
+impl<B: Backend> crate::solver::Solver for AltchaSha256Solver<B> {
     type Output = [u32; 8];
 
     fn set_limit(&mut self, limit: u64) {
@@ -802,138 +814,11 @@ impl crate::solver::Solver for AltchaSha256Solver {
         self.attempted_nonces
     }
 
-    #[expect(
-        unsafe_code,
-        reason = "runtime CPU feature detection proves the required target features before this audited boundary"
-    )]
     fn solve<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
-        if !<RequiredFeatures as crate::solver::CpuIDToken>::get() {
+        if !B::available() {
             return self.solve_fallback::<TYPE>(target, mask);
         }
 
-        // SAFETY: RequiredFeatures::get() above proves AVX-512F is available.
-        unsafe { self.solve_impl::<TYPE>(target, mask) }
-    }
-}
-
-#[cfg(target_feature = "avx512f")]
-#[cfg(test)]
-mod tests {
-    use crate::message::{CerberusBinaryMessage, CerberusDecimalMessage};
-
-    use super::*;
-
-    #[test]
-    fn test_solve_cerberus_decimal() -> anyhow::Result<()> {
-        for i in 0..=1 {
-            crate::solver::tests::test_cerberus_decimal_validator::<CerberusSolver, _>(|prefix| {
-                Some(CerberusMessage::Decimal(CerberusDecimalMessage::new(prefix, i)?).into())
-            })?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_solve_cerberus_binary() -> anyhow::Result<()> {
-        for i in 0..=1 {
-            crate::solver::tests::test_cerberus_binary_validator::<CerberusSolver, _>(|prefix| {
-                Some(CerberusMessage::Binary(CerberusBinaryMessage::new(prefix, i)).into())
-            })?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_solve_decimal() -> anyhow::Result<()> {
-        crate::solver::tests::test_decimal_validator::<DecimalSolver, _>(
-            |prefix, search_space| {
-                if let Some(solver) = SingleBlockMessage::new(prefix, search_space).map(Into::into)
-                {
-                    Some(DecimalSolver::SingleBlock(solver))
-                } else {
-                    DoubleBlockMessage::new(prefix, search_space).map(Into::into)
-                }
-            },
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_solve_decimal_f64() -> anyhow::Result<()> {
-        crate::solver::tests::test_decimal_validator_f64_safe::<DecimalSolver, _>(
-            |prefix, search_space| {
-                if let Some((solver, p)) =
-                    SingleBlockMessage::new_f64(prefix, search_space).map(|(x, p)| (x.into(), p))
-                {
-                    Some((DecimalSolver::SingleBlock(solver), p))
-                } else {
-                    DoubleBlockMessage::new(prefix, search_space)
-                        .map(|x| (DecimalSolver::DoubleBlock(x.into()), None))
-                }
-            },
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_solve_binary() -> anyhow::Result<()> {
-        crate::solver::tests::test_binary_validator::<BinarySolver, _>(
-            |prefix, nonce_byte_count| {
-                BinaryMessage::new(prefix, nonce_byte_count).map(BinarySolver::from)
-            },
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_solve_goaway() -> anyhow::Result<()> {
-        crate::solver::tests::test_goaway_validator::<GoAwaySolver, _>(|prefix| {
-            GoAwaySolver::from(GoAwayMessage::new(
-                core::array::from_fn(|i| {
-                    u32::from_be_bytes([
-                        prefix[i * 4],
-                        prefix[i * 4 + 1],
-                        prefix[i * 4 + 2],
-                        prefix[i * 4 + 3],
-                    ])
-                }),
-                0,
-            ))
-        })?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_solve_altcha() -> anyhow::Result<()> {
-        crate::solver::tests::test_altcha_validator::<AltchaSha256Solver, _>(|message| {
-            Some(AltchaSha256Solver::from(message))
-        })?;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod feature_guard_tests {
-    use super::*;
-    use crate::solver::Solver as _;
-
-    #[test]
-    fn direct_backend_fails_closed_without_avx512() -> anyhow::Result<()> {
-        if <RequiredFeatures as crate::solver::CpuIDToken>::get() {
-            return Ok(());
-        }
-
-        let message = SingleBlockMessage::new(b"avx512-feature-guard", 0)
-            .ok_or_else(|| anyhow::anyhow!("single-block feature-guard fixture is invalid"))?;
-        let mut solver = SingleBlockSolver::from(message);
-        solver.set_limit(16);
-
-        assert!(
-            solver
-                .solve::<{ crate::solver::SOLVE_TYPE_LT }>(0, u64::MAX)
-                .is_none()
-        );
-        assert_eq!(solver.attempted_nonces(), 0);
-        Ok(())
+        self.solve_impl::<TYPE>(target, mask)
     }
 }

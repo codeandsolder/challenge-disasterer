@@ -435,7 +435,7 @@ dependencies = [
  "argon2 0.6.0",
  "axum",
  "bytemuck",
- "challenge-pow-core",
+ "challenge-solvers",
  "clap",
  "cudarc",
  "hashwx",
@@ -481,12 +481,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "challenge-disasterer-simd-width-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "challenge-solvers",
+ "serde_json",
+]
+
+[[package]]
 name = "challenge-disasterer-solver-matrix"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "argon2 0.6.0",
- "challenge-pow-core",
+ "challenge-solvers",
  "clap",
  "hashwx",
  "num-bigint 0.5.1",
@@ -501,12 +510,12 @@ dependencies = [
 name = "challenge-disasterer-wasm-simd128-bench"
 version = "0.1.0"
 dependencies = [
- "challenge-pow-core",
+ "challenge-solvers",
  "serde_json",
 ]
 
 [[package]]
-name = "challenge-pow-core"
+name = "challenge-solvers"
 version = "0.1.0"
 dependencies = [
  "anyhow",

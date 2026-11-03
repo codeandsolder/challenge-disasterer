@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 
 [features]
 default = ["gpu"]
-gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "pow-buster/gpu", "pow-buster/compare-64bit"]
+gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "challenge-solvers/gpu", "challenge-solvers/compare-64bit"]
 
 [dependencies]
 anyhow = "1"
@@ -24,7 +24,7 @@ hashwx = { workspace = true }
 num-bigint = "0.5"
 num_cpus = "1.17"
 pbkdf2 = "0.13"
-pow-buster = { package = "challenge-pow-core", path = "crates/pow-core", default-features = true, features = ["json"] }
+challenge-solvers = { path = "crates/challenge-solvers", default-features = true, features = ["all-challenges"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -47,7 +47,7 @@ opt-level = 3
 workspace = true
 
 [workspace]
-members = ["crates/anubis-argon2", "crates/pow-core", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench"]
+members = ["crates/anubis-argon2", "crates/challenge-solvers", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench", "tools/simd-width-bench"]
 resolver = "3"
 exclude = ["vendor/argon2-fast"]
 

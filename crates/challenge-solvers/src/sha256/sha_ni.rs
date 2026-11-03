@@ -1,18 +1,3 @@
-#![cfg_attr(
-    target_feature = "avx512f",
-    expect(
-        dead_code,
-        reason = "AVX-512 compilation intentionally selects only a subset of the shared SHA-NI helpers"
-    )
-)]
-#![cfg_attr(
-    target_feature = "avx512f",
-    expect(
-        unused_variables,
-        reason = "AVX-512 compilation intentionally selects only a subset of the shared SHA-NI helpers"
-    )
-)]
-
 // these are mainly adapted from the sha2 crate as well,
 // the core logic is verbatim, but shuffling and batch message loading overhead is removed
 #[cfg(target_arch = "x86_64")]
