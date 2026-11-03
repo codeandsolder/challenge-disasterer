@@ -184,7 +184,7 @@ impl GpuSolver {
         HASHES_PER_WG
     }
 
-    pub fn calibrate(&mut self, hashes: u64) -> anyhow::Result<f64> {
+    pub fn calibrate(&self, hashes: u64) -> anyhow::Result<f64> {
         anyhow::ensure!(
             hashes > 0,
             "GPU calibration hash budget must be greater than zero"
@@ -208,7 +208,7 @@ impl GpuSolver {
         Ok(calibration_work_as_f64(hashes) / seconds)
     }
 
-    pub fn solve(&mut self, challenge: &Challenge) -> anyhow::Result<BackendResult> {
+    pub fn solve(&self, challenge: &Challenge) -> anyhow::Result<BackendResult> {
         self.solve_limited(challenge, u64::MAX)?
             .context("GPU search exhausted")
     }
@@ -313,7 +313,7 @@ impl GpuSolver {
     clippy::cast_precision_loss,
     reason = "GPU calibration throughput is approximate telemetry"
 )]
-fn calibration_work_as_f64(work: u64) -> f64 {
+const fn calibration_work_as_f64(work: u64) -> f64 {
     work as f64
 }
 

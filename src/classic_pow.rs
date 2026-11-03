@@ -474,7 +474,7 @@ fn solve_cap_decimal_cpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_cap_decimal_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     prefix: &[u8],
     target: u64,
     mask: u64,
@@ -1239,7 +1239,7 @@ fn encode_words_be(words: [u32; 8]) -> String {
 
 #[cfg(feature = "gpu")]
 pub async fn solve_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     kind: &str,
     challenge: Value,
 ) -> anyhow::Result<Result> {
@@ -1256,7 +1256,7 @@ pub async fn solve_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_cerberus_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let descriptor: CerberusChallenge =
@@ -1297,7 +1297,7 @@ async fn solve_cerberus_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_goaway_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let config: GoAwayConfig =
@@ -1349,7 +1349,7 @@ async fn solve_goaway_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_capjs_v2_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let envelope: CapV2Envelope =
@@ -1411,7 +1411,7 @@ async fn solve_capjs_v2_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_capjs_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     if challenge.get("format").and_then(Value::as_u64) == Some(2) {
@@ -1462,7 +1462,7 @@ async fn solve_capjs_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_haphash_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let challenge: HaphashChallenge =
@@ -1516,7 +1516,7 @@ async fn solve_haphash_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_mcaptcha_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let request: McaptchaRequest =
@@ -1560,7 +1560,7 @@ async fn solve_mcaptcha_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_altcha_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     ensure!(

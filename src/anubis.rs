@@ -67,7 +67,6 @@ pub fn verify(challenge: &Challenge, answer: &Answer) -> bool {
     if challenge.validate().is_err() {
         return false;
     }
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let digest = Sha256::digest(format!("{}{}", challenge.data, answer.nonce).as_bytes());
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -128,7 +127,7 @@ pub fn calibrate_cpu(hash_limit: u64) -> anyhow::Result<f64> {
     clippy::cast_precision_loss,
     reason = "CPU calibration throughput is approximate telemetry"
 )]
-fn calibration_work_as_f64(work: u64) -> f64 {
+const fn calibration_work_as_f64(work: u64) -> f64 {
     work as f64
 }
 

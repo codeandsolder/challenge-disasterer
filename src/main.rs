@@ -80,7 +80,7 @@ fn default_argon2_workers(
     clippy::cast_precision_loss,
     reason = "benchmark work count is converted only to derive approximate throughput timing"
 )]
-fn benchmark_work_as_f64(work: u64) -> f64 {
+const fn benchmark_work_as_f64(work: u64) -> f64 {
     work as f64
 }
 
@@ -133,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
             "benchmark hash budget must be a multiple of {}",
             gpu::GpuSolver::work_quantum()
         );
-        let mut solver = gpu::GpuSolver::create().await?;
+        let solver = gpu::GpuSolver::create().await?;
         let adapter = solver.adapter().to_owned();
         let hashes_per_second = solver.calibrate(hashes)?;
         let solve_ns =

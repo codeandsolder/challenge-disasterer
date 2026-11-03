@@ -195,7 +195,7 @@ pub fn solve_sha256(challenge: &Challenge, implementation: Option<&str>) -> anyh
 
 #[cfg(feature = "gpu")]
 pub async fn solve_sha256_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: &Challenge,
 ) -> anyhow::Result<Result> {
     challenge.validate()?;

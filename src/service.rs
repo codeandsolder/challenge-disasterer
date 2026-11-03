@@ -130,7 +130,7 @@ type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
 
 #[cfg(feature = "gpu")]
 async fn solve_general_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     solver: &str,
     challenge: Value,
 ) -> anyhow::Result<classic_pow::Result> {
@@ -152,6 +152,10 @@ impl AppState {
     #[expect(
         clippy::too_many_lines,
         reason = "service initialization keeps calibration and backend bring-up in one ordered transaction"
+    )]
+    #[expect(
+        clippy::future_not_send,
+        reason = "general WGPU initialization intentionally awaits a local non-Send future before any service worker is spawned"
     )]
     pub async fn initialize(config: Config) -> anyhow::Result<Self> {
         anyhow::ensure!(
@@ -264,7 +268,7 @@ impl AppState {
         #[cfg(feature = "gpu")]
         let (general_gpu_tx, general_gpu_operational) = if config.gpu_enabled {
             match pow_buster::gpu::GpuContext::create().await {
-                Ok(mut gpu) => {
+                Ok(gpu) => {
                     let adapter = gpu.adapter().to_owned();
                     match gpu.warm_up().await {
                         Ok(()) => {
@@ -273,8 +277,7 @@ impl AppState {
                             tokio::spawn(async move {
                                 while let Some(job) = rx.recv().await {
                                     let result =
-                                        solve_general_gpu(&mut gpu, &job.solver, job.challenge)
-                                            .await;
+                                        solve_general_gpu(&gpu, &job.solver, job.challenge).await;
                                     let _ = job.result.send(result);
                                 }
                             });
@@ -1187,7 +1190,7 @@ pub struct StatsResponse {
     clippy::cast_precision_loss,
     reason = "queue ETA is approximate telemetry and does not require integer-exact f64 representation"
 )]
-fn telemetry_work_as_f64(work: u64) -> f64 {
+const fn telemetry_work_as_f64(work: u64) -> f64 {
     work as f64
 }
 
