@@ -15,24 +15,49 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import IO
 
-ROOT = Path(__file__).resolve().parents[1]
-LIVE = ("altcha", "capjs", "cerberus", "goaway", "haphash", "linear", "mcaptcha", "anubis")
+ROOT = Path(__file__).resolve().parents[2]
+LIVE = (
+    "altcha",
+    "capjs",
+    "cerberus",
+    "goaway",
+    "haphash",
+    "linear",
+    "mcaptcha",
+    "anubis",
+)
 ANUBIS_GPU_QUANTUM = 8192
 PREEXISTING_BASELINE_QUANTUM = 160_000
 
 
-def run(argv: list[str], *, env: dict[str, str] | None = None, stdout=None, stderr=None) -> subprocess.CompletedProcess:
+def run(
+    argv: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    stdout: int | IO[bytes] | None = None,
+    stderr: int | IO[bytes] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
     print("+", shlex.join(argv), file=sys.stderr, flush=True)
-    return subprocess.run(argv, cwd=ROOT, env=env, stdout=stdout, stderr=stderr, check=False)
+    return subprocess.run(
+        argv, cwd=ROOT, env=env, stdout=stdout, stderr=stderr, check=False
+    )
 
 
 def text(argv: list[str]) -> str:
-    result = subprocess.run(argv, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    result = subprocess.run(
+        argv,
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
     return result.stdout.strip()
 
 
-def metadata() -> dict:
+def metadata() -> dict[str, object]:
     return {
         "schema": 1,
         "timestamp_unix_ms": time.time_ns() // 1_000_000,
@@ -42,7 +67,9 @@ def metadata() -> dict:
         "cpu_model": next(
             (
                 line.split(":", 1)[1].strip()
-                for line in Path("/proc/cpuinfo").read_text(errors="replace").splitlines()
+                for line in Path("/proc/cpuinfo")
+                .read_text(encoding="utf-8", errors="replace")
+                .splitlines()
                 if line.startswith("model name") and ":" in line
             ),
             "unknown",
@@ -51,13 +78,27 @@ def metadata() -> dict:
         "git_status": text(["git", "status", "--short"]),
         "rustc": text(["rustc", "-Vv"]),
         "kernel": text(["uname", "-a"]),
-        "loadavg": Path("/proc/loadavg").read_text().strip(),
-        "vulkan": text(["bash", "-lc", "vulkaninfo --summary 2>/dev/null | rg 'deviceName|driverName|driverInfo' || true"]),
-        "nvidia": text(["bash", "-lc", "nvidia-smi --query-gpu=name,driver_version,pci.bus_id --format=csv,noheader 2>/dev/null || true"]),
+        "loadavg": Path("/proc/loadavg").read_text(encoding="utf-8").strip(),
+        "vulkan": text(
+            [
+                "bash",
+                "-lc",
+                "vulkaninfo --summary 2>/dev/null | rg 'deviceName|driverName|driverInfo' || true",
+            ]
+        ),
+        "nvidia": text(
+            [
+                "bash",
+                "-lc",
+                "nvidia-smi --query-gpu=name,driver_version,pci.bus_id --format=csv,noheader 2>/dev/null || true",
+            ]
+        ),
         "tools": {
             "go": text(["bash", "-lc", "go version 2>/dev/null || true"]),
             "node": text(["bash", "-lc", "node --version 2>/dev/null || true"]),
-            "haproxy": text(["bash", "-lc", "haproxy -v 2>/dev/null | head -n1 || true"]),
+            "haproxy": text(
+                ["bash", "-lc", "haproxy -v 2>/dev/null | head -n1 || true"]
+            ),
             "chromium": text(["bash", "-lc", "chromium --version 2>/dev/null || true"]),
             "sccache": text(["bash", "-lc", "sccache --version 2>/dev/null || true"]),
         },
@@ -66,13 +107,17 @@ def metadata() -> dict:
 
 
 def cpu_flags() -> set[str]:
-    for line in Path("/proc/cpuinfo").read_text(errors="replace").splitlines():
+    for line in (
+        Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace").splitlines()
+    ):
         if line.startswith("flags") and ":" in line:
             return set(line.split(":", 1)[1].split())
     return set()
 
 
-def classic_implementations(protocol: str, all_implementations: bool, gpu: bool) -> list[str]:
+def classic_implementations(
+    protocol: str, all_implementations: bool, gpu: bool
+) -> list[str]:
     if not all_implementations:
         return ["auto"]
     if protocol == "linear":
@@ -119,17 +164,27 @@ def main() -> int:
     parser.add_argument("--cpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--live", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--preexisting-baseline", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--external-baselines", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--preexisting-baseline", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--external-baselines", action=argparse.BooleanOptionalAction, default=True
+    )
     parser.add_argument(
         "--preexisting-limit",
         type=int,
         default=1_120_000,
         help="Common fixed-work budget aligned to the historical pow-buster solver quanta.",
     )
-    parser.add_argument("--browser-reference", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--haphash-debian-live", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--require-clean", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--browser-reference", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--haphash-debian-live", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--require-clean", action=argparse.BooleanOptionalAction, default=True
+    )
     parser.add_argument(
         "--all-implementations",
         action=argparse.BooleanOptionalAction,
@@ -148,14 +203,19 @@ def main() -> int:
             f"--throughput-limit must be a multiple of {ANUBIS_GPU_QUANTUM} when --gpu is enabled"
         )
 
-    if args.preexisting_baseline and args.preexisting_limit % PREEXISTING_BASELINE_QUANTUM != 0:
+    if (
+        args.preexisting_baseline
+        and args.preexisting_limit % PREEXISTING_BASELINE_QUANTUM != 0
+    ):
         parser.error(
             f"--preexisting-limit must be a multiple of {PREEXISTING_BASELINE_QUANTUM}"
         )
 
     meta = metadata()
     if args.require_clean and meta["git_status"]:
-        parser.error(f"refusing retained benchmark from dirty tree:\n{meta['git_status']}")
+        parser.error(
+            f"refusing retained benchmark from dirty tree:\n{meta['git_status']}"
+        )
     meta["parameters"] = {
         "samples": args.samples,
         "correctness_limit": args.correctness_limit,
@@ -180,10 +240,16 @@ def main() -> int:
 
     statuses: dict[str, int] = {}
     matrix_bin = ROOT / "target/release/challenge-disasterer-solver-matrix"
-    matrix_build = run([
-        "cargo", "build", "--locked", "--release",
-        "--manifest-path", "tools/solver-matrix/Cargo.toml",
-    ])
+    matrix_build = run(
+        [
+            "cargo",
+            "build",
+            "--locked",
+            "--release",
+            "--manifest-path",
+            "tools/solver-matrix/Cargo.toml",
+        ]
+    )
     statuses["build-solver-matrix"] = matrix_build.returncode
 
     gpu_adapters: list[str] = []
@@ -192,27 +258,45 @@ def main() -> int:
             [str(matrix_bin), "--list-gpu-adapters"],
             cwd=ROOT,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
         )
         statuses["gpu-adapter-discovery"] = discovered.returncode
         if discovered.returncode == 0:
-            gpu_adapters = json.loads(discovered.stdout)
-            if not gpu_adapters:
+            decoded_adapters = json.loads(discovered.stdout)
+            if isinstance(decoded_adapters, list):
+                gpu_adapters = [
+                    adapter for adapter in decoded_adapters if isinstance(adapter, str)
+                ]
+            if not gpu_adapters or len(gpu_adapters) != len(decoded_adapters):
                 statuses["gpu-adapter-discovery"] = 1
     meta["gpu_adapters"] = gpu_adapters
     (out / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
 
     if matrix_build.returncode == 0:
-        for phase, limit in (("correctness", args.correctness_limit), ("throughput", args.throughput_limit)):
-            with (out / f"solver-{phase}.jsonl").open("wb") as matrix_stdout, \
-                 (out / f"solver-{phase}.stderr.log").open("wb") as matrix_stderr:
+        for phase, limit in (
+            ("correctness", args.correctness_limit),
+            ("throughput", args.throughput_limit),
+        ):
+            with (
+                (out / f"solver-{phase}.jsonl").open("wb") as matrix_stdout,
+                (out / f"solver-{phase}.stderr.log").open("wb") as matrix_stderr,
+            ):
+                git_sha = meta["git_sha"]
+                if not isinstance(git_sha, str):
+                    raise TypeError("hardware-matrix metadata git_sha is not a string")
                 common = [
                     str(matrix_bin),
-                    "--samples", str(args.samples), "--limit", str(limit),
-                    "--argon2-limit", str(args.argon2_limit),
-                    "--mode", phase, "--commit", meta["git_sha"],
+                    "--samples",
+                    str(args.samples),
+                    "--limit",
+                    str(limit),
+                    "--argon2-limit",
+                    str(args.argon2_limit),
+                    "--mode",
+                    phase,
+                    "--commit",
+                    git_sha,
                 ]
                 if args.cpu:
                     cpu = run(
@@ -239,7 +323,10 @@ def main() -> int:
         statuses["build-specialized-anubis-gpu"] = build.returncode
         if build.returncode == 0:
             specialized_codes = []
-            with specialized_stdout.open("wb") as stdout, specialized_stderr.open("wb") as stderr:
+            with (
+                specialized_stdout.open("wb") as stdout,
+                specialized_stderr.open("wb") as stderr,
+            ):
                 for adapter in gpu_adapters:
                     env = os.environ.copy()
                     env["WGPU_ADAPTER_NAME"] = adapter
@@ -247,8 +334,10 @@ def main() -> int:
                         specialized = run(
                             [
                                 str(ROOT / "target/release/challenge-disasterer"),
-                                "--benchmark-anubis-gpu-hashes", str(args.throughput_limit),
-                                "--benchmark-sample", str(sample),
+                                "--benchmark-anubis-gpu-hashes",
+                                str(args.throughput_limit),
+                                "--benchmark-sample",
+                                str(sample),
                             ],
                             env=env,
                             stdout=stdout,
@@ -268,31 +357,66 @@ def main() -> int:
         # the in-tree solver. Canonical-path sccache needs their common source root
         # declared explicitly so both workspaces stay inside one canonical build root.
         baseline_env["SCCACHE_CANONICAL_BUILD_ROOT"] = str(ROOT)
-        build = run([
-            "cargo", "build", "--locked", "--release",
-            "--manifest-path", str(baseline_manifest),
-        ], env=baseline_env)
+        build = run(
+            [
+                "cargo",
+                "build",
+                "--locked",
+                "--release",
+                "--manifest-path",
+                str(baseline_manifest),
+            ],
+            env=baseline_env,
+        )
         statuses["build-preexisting-baseline"] = build.returncode
         if build.returncode == 0:
-            baseline_bin = ROOT / "tools" / "preexisting-baseline" / "target" / "release" / "challenge-disasterer-preexisting-baseline"
+            baseline_bin = (
+                ROOT
+                / "tools"
+                / "preexisting-baseline"
+                / "target"
+                / "release"
+                / "challenge-disasterer-preexisting-baseline"
+            )
             with baseline_out.open("wb") as stdout, baseline_err.open("wb") as stderr:
-                result = run([str(baseline_bin), "--samples", str(args.samples), "--limit", str(args.preexisting_limit)], stdout=stdout, stderr=stderr)
+                result = run(
+                    [
+                        str(baseline_bin),
+                        "--samples",
+                        str(args.samples),
+                        "--limit",
+                        str(args.preexisting_limit),
+                    ],
+                    stdout=stdout,
+                    stderr=stderr,
+                )
             statuses["preexisting-baseline"] = result.returncode
 
     if args.external_baselines:
         external_out = out / "external-baselines.jsonl"
         external_err = out / "external-baselines.stderr.log"
         external_cmd = [
-            "uv", "run", str(ROOT / "tools" / "external-baselines.py"),
-            "--samples", str(args.samples),
-            "--hashx-limit", str(args.throughput_limit),
-            "--hashwx-limit", str(args.throughput_limit),
-            "--hashwx-nonces-per-seed", str(args.hashwx_nonces_per_seed),
-            "--argon2-limit", str(args.argon2_limit),
-            "--cap-rsw-squarings", str(args.cap_rsw_squarings),
-            "--linear-limit", str(args.throughput_limit),
-            "--mcaptcha-limit", str(args.throughput_limit),
-            "--opencl-limit", str(args.throughput_limit),
+            "uv",
+            "run",
+            str(ROOT / "tools" / "ci" / "external-baselines.py"),
+            "--samples",
+            str(args.samples),
+            "--hashx-limit",
+            str(args.throughput_limit),
+            "--hashwx-limit",
+            str(args.throughput_limit),
+            "--hashwx-nonces-per-seed",
+            str(args.hashwx_nonces_per_seed),
+            "--argon2-limit",
+            str(args.argon2_limit),
+            "--cap-rsw-squarings",
+            str(args.cap_rsw_squarings),
+            "--linear-limit",
+            str(args.throughput_limit),
+            "--mcaptcha-limit",
+            str(args.throughput_limit),
+            "--opencl-limit",
+            str(args.throughput_limit),
             "--cpu" if args.cpu else "--no-cpu",
             "--gpu" if args.gpu else "--no-gpu",
         ]
@@ -306,18 +430,25 @@ def main() -> int:
             if name == "anubis":
                 anubis_args = [
                     "--fuzz",
-                    "--fuzz-repeats", str(max(1, min(args.samples, 4))),
+                    "--fuzz-repeats",
+                    str(max(1, min(args.samples, 4))),
                     "--benchmark",
-                    "--benchmark-samples", str(args.samples),
+                    "--benchmark-samples",
+                    str(args.samples),
                 ]
                 browser_reference_pending = args.browser_reference
                 if args.cpu:
                     cpu_args = [
                         *anubis_args,
-                        "--browser-reference", str(browser_reference_pending).lower(),
+                        "--browser-reference",
+                        str(browser_reference_pending).lower(),
                     ]
                     with (out / "live-anubis-cpu.log").open("wb") as log:
-                        result = run([str(script), *cpu_args], stdout=log, stderr=subprocess.STDOUT)
+                        result = run(
+                            [str(script), *cpu_args],
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                        )
                     statuses["live-anubis-cpu"] = result.returncode
                     browser_reference_pending = False
                 if args.gpu and gpu_adapters:
@@ -326,7 +457,8 @@ def main() -> int:
                         env["WGPU_ADAPTER_NAME"] = adapter
                         gpu_args = [
                             *anubis_args,
-                            "--browser-reference", str(browser_reference_pending).lower(),
+                            "--browser-reference",
+                            str(browser_reference_pending).lower(),
                             "--solver-gpu",
                             "--gpu-only",
                             "--exercise-all-gpu-adapters",
@@ -343,7 +475,9 @@ def main() -> int:
                         browser_reference_pending = False
                 continue
 
-            cases = classic_implementations(name, args.all_implementations, bool(gpu_adapters))
+            cases = classic_implementations(
+                name, args.all_implementations, bool(gpu_adapters)
+            )
             upstream_variants = (
                 (
                     ("current", None),
@@ -358,18 +492,25 @@ def main() -> int:
             )
             for upstream_label, upstream_ref in upstream_variants:
                 protocol_variants = (
-                    (("", None), ("-d0", "0"))
-                    if name == "haphash"
-                    else (("", None),)
+                    (("", None), ("-d0", "0")) if name == "haphash" else (("", None),)
                 )
                 for implementation in cases:
                     adapter_cases = [(None, None)]
                     if implementation == "wgpu":
-                        adapter_cases = [(index, adapter) for index, adapter in enumerate(gpu_adapters)]
+                        adapter_cases = [
+                            (index, adapter)
+                            for index, adapter in enumerate(gpu_adapters)
+                        ]
                     for protocol_suffix, haphash_difficulty in protocol_variants:
                         for adapter_index, adapter in adapter_cases:
-                            variant_suffix = "" if upstream_label == "current" else f"-{upstream_label}"
-                            adapter_suffix = "" if adapter_index is None else f"-gpu-{adapter_index}"
+                            variant_suffix = (
+                                ""
+                                if upstream_label == "current"
+                                else f"-{upstream_label}"
+                            )
+                            adapter_suffix = (
+                                "" if adapter_index is None else f"-gpu-{adapter_index}"
+                            )
                             suffix = f"{name}{variant_suffix}{protocol_suffix}-{implementation}{adapter_suffix}"
                             env = os.environ.copy()
                             env["CHALLENGE_IMPLEMENTATION"] = implementation
@@ -385,13 +526,29 @@ def main() -> int:
                                 and args.haphash_debian_live
                             ):
                                 env["HAPHASH_DEBIAN_LIVE"] = "1"
-                            if name == "capjs" and implementation == "auto" and adapter is None:
+                            if (
+                                name == "capjs"
+                                and implementation == "auto"
+                                and adapter is None
+                            ):
                                 env["CAPJS_PRODUCTION_SHAPE"] = "1"
-                            if name == "altcha" and implementation == "auto" and adapter is None and args.cpu:
-                                env["ALTCHA_BENCH_OUT"] = str(out / "altcha-current.jsonl")
+                            if (
+                                name == "altcha"
+                                and implementation == "auto"
+                                and adapter is None
+                                and args.cpu
+                            ):
+                                env["ALTCHA_BENCH_OUT"] = str(
+                                    out / "altcha-current.jsonl"
+                                )
                                 env["ALTCHA_BENCH_SAMPLES"] = str(args.samples)
                             with (out / f"live-{suffix}.log").open("wb") as log:
-                                result = run([str(script)], env=env, stdout=log, stderr=subprocess.STDOUT)
+                                result = run(
+                                    [str(script)],
+                                    env=env,
+                                    stdout=log,
+                                    stderr=subprocess.STDOUT,
+                                )
                             statuses[f"live-{suffix}"] = result.returncode
 
     manifest = {"metadata": meta, "statuses": statuses}

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -21,13 +22,16 @@ import subprocess
 import sys
 import time
 import tomllib
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import cast
 
 import numpy as np
-from argon2.low_level import Type as Argon2Type, hash_secret_raw
 import pyopencl as cl
+from argon2.low_level import Type as Argon2Type
+from argon2.low_level import hash_secret_raw
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 CACHE = ROOT / "target" / "external-baselines"
 
 SOURCES = {
@@ -65,7 +69,9 @@ STEPS_PER_TASK = 0x100
 OPENCL_WARMUP_RUNS = 3
 
 
-def run(argv: list[str], *, cwd: Path | None = None, capture: bool = False) -> subprocess.CompletedProcess:
+def run(
+    argv: list[str], *, cwd: Path | None = None, capture: bool = False
+) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(argv), file=sys.stderr, flush=True)
     return subprocess.run(
         argv,
@@ -82,38 +88,72 @@ def ensure_checkout(name: str) -> Path:
     dst = CACHE / "src" / name
     if not (dst / ".git").is_dir():
         dst.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dst)], check=True, stdout=sys.stderr)
+        subprocess.run(
+            ["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dst)],
+            check=True,
+            stdout=sys.stderr,
+        )
         sparse = {
             "tor_hashx": "src/ext/equix",
             "arti_hashx": "crates/hashx",
         }.get(name)
         if sparse is not None:
-            subprocess.run(["git", "-C", str(dst), "sparse-checkout", "set", sparse], check=True, stdout=sys.stderr)
-    subprocess.run(["git", "-C", str(dst), "fetch", "--depth", "1", "origin", rev], check=True, stdout=sys.stderr)
-    subprocess.run(["git", "-C", str(dst), "checkout", "--detach", "--force", rev], check=True, stdout=sys.stderr)
-    actual = subprocess.check_output(["git", "-C", str(dst), "rev-parse", "HEAD"], text=True).strip()
+            subprocess.run(
+                ["git", "-C", str(dst), "sparse-checkout", "set", sparse],
+                check=True,
+                stdout=sys.stderr,
+            )
+    subprocess.run(
+        ["git", "-C", str(dst), "fetch", "--depth", "1", "origin", rev],
+        check=True,
+        stdout=sys.stderr,
+    )
+    subprocess.run(
+        ["git", "-C", str(dst), "checkout", "--detach", "--force", rev],
+        check=True,
+        stdout=sys.stderr,
+    )
+    actual = subprocess.check_output(
+        ["git", "-C", str(dst), "rev-parse", "HEAD"], text=True
+    ).strip()
     if actual != rev:
         raise RuntimeError(f"{name}: expected {rev}, got {actual}")
     return dst
 
 
-def emit(*, baseline: str, protocol: str, variant: str, implementation: str,
-         accelerator: str, sample: int, attempted: int, ns: int,
-         gpu_adapter: str | None = None, comparison_scope: str = "primitive-ceiling") -> None:
-    print(json.dumps({
-        "schema": 1,
-        "baseline": baseline,
-        "protocol": protocol,
-        "variant": variant,
-        "implementation": implementation,
-        "accelerator": accelerator,
-        "gpu_adapter": gpu_adapter,
-        "sample": sample,
-        "attempted_work": attempted,
-        "solve_ns": ns,
-        "work_per_second": attempted * 1e9 / ns,
-        "comparison_scope": comparison_scope,
-    }, separators=(",", ":")), flush=True)
+def emit(
+    *,
+    baseline: str,
+    protocol: str,
+    variant: str,
+    implementation: str,
+    accelerator: str,
+    sample: int,
+    attempted: int,
+    ns: int,
+    gpu_adapter: str | None = None,
+    comparison_scope: str = "primitive-ceiling",
+) -> None:
+    print(
+        json.dumps(
+            {
+                "schema": 1,
+                "baseline": baseline,
+                "protocol": protocol,
+                "variant": variant,
+                "implementation": implementation,
+                "accelerator": accelerator,
+                "gpu_adapter": gpu_adapter,
+                "sample": sample,
+                "attempted_work": attempted,
+                "solve_ns": ns,
+                "work_per_second": attempted * 1e9 / ns,
+                "comparison_scope": comparison_scope,
+            },
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
 
 
 HASHX_VECTOR_HEX = "aebdd50aa67c93afb82a4c534603b65e46decd584c55161c526ebc099415ccf1"
@@ -194,12 +234,29 @@ def _build_c_hashx(name: str, src: Path, *, tor: bool) -> Path:
     build = CACHE / "build" / name
     build.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["cmake", "-S", str(hashx_src), "-B", str(build), "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"],
+        [
+            "cmake",
+            "-S",
+            str(hashx_src),
+            "-B",
+            str(build),
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+        ],
         check=True,
         stdout=sys.stderr,
     )
     subprocess.run(
-        ["cmake", "--build", str(build), "--config", "Release", "-j", "--target", "hashx_static"],
+        [
+            "cmake",
+            "--build",
+            str(build),
+            "--config",
+            "Release",
+            "-j",
+            "--target",
+            "hashx_static",
+        ],
         check=True,
         stdout=sys.stderr,
     )
@@ -209,15 +266,21 @@ def _build_c_hashx(name: str, src: Path, *, tor: bool) -> Path:
     args = [os.environ.get("CC", "cc"), "-O3", "-DHASHX_STATIC"]
     if tor:
         args.append("-DTOR_HASHX=1")
-    args.extend([
-        "-I", str(hashx_src / "include"),
-        str(adapter), str(build / "libhashx.a"), "-o", str(binary),
-    ])
+    args.extend(
+        [
+            "-I",
+            str(hashx_src / "include"),
+            str(adapter),
+            str(build / "libhashx.a"),
+            "-o",
+            str(binary),
+        ]
+    )
     subprocess.run(args, check=True, stdout=sys.stderr)
     return binary
 
 
-ARTI_HASHX_ADAPTER = r'''#![forbid(unsafe_code)]
+ARTI_HASHX_ADAPTER = r"""#![forbid(unsafe_code)]
 use hashx::{HashXBuilder, RuntimeOption};
 use std::time::Instant;
 
@@ -241,7 +304,7 @@ fn main() {
     }
     println!("{} {sink}", started.elapsed().as_nanos());
 }
-'''
+"""
 
 
 def build_arti_hashx(src: Path) -> Path:
@@ -250,12 +313,20 @@ def build_arti_hashx(src: Path) -> Path:
     (crate_dir / "src").mkdir(parents=True, exist_ok=True)
     (crate_dir / "Cargo.toml").write_text(
         '[package]\nname="arti-hashx-fixed"\nversion="0.0.0"\nedition="2024"\n'
-        f'[dependencies]\nhashx={{path={json.dumps(str(src / "crates/hashx"))}}}\n\n[workspace]\n'
+        f"[dependencies]\nhashx={{path={json.dumps(str(src / 'crates/hashx'))}}}\n\n[workspace]\n"
     )
     (crate_dir / "src/main.rs").write_text(ARTI_HASHX_ADAPTER)
     target = build / "target"
     subprocess.run(
-        ["cargo", "build", "--release", "--manifest-path", str(crate_dir / "Cargo.toml"), "--target-dir", str(target)],
+        [
+            "cargo",
+            "build",
+            "--release",
+            "--manifest-path",
+            str(crate_dir / "Cargo.toml"),
+            "--target-dir",
+            str(target),
+        ],
         check=True,
         stdout=sys.stderr,
     )
@@ -280,28 +351,34 @@ def bench_hashx(samples: int, limit: int) -> None:
     implementations = []
 
     tevador_src = ensure_checkout("hashx")
-    implementations.append((
-        f"tevador/hashx@{SOURCES['hashx'][1][:12]}",
-        _build_c_hashx("hashx", tevador_src, tor=False),
-        ("compiled", "interpreted"),
-        "c",
-    ))
+    implementations.append(
+        (
+            f"tevador/hashx@{SOURCES['hashx'][1][:12]}",
+            _build_c_hashx("hashx", tevador_src, tor=False),
+            ("compiled", "interpreted"),
+            "c",
+        )
+    )
 
     tor_src = ensure_checkout("tor_hashx")
-    implementations.append((
-        f"tor/src/ext/equix@{SOURCES['tor_hashx'][1][:12]}",
-        _build_c_hashx("tor_hashx", tor_src, tor=True),
-        ("compiled", "interpreted"),
-        "c-tor",
-    ))
+    implementations.append(
+        (
+            f"tor/src/ext/equix@{SOURCES['tor_hashx'][1][:12]}",
+            _build_c_hashx("tor_hashx", tor_src, tor=True),
+            ("compiled", "interpreted"),
+            "c-tor",
+        )
+    )
 
     arti_src = ensure_checkout("arti_hashx")
-    implementations.append((
-        f"tor/arti-hashx@{SOURCES['arti_hashx'][1][:12]}",
-        build_arti_hashx(arti_src),
-        ("compiled", "interpreted"),
-        "rust-arti",
-    ))
+    implementations.append(
+        (
+            f"tor/arti-hashx@{SOURCES['arti_hashx'][1][:12]}",
+            build_arti_hashx(arti_src),
+            ("compiled", "interpreted"),
+            "rust-arti",
+        )
+    )
 
     # Every timing row is gated by the same upstream test vector. Also run the
     # vector once even when samples=0, so this command doubles as a compatibility check.
@@ -334,7 +411,17 @@ def build_hashwx(src: Path) -> Path:
         stdout=sys.stderr,
     )
     subprocess.run(
-        ["cmake", "--build", str(build), "--config", "Release", "-j", "--target", "hashwx-tests", "hashwx-bench"],
+        [
+            "cmake",
+            "--build",
+            str(build),
+            "--config",
+            "Release",
+            "-j",
+            "--target",
+            "hashwx-tests",
+            "hashwx-bench",
+        ],
         check=True,
         stdout=sys.stderr,
     )
@@ -356,11 +443,16 @@ def bench_hashwx(samples: int, limit: int, nonces_per_seed: int) -> None:
             result = run(
                 [
                     str(binary),
-                    "--start", str(1000 + sample * seeds),
-                    "--seeds", str(seeds),
-                    "--nonces", str(nonces_per_seed),
-                    "--threads", "1",
-                    "--diff", str(2_147_483_647),
+                    "--start",
+                    str(1000 + sample * seeds),
+                    "--seeds",
+                    str(seeds),
+                    "--nonces",
+                    str(nonces_per_seed),
+                    "--threads",
+                    "1",
+                    "--diff",
+                    str(2_147_483_647),
                     *extra,
                 ],
                 capture=True,
@@ -369,7 +461,9 @@ def bench_hashwx(samples: int, limit: int, nonces_per_seed: int) -> None:
                 raise RuntimeError(result.stderr or result.stdout)
             match = HASHWX_RATE.search(result.stdout)
             if not match:
-                raise RuntimeError(f"unable to parse hashwx-bench output:\n{result.stdout}")
+                raise RuntimeError(
+                    f"unable to parse hashwx-bench output:\n{result.stdout}"
+                )
             rate = float(match.group(1))
             ns = max(1, round(limit * 1e9 / rate))
             emit(
@@ -384,6 +478,7 @@ def bench_hashwx(samples: int, limit: int, nonces_per_seed: int) -> None:
                 comparison_scope="primitive-ceiling",
             )
 
+
 CAP_RSW_MODULUS_HEX = (
     "bdbf80c89a6616ba09da637cb6c5199dbea3ad7fddeb56847a8a89dcf097e464"
     "bf7e1ab4aee4827fdcb00e1aa3096caaeba5e68eac491ddd0b79a0d2baf2efdc"
@@ -395,7 +490,7 @@ CAP_RSW_MODULUS_HEX = (
     "2f16146ce27d8814951b87de48f03d9df639c950fafb2ad6807396b5741d"
 )
 
-CAP_RSW_NODE_ADAPTER = r'''import fs from "node:fs";
+CAP_RSW_NODE_ADAPTER = r"""import fs from "node:fs";
 import vm from "node:vm";
 import { webcrypto } from "node:crypto";
 import { MessageChannel } from "node:worker_threads";
@@ -424,7 +519,7 @@ if (!result) {
 }
 console.log(result.y);
 console.log(elapsed.toString());
-'''
+"""
 
 CAP_RSW_GMP_ADAPTER = r"""
 #include <gmp.h>
@@ -462,7 +557,9 @@ int main(int argc, char **argv) {
 def cap_rsw_input(sample: int) -> tuple[str, str]:
     modulus = int(CAP_RSW_MODULUS_HEX, 16)
     material = b"".join(
-        hashlib.sha512(f"challenge-disasterer-cap-rsw:{sample}:{block}".encode()).digest()
+        hashlib.sha512(
+            f"challenge-disasterer-cap-rsw:{sample}:{block}".encode()
+        ).digest()
         for block in range(4)
     )
     x = int.from_bytes(material, "big") % (modulus - 3) + 2
@@ -477,10 +574,21 @@ def build_cap_rsw_adapters(cap_src: Path) -> tuple[Path, Path, str]:
     gmp_src = build / "cap-rsw-gmp.c"
     gmp_src.write_text(CAP_RSW_GMP_ADAPTER)
     gmp_binary = build / "cap-rsw-gmp"
-    gmp_version = subprocess.check_output(["pkg-config", "--modversion", "gmp"], text=True).strip()
-    gmp_flags = subprocess.check_output(["pkg-config", "--cflags", "--libs", "gmp"], text=True).split()
+    gmp_version = subprocess.check_output(
+        ["pkg-config", "--modversion", "gmp"], text=True
+    ).strip()
+    gmp_flags = subprocess.check_output(
+        ["pkg-config", "--cflags", "--libs", "gmp"], text=True
+    ).split()
     subprocess.run(
-        [os.environ.get("CC", "cc"), "-O3", str(gmp_src), *gmp_flags, "-o", str(gmp_binary)],
+        [
+            os.environ.get("CC", "cc"),
+            "-O3",
+            str(gmp_src),
+            *gmp_flags,
+            "-o",
+            str(gmp_binary),
+        ],
         check=True,
         stdout=sys.stderr,
     )
@@ -502,7 +610,9 @@ def _run_cap_rsw(argv: list[str]) -> tuple[str, int]:
 
 def bench_cap_rsw(samples: int, squarings: int) -> None:
     if squarings <= 0 or squarings > 2_147_483_647:
-        raise ValueError("Cap RSW squaring count must fit the official worker's signed 32-bit t")
+        raise ValueError(
+            "Cap RSW squaring count must fit the official worker's signed 32-bit t"
+        )
     cap_src = ensure_checkout("cap")
     node_adapter, gmp_binary, gmp_version = build_cap_rsw_adapters(cap_src)
     worker = cap_src / "widget/src/src/worker.js"
@@ -542,29 +652,45 @@ def bench_cap_rsw(samples: int, squarings: int) -> None:
 
 
 def mcaptcha_crate_version() -> str:
-    lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
+    lock = tomllib.loads((ROOT / "Cargo.lock").read_text(encoding="utf-8"))
     versions = [
         package["version"]
         for package in lock["package"]
         if package["name"] == "mcaptcha_pow_sha256"
     ]
     if len(versions) != 1:
-        raise RuntimeError(f"expected exactly one locked mcaptcha_pow_sha256 package, got {versions}")
-    return versions[0]
+        raise RuntimeError(
+            f"expected exactly one locked mcaptcha_pow_sha256 package, got {versions}"
+        )
+    version = versions[0]
+    if not isinstance(version, str):
+        raise TypeError("locked mCaptcha package version is not a string")
+    return version
 
 
 def bench_mcaptcha(samples: int, limit: int) -> None:
     if limit <= 0:
         raise ValueError("mCaptcha fixed-work limit must be positive")
-    build = run([
-        "cargo", "build", "--locked", "--release", "-p", "challenge-disasterer-mcaptcha-e2e"
-    ])
+    build = run(
+        [
+            "cargo",
+            "build",
+            "--locked",
+            "--release",
+            "-p",
+            "challenge-disasterer-mcaptcha-e2e",
+        ]
+    )
     if build.returncode:
-        raise RuntimeError("failed to build current official mCaptcha reference harness")
+        raise RuntimeError(
+            "failed to build current official mCaptcha reference harness"
+        )
     binary = ROOT / "target" / "release" / "challenge-disasterer-mcaptcha-e2e"
     version = mcaptcha_crate_version()
     for sample in range(samples):
-        result = run([str(binary), "--benchmark-fixed", str(sample), str(limit)], capture=True)
+        result = run(
+            [str(binary), "--benchmark-fixed", str(sample), str(limit)], capture=True
+        )
         if result.returncode:
             raise RuntimeError(result.stderr or result.stdout)
         lines = result.stdout.strip().splitlines()
@@ -577,7 +703,9 @@ def bench_mcaptcha(samples: int, limit: int) -> None:
         ).digest()
         expected = int.from_bytes(digest[:16], "big")
         if int(lines[0]) != expected:
-            raise RuntimeError(f"mCaptcha byte-layout mismatch: {lines[0]} != {expected}")
+            raise RuntimeError(
+                f"mCaptcha byte-layout mismatch: {lines[0]} != {expected}"
+            )
         ns = int(lines[1].split()[0])
         emit(
             baseline=f"mCaptcha/mcaptcha_pow_sha256@{version}",
@@ -683,7 +811,7 @@ def x86_64_microarch_level() -> str | None:
         return None
     flags = set()
     try:
-        for line in Path("/proc/cpuinfo").read_text().splitlines():
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
             if line.startswith("flags"):
                 flags.update(line.split(":", 1)[1].split())
                 break
@@ -706,18 +834,27 @@ def build_argon2(src: Path) -> Path:
         make_args.append(f"OPTTARGET={opttarget}")
     # The source selection (ref.c vs opt.c) is decided at make parse time, so
     # clean before rebuilding with a possibly different deterministic target.
-    subprocess.run(make_args + ["clean"], check=True, stdout=sys.stderr, env=make_env)
-    subprocess.run(make_args + ["-j", "libargon2.a"], check=True, stdout=sys.stderr, env=make_env)
+    subprocess.run([*make_args, "clean"], check=True, stdout=sys.stderr, env=make_env)
+    subprocess.run(
+        [*make_args, "-j", "libargon2.a"], check=True, stdout=sys.stderr, env=make_env
+    )
     adapter = build / "argon2-fixed.c"
     adapter.write_text(ARGON2_ADAPTER)
     binary = build / "argon2-fixed"
     cc_args = [os.environ.get("CC", "cc"), "-O3"]
     if opttarget is not None:
         cc_args.append(f"-march={opttarget}")
-    cc_args.extend([
-        "-I", str(src / "include"), str(adapter), str(src / "libargon2.a"),
-        "-pthread", "-o", str(binary),
-    ])
+    cc_args.extend(
+        [
+            "-I",
+            str(src / "include"),
+            str(adapter),
+            str(src / "libargon2.a"),
+            "-pthread",
+            "-o",
+            str(binary),
+        ]
+    )
     subprocess.run(cc_args, check=True, stdout=sys.stderr)
     return binary
 
@@ -762,22 +899,22 @@ def bench_argon2(samples: int, limit: int) -> None:
         )
 
 
-def load_sha256_prefix(src: Path):
-    spec = importlib.util.spec_from_file_location("anubis_offload_sha256", src / "sha256.py")
+def _load_sha256_prefix(src: Path) -> Callable[[bytes], Sequence[int]]:
+    spec = importlib.util.spec_from_file_location(
+        "anubis_offload_sha256", src / "sha256.py"
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError("failed to load anubis_offload sha256.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.sha256_prefix
+    return cast(Callable[[bytes], Sequence[int]], module.sha256_prefix)
 
 
 def opencl_gpu_devices() -> list[cl.Device]:
     devices: list[cl.Device] = []
     for platform in cl.get_platforms():
-        try:
+        with contextlib.suppress(cl.LogicError):
             devices.extend(platform.get_devices(device_type=cl.device_type.GPU))
-        except cl.LogicError:
-            pass
     return devices
 
 
@@ -785,14 +922,17 @@ def bench_anubis_offload(samples: int, limit: int) -> None:
     if limit % STEPS_PER_TASK:
         raise ValueError(f"OpenCL limit must be a multiple of {STEPS_PER_TASK}")
     src = ensure_checkout("anubis_offload")
-    prefix_state = load_sha256_prefix(src)
+    prefix_state = _load_sha256_prefix(src)
     kernel_src = (src / "sha256.cl").read_text()
     challenge = b"A" * 64
     initial_h = np.array(prefix_state(challenge), dtype=np.uint32)
     rev = SOURCES["anubis_offload"][1][:12]
     devices = opencl_gpu_devices()
     if not devices:
-        print("external-baselines: no OpenCL GPU devices; skipping anubis_offload", file=sys.stderr)
+        print(
+            "external-baselines: no OpenCL GPU devices; skipping anubis_offload",
+            file=sys.stderr,
+        )
         return
     global_size = limit // STEPS_PER_TASK
     for device in devices:
@@ -809,8 +949,14 @@ def bench_anubis_offload(samples: int, limit: int) -> None:
         result_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=result_h)
         initial_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=initial_h)
         kernel.set_args(
-            found_buf, nonce_buf, result_buf, initial_buf,
-            np.uint64(0), np.uint32(len(challenge)), np.uint32(0xFFFFFFFF), np.uint32(0xFFFFFFFF),
+            found_buf,
+            nonce_buf,
+            result_buf,
+            initial_buf,
+            np.uint64(0),
+            np.uint32(len(challenge)),
+            np.uint32(0xFFFFFFFF),
+            np.uint32(0xFFFFFFFF),
         )
         for _ in range(OPENCL_WARMUP_RUNS):
             cl.enqueue_nd_range_kernel(queue, kernel, (global_size,), None)
@@ -856,7 +1002,10 @@ def main() -> int:
     args = parser.parse_args()
     CACHE.mkdir(parents=True, exist_ok=True)
     if args.cpu:
-        cpu_families = set(args.cpu_family or ("hashx", "hashwx", "argon2", "cap-rsw", "linear", "mcaptcha"))
+        cpu_families = set(
+            args.cpu_family
+            or ("hashx", "hashwx", "argon2", "cap-rsw", "linear", "mcaptcha")
+        )
         if "hashx" in cpu_families:
             bench_hashx(args.samples, args.hashx_limit)
         if "hashwx" in cpu_families:

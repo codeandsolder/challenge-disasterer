@@ -14,7 +14,27 @@ permissions:
   contents: read
 
 jobs:
-  rust:
+  rust-host:
+    name: Host Rust (shared sccache)
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
+    with:
+      rust-toolchain: "nightly-2026-11-02"
+      rust-components: "clippy rustfmt"
+      timeout-minutes: 30
+      command: |
+        cargo fmt --check
+        cargo test --manifest-path vendor/argon2-fast/Cargo.toml --all-features
+        cargo clippy --manifest-path vendor/argon2-fast/Cargo.toml --lib --all-features -- -D warnings
+        cargo fmt --manifest-path vendor/argon2-fast/Cargo.toml -- --check
+        CARGO_TARGET_DIR="$CARGO_TARGET_DIR/argon2-soft" RUSTFLAGS='--cfg argon2_backend="soft"' cargo test --manifest-path vendor/argon2-fast/Cargo.toml --all-features
+        cargo test --locked --workspace --all-features
+        cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+        cargo test --locked -p challenge-disasterer-solver-matrix --no-default-features
+        cargo clippy --locked -p challenge-disasterer-solver-matrix --no-default-features -- -D warnings
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-feature=+avx512f -D warnings' cargo test --locked --target x86_64-unknown-linux-gnu -p challenge-pow-core --no-default-features --features std,compare-64bit --no-run
+
+  rust-portable:
+    name: Portable/MSRV Rust
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -31,30 +51,12 @@ jobs:
         with:
           node-version: 26
 
-      - name: Format
-        run: cargo fmt --check
-
-      - name: Validate vendored Argon2
-        run: |
-          cargo test --manifest-path crates/argon2-fast/Cargo.toml --all-features
-          cargo clippy --manifest-path crates/argon2-fast/Cargo.toml --lib --all-features -- -D warnings
-          cargo fmt --manifest-path crates/argon2-fast/Cargo.toml -- --check
-
-      - name: Validate vendored Argon2 soft fallback
-        env:
-          CARGO_TARGET_DIR: target/argon2-soft
-          RUSTFLAGS: --cfg argon2_backend="soft"
-        run: cargo test --manifest-path crates/argon2-fast/Cargo.toml --all-features
-
       - name: Check vendored Argon2 MSRV
         env:
           CARGO_TARGET_DIR: target/argon2-msrv
         run: |
-          rm -f crates/argon2-fast/Cargo.lock
-          cargo +1.85.0 check --manifest-path crates/argon2-fast/Cargo.toml --all-features
-
-      - name: Test
-        run: cargo test --locked --workspace --all-features
+          rm -f vendor/argon2-fast/Cargo.lock
+          cargo +1.85.0 check --manifest-path vendor/argon2-fast/Cargo.toml --all-features
 
       - name: Test portable Anubis Argon2 on WASI SIMD128
         env:
@@ -89,16 +91,3 @@ jobs:
         run: |
           cargo clippy --locked --target wasm32-wasip1 -p challenge-pow-core --no-default-features --features std,compare-64bit -- -D warnings
           cargo clippy --locked --target wasm32-wasip1 -p challenge-disasterer-wasm-simd128-bench -- -D warnings
-
-      - name: Clippy
-        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-
-      - name: Test CPU-only solver matrix build
-        run: |
-          cargo test --locked -p challenge-disasterer-solver-matrix --no-default-features
-          cargo clippy --locked -p challenge-disasterer-solver-matrix --no-default-features -- -D warnings
-
-      - name: Compile AVX-512-only test paths
-        env:
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-feature=+avx512f -D warnings
-        run: cargo test --locked --target x86_64-unknown-linux-gnu -p challenge-pow-core --no-default-features --features std,compare-64bit --no-run

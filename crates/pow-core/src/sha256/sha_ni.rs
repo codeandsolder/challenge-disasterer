@@ -1,9 +1,24 @@
-#![cfg_attr(target_feature = "avx512f", allow(dead_code, unused))]
+#![cfg_attr(
+    target_feature = "avx512f",
+    expect(
+        dead_code,
+        reason = "AVX-512 compilation intentionally selects only a subset of the shared SHA-NI helpers"
+    )
+)]
+#![cfg_attr(
+    target_feature = "avx512f",
+    expect(
+        unused_variables,
+        reason = "AVX-512 compilation intentionally selects only a subset of the shared SHA-NI helpers"
+    )
+)]
 
 // these are mainly adapted from the sha2 crate as well,
 // the core logic is verbatim, but shuffling and batch message loading overhead is removed
 #[cfg(target_arch = "x86_64")]
-use core::arch::x86_64::*;
+use core::arch::x86_64::{
+    __m128i, _mm_sha256msg1_epu32, _mm_sha256msg2_epu32, _mm_sha256rnds2_epu32,
+};
 
 #[cfg(target_arch = "x86")]
 use core::arch::x86::*;
@@ -41,7 +56,7 @@ macro_rules! schedule {
 }
 
 #[inline(always)]
-pub(crate) fn prepare_state(state: &[u32; 8]) -> [__m128i; 2] {
+pub fn prepare_state(state: &[u32; 8]) -> [__m128i; 2] {
     [
         u32x4::from_array([state[5], state[4], state[1], state[0]]).into(),
         u32x4::from_array([state[7], state[6], state[3], state[2]]).into(),
@@ -49,25 +64,25 @@ pub(crate) fn prepare_state(state: &[u32; 8]) -> [__m128i; 2] {
 }
 
 #[inline(always)]
-pub(crate) fn feedback_ab(a: u32, b: u32) -> __m128i {
+pub fn feedback_ab(a: u32, b: u32) -> __m128i {
     u32x4::from_array([0, 0, b, a]).into()
 }
 
 #[inline(always)]
-pub(crate) fn add_words(a: __m128i, b: __m128i) -> __m128i {
+pub fn add_words(a: __m128i, b: __m128i) -> __m128i {
     let a: u32x4 = a.into();
     let b: u32x4 = b.into();
     (a + b).into()
 }
 
 #[inline(always)]
-pub(crate) fn extract_ab(state: __m128i) -> u64 {
+pub fn extract_ab(state: __m128i) -> u64 {
     let state: u64x2 = state.into();
     state.to_array()[1]
 }
 
 #[inline(always)]
-pub(crate) fn extract_state(state: [__m128i; 2]) -> [u32; 8] {
+pub fn extract_state(state: [__m128i; 2]) -> [u32; 8] {
     let abef: u32x4 = state[0].into();
     let cdgh: u32x4 = state[1].into();
     let [f, e, b, a] = abef.to_array();
@@ -75,7 +90,10 @@ pub(crate) fn extract_state(state: [__m128i; 2]) -> [u32; 8] {
     [a, b, c, d, e, f, g, h]
 }
 
-#[allow(unused_variables)]
+#[expect(
+    unused_variables,
+    reason = "default trait lane helpers intentionally ignore lane indices overridden by specialized implementations"
+)]
 pub trait Plucker: Sized {
     #[inline(always)]
     fn pluck_qword0(&mut self, lane: usize, w: u32x4) -> u32x4 {
@@ -100,12 +118,12 @@ impl Plucker for () {}
 // ARX network using altered data layout
 #[inline]
 #[target_feature(enable = "sse4.1,sha")]
-pub(crate) fn multiway_arx_abef_cdgh<
-    const BEGIN_ROUND_BY_4: usize,
-    const LANES: usize,
-    P: Plucker,
->(
-    state: [&mut [__m128i; 2]; LANES],
+#[expect(
+    clippy::too_many_lines,
+    reason = "unrolled SHA-NI round network keeps the fixed message schedule and register layout visible to codegen"
+)]
+pub fn multiway_arx_abef_cdgh<const BEGIN_ROUND_BY_4: usize, const LANES: usize, P: Plucker>(
+    state: &mut [&mut [__m128i; 2]; LANES],
     block_template: &[u32; 16],
     mut plucker: P,
 ) {
@@ -278,9 +296,22 @@ mod tests {
     #[test]
     fn test_multiway_arx() {
         let input_block = [
-            0x61626380, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-            0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-            0x00000000, 0x00000018,
+            0x6162_6380,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0018,
         ];
 
         let state = crate::sha256::IV;
@@ -289,7 +320,7 @@ mod tests {
         let mut prepared_state_1 = prepare_state(&state);
 
         multiway_arx_abef_cdgh::<0, 2, ()>(
-            [&mut prepared_state_0, &mut prepared_state_1],
+            &mut [&mut prepared_state_0, &mut prepared_state_1],
             &input_block,
             (),
         );

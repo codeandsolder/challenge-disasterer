@@ -24,7 +24,7 @@ impl<'de, const N: usize> serde::Deserialize<'de> for FixedHexString<N> {
         D: serde::Deserializer<'de>,
     {
         struct Visitor<const N: usize>;
-        impl<'de, const N: usize> serde::de::Visitor<'de> for Visitor<N> {
+        impl<const N: usize> serde::de::Visitor<'_> for Visitor<N> {
             type Value = FixedHexString<N>;
 
             fn expecting(&self, formatter: &mut alloc::fmt::Formatter) -> alloc::fmt::Result {
@@ -87,14 +87,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_fixed_hex_string() {
-        let s = serde_json::from_slice::<FixedHexString<8>>(br#""0123456789abcdef""#).unwrap();
+    fn test_fixed_hex_string() -> anyhow::Result<()> {
+        let s = serde_json::from_slice::<FixedHexString<8>>(br#""0123456789abcdef""#)
+            .map_err(anyhow::Error::from)?;
         assert_eq!(s.0, [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]);
-        let s = serde_json::from_slice::<FixedHexString<8>>(br#""0123456789abcde""#).unwrap();
+        let s = serde_json::from_slice::<FixedHexString<8>>(br#""0123456789abcde""#)
+            .map_err(anyhow::Error::from)?;
         assert_eq!(s.0, [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xe0]);
-        let s = serde_json::from_slice::<FixedHexString<8>>(br#""0123456789abcd""#).unwrap();
+        let s = serde_json::from_slice::<FixedHexString<8>>(br#""0123456789abcd""#)
+            .map_err(anyhow::Error::from)?;
         assert_eq!(s.0, [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0x00]);
-        let s = serde_json::from_slice::<FixedHexString<8>>(br#""0123456789abc""#).unwrap();
+        let s = serde_json::from_slice::<FixedHexString<8>>(br#""0123456789abc""#)
+            .map_err(anyhow::Error::from)?;
         assert_eq!(s.0, [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xc0, 0x00]);
+        Ok(())
     }
 }

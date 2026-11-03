@@ -121,10 +121,10 @@ fn compatible_adapter(entry: &RouteEntry, selected_adapter: Option<&str>) -> boo
     if entry.provider != "local" {
         return entry.provider_url.is_some();
     }
-    match entry.adapter.as_deref() {
-        None => true,
-        Some(required) => selected_adapter.is_some_and(|selected| selected == required),
-    }
+    entry
+        .adapter
+        .as_deref()
+        .is_none_or(|required| selected_adapter.is_some_and(|selected| selected == required))
 }
 
 #[cfg(test)]

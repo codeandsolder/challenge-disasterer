@@ -66,7 +66,12 @@ fn prefix_mask(difficulty: u32) -> u64 {
 }
 
 fn has_leading_zero_bits(hash: &[u8; 32], difficulty: u32) -> bool {
-    let full_bytes = (difficulty / 8) as usize;
+    if difficulty > 256 {
+        return false;
+    }
+    let Ok(full_bytes) = usize::try_from(difficulty / 8) else {
+        return false;
+    };
     let remaining = difficulty % 8;
     if hash[..full_bytes].iter().any(|byte| *byte != 0) {
         return false;
@@ -109,6 +114,9 @@ fn argon2id_hash(data: &[u8], nonce: u32) -> anyhow::Result<[u8; 32]> {
 }
 
 pub fn verify_sha256(challenge: &Challenge, answer: &Answer) -> bool {
+    if challenge.validate().is_err() {
+        return false;
+    }
     let Ok(data) = challenge.bytes() else {
         return false;
     };
@@ -120,6 +128,9 @@ pub fn verify_sha256(challenge: &Challenge, answer: &Answer) -> bool {
 }
 
 pub fn verify_argon2id(challenge: &Challenge, answer: &Answer) -> bool {
+    if challenge.validate().is_err() {
+        return false;
+    }
     let Ok(data) = challenge.bytes() else {
         return false;
     };
@@ -163,8 +174,9 @@ pub fn solve_sha256(challenge: &Challenge, implementation: Option<&str>) -> anyh
     challenge.validate()?;
     let data = challenge.bytes()?;
     let implementation = Implementation::parse(implementation.unwrap_or("auto"))?;
-    let nonce_bytes = NonZeroU8::new(4).expect("four is nonzero");
-    let message = BinaryMessage::new(&data, nonce_bytes);
+    let nonce_bytes = NonZeroU8::new(4).context("four-byte Anubis nonce width is nonzero")?;
+    let message = BinaryMessage::new(&data, nonce_bytes)
+        .context("Anubis nonce width exceeds the binary solver layout")?;
     let mut solver = binary_solver(implementation, message)?;
     solver.set_limit(SEARCH_SPACE);
 
@@ -183,13 +195,14 @@ pub fn solve_sha256(challenge: &Challenge, implementation: Option<&str>) -> anyh
 
 #[cfg(feature = "gpu")]
 pub async fn solve_sha256_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: &Challenge,
 ) -> anyhow::Result<Result> {
     challenge.validate()?;
     let data = challenge.bytes()?;
-    let nonce_bytes = NonZeroU8::new(4).expect("four is nonzero");
-    let message = BinaryMessage::new(&data, nonce_bytes);
+    let nonce_bytes = NonZeroU8::new(4).context("four-byte Anubis nonce width is nonzero")?;
+    let message = BinaryMessage::new(&data, nonce_bytes)
+        .context("Anubis nonce width exceeds the binary solver layout")?;
     let mut solver = pow_buster::gpu::BinarySolver::from(message);
     solver.set_limit(SEARCH_SPACE);
 
@@ -220,7 +233,7 @@ pub fn solve_argon2id(
     ensure!(
         matches!(
             implementation,
-            None | Some(ARGON2_IMPLEMENTATION) | Some("argon2-0.6.0") | Some("argon2-0.5.3")
+            None | Some(ARGON2_IMPLEMENTATION | "argon2-0.6.0" | "argon2-0.5.3")
         ),
         "unsupported Argon2id implementation: {}",
         implementation.unwrap_or_default()
@@ -298,68 +311,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sha256_solver_matches_upstream_little_endian_nonce_rule() {
+    fn sha256_solver_matches_upstream_little_endian_nonce_rule() -> anyhow::Result<()> {
         let challenge = Challenge {
             data: "0011223344556680".to_owned(),
             difficulty: 4,
         };
-        let result = solve_sha256(&challenge, Some("safe")).unwrap();
+        let result = solve_sha256(&challenge, Some("safe"))?;
         assert!(verify_sha256(&challenge, &result.answer));
+        Ok(())
     }
 
     #[test]
-    fn sha256_solver_matches_upstream_big_endian_nonce_rule() {
+    fn sha256_solver_matches_upstream_big_endian_nonce_rule() -> anyhow::Result<()> {
         let challenge = Challenge {
             data: "001122334455667f".to_owned(),
             difficulty: 4,
         };
-        let result = solve_sha256(&challenge, Some("safe")).unwrap();
+        let result = solve_sha256(&challenge, Some("safe"))?;
         assert!(verify_sha256(&challenge, &result.answer));
+        Ok(())
     }
 
     #[test]
-    fn argon2id_solver_matches_upstream_reference() {
+    fn argon2id_solver_matches_upstream_reference() -> anyhow::Result<()> {
         let challenge = Challenge {
             data: "0011223344556677".to_owned(),
             difficulty: 1,
         };
-        let result = solve_argon2id(&challenge, None, 1).unwrap();
+        let result = solve_argon2id(&challenge, None, 1)?;
         assert!(verify_argon2id(&challenge, &result.answer));
+        Ok(())
     }
 
     #[test]
-    fn argon2id_legacy_implementation_name_remains_accepted() {
+    fn argon2id_legacy_implementation_name_remains_accepted() -> anyhow::Result<()> {
         let challenge = Challenge {
             data: "0011223344556677".to_owned(),
             difficulty: 1,
         };
-        let result = solve_argon2id(&challenge, Some("argon2-0.5.3"), 1).unwrap();
+        let result = solve_argon2id(&challenge, Some("argon2-0.5.3"), 1)?;
         assert_eq!(result.implementation, ARGON2_IMPLEMENTATION);
         assert!(verify_argon2id(&challenge, &result.answer));
+        Ok(())
     }
 
     #[test]
-    fn argon2id_reused_memory_matches_fresh_hashes() {
-        let data = hex::decode("0011223344556680").unwrap();
+    fn argon2id_reused_memory_matches_fresh_hashes() -> anyhow::Result<()> {
+        let data = hex::decode("0011223344556680")?;
         let mut memory = Argon2Memory::new();
         for nonce in [0, 1, 2, 17] {
             assert_eq!(
-                argon2id_hash_with_memory(&data, nonce, &mut memory).unwrap(),
-                argon2id_hash(&data, nonce).unwrap()
+                argon2id_hash_with_memory(&data, nonce, &mut memory)?,
+                argon2id_hash(&data, nonce)?
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn argon2id_parallel_search_preserves_lowest_nonce() {
+    fn argon2id_parallel_search_preserves_lowest_nonce() -> anyhow::Result<()> {
         let challenge = Challenge {
             data: "0011223344556677".to_owned(),
             difficulty: 3,
         };
-        let serial = solve_argon2id(&challenge, None, 1).unwrap();
-        let parallel = solve_argon2id(&challenge, None, 4).unwrap();
+        let serial = solve_argon2id(&challenge, None, 1)?;
+        let parallel = solve_argon2id(&challenge, None, 4)?;
         assert_eq!(parallel.answer.nonce, serial.answer.nonce);
         assert_eq!(parallel.answer.hash, serial.answer.hash);
         assert!(verify_argon2id(&challenge, &parallel.answer));
+        Ok(())
     }
 }

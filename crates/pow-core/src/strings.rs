@@ -1,12 +1,23 @@
+#![expect(
+    clippy::inline_always,
+    reason = "fixed-width digit encoders are inner-loop primitives and intentionally force inlining"
+)]
+#[cfg_attr(
+    not(feature = "internals"),
+    expect(
+        clippy::redundant_pub_crate,
+        reason = "the same module becomes public with the internals feature, where crate-only visibility is intentional"
+    )
+)]
 pub(crate) static DIGIT_LUT_10000_LE_EVEN: [u32; 10000 / 2] = const {
     let mut out = [0; 10000 / 2];
     let mut i = 0;
     while i < 10000 / 2 {
-        let mut copy = i * 2;
+        let mut copy: usize = i * 2;
         let mut ds = [b'0'; 4];
         let mut j = 0;
         while j < 4 {
-            ds[j] = (copy % 10) as u8 + b'0';
+            ds[j] = (copy % 10).to_le_bytes()[0] + b'0';
             copy /= 10;
             j += 1;
         }
@@ -16,7 +27,10 @@ pub(crate) static DIGIT_LUT_10000_LE_EVEN: [u32; 10000 / 2] = const {
     out
 };
 
-#[expect(dead_code)]
+#[expect(
+    dead_code,
+    reason = "compile-time assertions exist only to validate LUT layout invariants"
+)]
 mod static_asserts {
     use super::DIGIT_LUT_10000_LE_EVEN;
 
@@ -47,7 +61,7 @@ pub fn format_decimal_8<const N: usize, const REGISTER_BSWAP: bool, const PLACEH
     debug_assert!(N <= 8);
     out.fill(PLACEHOLDER);
     for i in (0..N).rev() {
-        out[i] = (input % 10) as u8 + b'0';
+        out[i] = (input % 10).to_le_bytes()[0] + b'0';
         input /= 10;
     }
     if REGISTER_BSWAP {
@@ -67,7 +81,7 @@ pub fn to_octal_7<const REGISTER_BSWAP: bool, const PLACEHOLDER: u8, const ADDEN
 ) {
     out.fill(PLACEHOLDER);
     for i in (0..7).rev() {
-        out[i] = ((input & 0b111) as u8) + b'0' + ADDEND;
+        out[i] = (input & 0b111).to_le_bytes()[0] + b'0' + ADDEND;
         input >>= 3;
     }
     if REGISTER_BSWAP {
@@ -82,7 +96,7 @@ mod tests {
 
     #[test]
     fn test_to_octal_7() {
-        let i = 0o1234567;
+        let i = 0o1_234_567;
         let mut buf = [0u8; 8];
         to_octal_7::<false, 0x80, 0>(&mut buf, i);
         assert_eq!(buf, *b"1234567\x80");
@@ -97,22 +111,22 @@ mod tests {
     #[test]
     fn test_format_decimal_8() {
         let mut buf = [0u8; 8];
-        format_decimal_8::<8, false, 0x80>(&mut buf, 12345678);
+        format_decimal_8::<8, false, 0x80>(&mut buf, 12_345_678);
         assert_eq!(buf, *b"12345678");
 
         format_decimal_8::<8, false, 0x80>(&mut buf, 1_0000_0000);
         assert_eq!(buf, *b"00000000");
 
-        format_decimal_8::<7, false, 0x80>(&mut buf, 1234567);
+        format_decimal_8::<7, false, 0x80>(&mut buf, 1_234_567);
         assert_eq!(buf, *b"1234567\x80");
 
         format_decimal_8::<7, false, 0x80>(&mut buf, 1000_0000);
         assert_eq!(buf, *b"0000000\x80");
 
-        format_decimal_8::<8, true, 0x80>(&mut buf, 12345678);
+        format_decimal_8::<8, true, 0x80>(&mut buf, 12_345_678);
         assert_eq!(buf, *b"43218765");
 
-        format_decimal_8::<7, true, 0x80>(&mut buf, 1234567);
+        format_decimal_8::<7, true, 0x80>(&mut buf, 1_234_567);
         assert_eq!(buf, *b"4321\x80765");
     }
 }

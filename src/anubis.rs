@@ -9,6 +9,8 @@ use pow_buster::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+const HEX: &[u8; 16] = b"0123456789abcdef";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Challenge {
     pub data: String,
@@ -32,7 +34,7 @@ impl Challenge {
     }
 
     #[cfg(feature = "gpu")]
-    pub fn gpu_compatible(&self) -> bool {
+    pub const fn gpu_compatible(&self) -> bool {
         self.data.len().is_multiple_of(64)
     }
 }
@@ -55,21 +57,26 @@ fn mask(difficulty: u8) -> anyhow::Result<u64> {
 }
 
 fn hash_hex(words: [u32; 8]) -> String {
-    words
-        .into_iter()
-        .map(|word| format!("{word:08x}"))
-        .collect()
+    hex::encode(
+        words
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect::<Vec<_>>(),
+    )
 }
 
 pub fn verify(challenge: &Challenge, answer: &Answer) -> bool {
+    if challenge.validate().is_err() {
+        return false;
+    }
     let digest = Sha256::digest(format!("{}{}", challenge.data, answer.nonce).as_bytes());
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
         hex.push(char::from(HEX[usize::from(byte >> 4)]));
         hex.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
-    hex == answer.hash && hex.starts_with(&"0".repeat(challenge.difficulty as usize))
+    let difficulty = usize::from(challenge.difficulty);
+    hex == answer.hash && hex.starts_with(&"0".repeat(difficulty))
 }
 
 pub fn solve_cpu(challenge: &Challenge, limit: u64) -> anyhow::Result<BackendResult> {
@@ -115,5 +122,35 @@ pub fn calibrate_cpu(hash_limit: u64) -> anyhow::Result<f64> {
         attempted_total > 0 && elapsed > 0.0,
         "invalid CPU calibration sample"
     );
-    Ok(attempted_total as f64 / elapsed)
+    Ok(calibration_work_as_f64(attempted_total) / elapsed)
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "CPU calibration throughput is approximate telemetry"
+)]
+const fn calibration_work_as_f64(work: u64) -> f64 {
+    work as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verifier_rejects_invalid_difficulty_even_for_matching_hash() {
+        let challenge = Challenge {
+            data: "challenge".to_owned(),
+            difficulty: 0,
+        };
+        let nonce = "0";
+        let hash = hex::encode(Sha256::digest(
+            format!("{}{}", challenge.data, nonce).as_bytes(),
+        ));
+        let answer = Answer {
+            nonce: nonce.to_owned(),
+            hash,
+        };
+        assert!(!verify(&challenge, &answer));
+    }
 }

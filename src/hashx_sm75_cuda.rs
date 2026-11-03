@@ -14,7 +14,7 @@ use crate::{
 const WARP_SIZE: u32 = 32;
 const MAX_BATCH: u32 = 262_144;
 
-pub(crate) struct Sm75Cuda {
+pub struct Sm75Cuda {
     context: Arc<CudaContext>,
     stream: Arc<CudaStream>,
     solution: CudaSlice<u32>,
@@ -69,9 +69,10 @@ impl Sm75Cuda {
         let mut base = 0_u64;
         while u32::try_from(base).is_ok() {
             let remaining = u64::from(u32::MAX) + 1 - base;
-            let batch = u64::from(batch_size).min(remaining) as u32;
+            let batch = u32::try_from(u64::from(batch_size).min(remaining))
+                .context("sm_75 HashX batch exceeds u32")?;
             debug_assert_eq!(batch % WARP_SIZE, 0);
-            let base32 = base as u32;
+            let base32 = u32::try_from(base).context("sm_75 HashX base exceeds u32")?;
             self.launch(&function, base32, batch, mask0, mask1)?;
             let mut answer = [u32::MAX];
             self.stream
@@ -88,7 +89,10 @@ impl Sm75Cuda {
         Err(anyhow!("sm_75 HashX search exhausted u32 nonce space"))
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "CUDA kernel launch crosses cudarc's audited unsafe driver boundary"
+    )]
     fn launch(
         &mut self,
         function: &cudarc::driver::CudaFunction,
@@ -122,12 +126,9 @@ impl Sm75Cuda {
 }
 
 fn batch_size(difficulty: u32) -> u32 {
-    let expected = 1_u64 << difficulty.min(31);
-    let wanted = expected
-        .div_ceil(4)
-        .clamp(u64::from(WARP_SIZE), u64::from(MAX_BATCH));
-    let aligned = wanted.div_ceil(u64::from(WARP_SIZE)) * u64::from(WARP_SIZE);
-    aligned as u32
+    let expected = 1_u32 << difficulty.min(31);
+    let wanted = expected.div_ceil(4).clamp(WARP_SIZE, MAX_BATCH);
+    wanted.div_ceil(WARP_SIZE) * WARP_SIZE
 }
 
 #[cfg(test)]

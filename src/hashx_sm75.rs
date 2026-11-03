@@ -29,8 +29,8 @@ impl Pred {
     const P5: Self = Self { idx: 5, neg: false };
     const P6: Self = Self { idx: 6, neg: false };
 
-    const fn bits(self) -> u8 {
-        self.idx | ((self.neg as u8) << 3)
+    fn bits(self) -> u8 {
+        self.idx | (u8::from(self.neg) << 3)
     }
 }
 
@@ -80,12 +80,12 @@ impl Ctrl {
         }
     }
 
-    const fn encode(self) -> u16 {
-        (self.stall as u16)
-            | ((!self.yield_hint as u16) << 4)
-            | ((self.write as u16) << 5)
-            | ((self.read as u16) << 8)
-            | ((self.wait as u16) << 11)
+    fn encode(self) -> u16 {
+        u16::from(self.stall)
+            | (u16::from(!self.yield_hint) << 4)
+            | (u16::from(self.write) << 5)
+            | (u16::from(self.read) << 8)
+            | (u16::from(self.wait) << 11)
     }
 }
 
@@ -126,7 +126,10 @@ fn mov(rd: Reg, src: Src1, guard: Pred, stall: u8) -> u128 {
     code | 0xf00
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "SASS instruction fields map one-to-one to encoded operands"
+)]
 fn iadd3(
     rd: Reg,
     pd0: Option<Pred>,
@@ -171,7 +174,10 @@ fn iadd3(
     code
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "SASS instruction fields map one-to-one to encoded operands"
+)]
 fn imad(
     wide: bool,
     x: bool,
@@ -220,7 +226,10 @@ impl Cmp {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "SASS instruction fields map one-to-one to encoded operands"
+)]
 fn isetp(
     cmp: Cmp,
     u32_type: bool,
@@ -246,7 +255,10 @@ fn isetp(
     code
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "SASS instruction fields map one-to-one to encoded operands"
+)]
 fn lop3(
     rd: Reg,
     rs0: Reg,
@@ -401,8 +413,7 @@ impl Emitter {
         self.lop(dhi, dhi, Src1::Reg(r(shi)), 0x3c, guard);
     }
     fn xor64_const(&mut self, dlo: u8, dhi: u8, value: u64, guard: Pred) {
-        let lo = value as u32;
-        let hi = (value >> 32) as u32;
+        let (lo, hi) = split_u64(value);
         if lo != 0 {
             self.lop(dlo, dlo, Src1::Imm(lo), 0x3c, guard);
         }
@@ -441,8 +452,7 @@ impl Emitter {
         ));
     }
     fn add64_const(&mut self, dlo: u8, dhi: u8, value: u64, guard: Pred) {
-        let lo = value as u32;
-        let hi = (value >> 32) as u32;
+        let (lo, hi) = split_u64(value);
         self.emit(iadd3(
             r(dlo),
             Some(Pred::P0),
@@ -543,7 +553,10 @@ impl Emitter {
         self.mov(dlo, Src1::Reg(r(24)), guard);
         self.mov(dhi, Src1::Reg(r(25)), guard);
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "register-pair multiply lowering keeps explicit physical operands"
+    )]
     fn mullo(&mut self, dlo: u8, dhi: u8, alo: u8, ahi: u8, blo: u8, bhi: u8, guard: Pred) {
         self.emit(imad(
             true,
@@ -598,7 +611,6 @@ impl Emitter {
         self.mov(dlo, Src1::Reg(r(24)), guard);
         self.mov(dhi, Src1::Reg(r(25)), guard);
     }
-    #[allow(clippy::too_many_arguments)]
     fn umul_core(&mut self, alo: u8, ahi: u8, blo: u8, bhi: u8, guard: Pred) {
         self.emit(imad(
             true,
@@ -678,7 +690,14 @@ impl Emitter {
             Ctrl::standard(8),
         ));
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "register-pair multiply lowering keeps explicit physical operands"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "signed high-half multiply lowering is kept linear to preserve SASS dataflow auditability"
+    )]
     fn mulhi(
         &mut self,
         dlo: u8,
@@ -821,8 +840,8 @@ impl Emitter {
         self.ror64(clo, chi, 32, guard);
     }
     fn op_instr(&mut self, ins: &Instr, guard: Pred) -> anyhow::Result<()> {
-        let d = ins.dst as u8;
-        let src = ins.src as u8;
+        let d = u8::try_from(ins.dst).context("HashX destination register exceeds u8")?;
+        let src = u8::try_from(ins.src).context("HashX source register exceeds u8")?;
         match ins.kind()? {
             GpuOp::Mul => {
                 let (dlo, dhi) = pair(d);
@@ -845,7 +864,12 @@ impl Emitter {
             }
             GpuOp::AddShift => {
                 let (slo, shi) = pair(src);
-                self.shl64_tmp(slo, shi, ins.imm as u8, guard);
+                self.shl64_tmp(
+                    slo,
+                    shi,
+                    u8::try_from(ins.imm).context("HashX shift/rotate immediate exceeds u8")?,
+                    guard,
+                );
                 let (dlo, dhi) = pair(d);
                 self.add64_reg(dlo, dhi, 24, 25, guard);
             }
@@ -869,7 +893,12 @@ impl Emitter {
             }
             GpuOp::Rotate => {
                 let (dlo, dhi) = pair(d);
-                self.ror64(dlo, dhi, ins.imm as u8, guard);
+                self.ror64(
+                    dlo,
+                    dhi,
+                    u8::try_from(ins.imm).context("HashX shift/rotate immediate exceeds u8")?,
+                    guard,
+                );
             }
             GpuOp::Target | GpuOp::Branch => {}
         }
@@ -880,10 +909,22 @@ impl Emitter {
 const fn pair(i: u8) -> (u8, u8) {
     (8 + 2 * i, 9 + 2 * i)
 }
-const fn imm64(v: u32) -> u64 {
-    (v as i32 as i64) as u64
+fn imm64(v: u32) -> u64 {
+    i64::from(v.cast_signed()).cast_unsigned()
 }
 
+const fn split_u64(value: u64) -> (u32, u32) {
+    let bytes = value.to_le_bytes();
+    (
+        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+    )
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the generated SASS instruction stream is intentionally linear for instruction-order auditability"
+)]
 fn generate(source: &GpuProgram) -> anyhow::Result<Vec<u128>> {
     let key = source.key();
     let program = source.instructions();
@@ -968,9 +1009,11 @@ fn generate(source: &GpuProgram) -> anyhow::Result<Vec<u128>> {
         4,
     ));
     for (i, &key) in key.iter().enumerate() {
-        let (lo, hi) = pair(i as u8);
-        e.mov(lo, Src1::Imm(key as u32), Pred::PT);
-        e.mov(hi, Src1::Imm((key >> 32) as u32), Pred::PT);
+        let pair_index = u8::try_from(i).context("HashX key register index exceeds u8")?;
+        let (lo, hi) = pair(pair_index);
+        let (key_lo, key_hi) = split_u64(key);
+        e.mov(lo, Src1::Imm(key_lo), Pred::PT);
+        e.mov(hi, Src1::Imm(key_hi), Pred::PT);
     }
     e.xor64_const(pair(1).0, pair(1).1, 0xee, Pred::PT);
     e.lop(pair(3).0, pair(3).0, Src1::Reg(r(2)), 0x3c, Pred::PT);
@@ -1090,16 +1133,17 @@ fn patch_words(cubin: &mut [u8], words: &[u128]) {
     let text = &mut cubin[TEXT_OFFSET..TEXT_OFFSET + TEXT_SIZE];
     for (i, &word) in words.iter().enumerate() {
         let slot = &mut text[i * 16..(i + 1) * 16];
-        slot[..8].copy_from_slice(&((word >> 64) as u64).to_le_bytes());
-        slot[8..].copy_from_slice(&(word as u64).to_le_bytes());
+        let bytes = word.to_le_bytes();
+        slot[..8].copy_from_slice(&bytes[8..]);
+        slot[8..].copy_from_slice(&bytes[..8]);
     }
 }
 
-pub(crate) fn template_solve_cubin() -> Vec<u8> {
+pub fn template_solve_cubin() -> Vec<u8> {
     TEMPLATE.to_vec()
 }
 
-pub(crate) fn build_solve_cubin(program: &GpuProgram) -> anyhow::Result<Vec<u8>> {
+pub fn build_solve_cubin(program: &GpuProgram) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!(
         TEMPLATE.len() >= TEXT_OFFSET + TEXT_SIZE,
         "embedded sm_75 cubin template is truncated"

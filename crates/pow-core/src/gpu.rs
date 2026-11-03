@@ -2,17 +2,53 @@
 //!
 //! The same Rust implementation targets native `wgpu` backends and browser WebGPU on `wasm32`.
 
-use core::{fmt, num::NonZeroU8};
+use core::{fmt, future::Future, num::NonZeroU8, pin::Pin};
 use std::{borrow::Cow, string::String, vec::Vec};
 
 use bytemuck::{Pod, Zeroable};
+
+use crate::{high_u32, low_u32};
 use sha2::{Digest, Sha256};
 
 const WG_SIZE: u32 = 64;
 const STEPS: u32 = 128;
-const HASHES_PER_WG: u64 = WG_SIZE as u64 * STEPS as u64;
+const HASHES_PER_WG: u64 = 64 * 128;
 const CANCEL_INTERVAL: u32 = 16;
 const COUNTER_SPACE: u64 = 1_u64 << 54;
+
+fn gpu_u32(value: u64, field: &str) -> Result<u32, GpuError> {
+    u32::try_from(value).map_err(|_| GpuError::new(format!("{field} exceeds the GPU u32 ABI")))
+}
+
+fn gpu_usize_u32(value: usize, field: &str) -> Result<u32, GpuError> {
+    u32::try_from(value).map_err(|_| GpuError::new(format!("{field} exceeds the GPU u32 ABI")))
+}
+
+fn append_fmt(output: &mut String, args: fmt::Arguments<'_>) {
+    if fmt::Write::write_fmt(output, args).is_err() {
+        unreachable!("writing to String cannot fail");
+    }
+}
+
+fn be_words_4(bytes: &[u8; 16]) -> [u32; 4] {
+    let chunks = bytes.as_chunks::<4>().0;
+    core::array::from_fn(|i| u32::from_be_bytes(chunks[i]))
+}
+
+fn be_words_8(bytes: &[u8; 32]) -> [u32; 8] {
+    let chunks = bytes.as_chunks::<4>().0;
+    core::array::from_fn(|i| u32::from_be_bytes(chunks[i]))
+}
+
+fn be_words_16(bytes: &[u8; 64]) -> [u32; 16] {
+    let chunks = bytes.as_chunks::<4>().0;
+    core::array::from_fn(|i| u32::from_be_bytes(chunks[i]))
+}
+
+fn le_words_16(bytes: &[u8; 64]) -> [u32; 16] {
+    let chunks = bytes.as_chunks::<4>().0;
+    core::array::from_fn(|i| u32::from_le_bytes(chunks[i]))
+}
 
 #[inline]
 fn gpu_batch_target(expected_work: u64, quantum: u64) -> u64 {
@@ -84,99 +120,49 @@ pub struct GpuContext {
     adapter: String,
 }
 
-impl GpuContext {
-    /// Enumerate usable non-CPU GPU adapters.
-    pub async fn adapter_names() -> Vec<String> {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let mut names = instance
-            .enumerate_adapters(wgpu::Backends::VULKAN)
-            .await
-            .into_iter()
-            .filter_map(|adapter| {
-                let info = adapter.get_info();
-                (info.device_type != wgpu::DeviceType::Cpu).then_some(info.name)
-            })
-            .collect::<Vec<_>>();
-        names.sort();
-        names.dedup();
-        names
-    }
+struct GpuPipelines {
+    anubis: wgpu::ComputePipeline,
+    generic: wgpu::ComputePipeline,
+    double: wgpu::ComputePipeline,
+    goaway: wgpu::ComputePipeline,
+    binary: wgpu::ComputePipeline,
+    cerberus: wgpu::ComputePipeline,
+    altcha: wgpu::ComputePipeline,
+}
 
-    /// Create a GPU solver. `WGPU_ADAPTER_NAME` forces a matching adapter; otherwise
-    /// the high-performance adapter selected by `wgpu` is used.
-    pub async fn create() -> Result<Self, GpuError> {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = if let Ok(requested) = std::env::var("WGPU_ADAPTER_NAME") {
-            let requested = requested.to_lowercase();
-            let adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN).await;
-            let available = adapters
-                .iter()
-                .map(|adapter| adapter.get_info().name)
-                .collect::<Vec<_>>();
-            adapters
-                .into_iter()
-                .find(|adapter| {
-                    let info = adapter.get_info();
-                    info.device_type != wgpu::DeviceType::Cpu
-                        && info.name.to_lowercase().contains(&requested)
-                })
-                .ok_or_else(|| {
-                    GpuError::new(format!(
-                        "WGPU_ADAPTER_NAME={requested:?} matched no GPU adapter; available: {}",
-                        available.join(", ")
-                    ))
-                })?
-        } else {
-            instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    ..Default::default()
-                })
-                .await
-                .map_err(|e| GpuError::new(format!("request GPU adapter: {e}")))?
-        };
-        let info = adapter.get_info();
-        let adapter_name = format!("{} ({:?}, {})", info.name, info.backend, info.driver);
-        let limits = adapter.limits();
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_limits: wgpu::Limits::downlevel_defaults(),
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| GpuError::new(format!("request GPU device: {e}")))?;
-
+impl GpuPipelines {
+    fn create(device: &wgpu::Device) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("pow-buster-anubis"),
             source: wgpu::ShaderSource::Wgsl(Cow::Owned(shader_source())),
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let anubis = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("pow-buster-anubis"),
             layout: None,
             module: &shader,
             entry_point: Some("solve"),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
+
         let generic_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("pow-buster-sha256-single-block"),
             source: wgpu::ShaderSource::Wgsl(Cow::Owned(generic_single_block_shader_source())),
         });
-        let generic_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let generic = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("pow-buster-sha256-single-block"),
             layout: None,
             module: &generic_shader,
             entry_point: Some("solve"),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
+
         let multi_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("pow-buster-sha256-multi-layout"),
             source: wgpu::ShaderSource::Wgsl(Cow::Owned(multi_layout_shader_source())),
         });
-        let create_multi_pipeline = |label, mode| {
+        let create_multi = |label, mode| {
             let constants = [("MODE", mode)];
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(label),
@@ -185,51 +171,75 @@ impl GpuContext {
                 entry_point: Some("solve"),
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants: &constants,
-                    ..Default::default()
+                    ..wgpu::PipelineCompilationOptions::default()
                 },
                 cache: None,
             })
         };
-        let double_pipeline = create_multi_pipeline("pow-buster-sha256-double-block", 1.0);
-        let goaway_pipeline = create_multi_pipeline("pow-buster-sha256-goaway", 2.0);
-        let binary_pipeline = create_multi_pipeline("pow-buster-sha256-binary", 3.0);
+        let double = create_multi("pow-buster-sha256-double-block", 1.0);
+        let goaway = create_multi("pow-buster-sha256-goaway", 2.0);
+        let binary = create_multi("pow-buster-sha256-binary", 3.0);
+
         let cerberus_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("pow-buster-cerberus"),
             source: wgpu::ShaderSource::Wgsl(Cow::Owned(cerberus_shader_source())),
         });
-        let cerberus_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let cerberus = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("pow-buster-cerberus"),
             layout: None,
             module: &cerberus_shader,
             entry_point: Some("solve"),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
+
         let altcha_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("pow-buster-altcha"),
             source: wgpu::ShaderSource::Wgsl(Cow::Owned(altcha_shader_source())),
         });
-        let altcha_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let altcha = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("pow-buster-altcha"),
             layout: None,
             module: &altcha_shader,
             entry_point: Some("solve"),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
-        let in_buf = device.create_buffer(&wgpu::BufferDescriptor {
+
+        Self {
+            anubis,
+            generic,
+            double,
+            goaway,
+            binary,
+            cerberus,
+            altcha,
+        }
+    }
+}
+
+struct GpuBuffers {
+    anubis_input: wgpu::Buffer,
+    generic_input: wgpu::Buffer,
+    output: wgpu::Buffer,
+    staging: wgpu::Buffer,
+}
+
+impl GpuBuffers {
+    fn create(device: &wgpu::Device) -> Self {
+        let anubis_input = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pow-buster-anubis-input"),
             size: 64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let generic_in_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        let generic_input = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pow-buster-sha256-single-block-input"),
             size: 256,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let out_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        let output = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pow-buster-anubis-output"),
             size: 48,
             usage: wgpu::BufferUsages::STORAGE
@@ -243,107 +253,193 @@ impl GpuContext {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("pow-buster-anubis"),
-            layout: &pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: in_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: out_buf.as_entire_binding(),
-                },
-            ],
-        });
-        let generic_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("pow-buster-sha256-single-block"),
-            layout: &generic_pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: generic_in_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: out_buf.as_entire_binding(),
-                },
-            ],
-        });
-        let make_multi_bind_group = |label: &'static str, pipeline: &wgpu::ComputePipeline| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(label),
-                layout: &pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: generic_in_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: out_buf.as_entire_binding(),
-                    },
-                ],
-            })
-        };
-        let double_bind_group =
-            make_multi_bind_group("pow-buster-sha256-double-block", &double_pipeline);
-        let goaway_bind_group = make_multi_bind_group("pow-buster-sha256-goaway", &goaway_pipeline);
-        let binary_bind_group = make_multi_bind_group("pow-buster-sha256-binary", &binary_pipeline);
-        let cerberus_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("pow-buster-cerberus"),
-            layout: &cerberus_pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: generic_in_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: out_buf.as_entire_binding(),
-                },
-            ],
-        });
-
-        let altcha_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("pow-buster-altcha"),
-            layout: &altcha_pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: generic_in_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: out_buf.as_entire_binding(),
-                },
-            ],
-        });
-
-        Ok(Self {
-            device,
-            queue,
-            pipeline,
-            in_buf,
-            generic_pipeline,
-            double_pipeline,
-            goaway_pipeline,
-            binary_pipeline,
-            cerberus_pipeline,
-            altcha_pipeline,
-            generic_in_buf,
-            out_buf,
+        Self {
+            anubis_input,
+            generic_input,
+            output,
             staging,
-            bind_group,
-            generic_bind_group,
-            double_bind_group,
-            goaway_bind_group,
-            binary_bind_group,
-            cerberus_bind_group,
-            altcha_bind_group,
-            max_wgs: limits.max_compute_workgroups_per_dimension,
-            adapter: adapter_name,
+        }
+    }
+}
+
+struct GpuBindings {
+    anubis: wgpu::BindGroup,
+    generic: wgpu::BindGroup,
+    double: wgpu::BindGroup,
+    goaway: wgpu::BindGroup,
+    binary: wgpu::BindGroup,
+    cerberus: wgpu::BindGroup,
+    altcha: wgpu::BindGroup,
+}
+
+impl GpuBindings {
+    fn create(device: &wgpu::Device, pipelines: &GpuPipelines, buffers: &GpuBuffers) -> Self {
+        let create =
+            |label: &'static str, pipeline: &wgpu::ComputePipeline, input: &wgpu::Buffer| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(label),
+                    layout: &pipeline.get_bind_group_layout(0),
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: input.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: buffers.output.as_entire_binding(),
+                        },
+                    ],
+                })
+            };
+        Self {
+            anubis: create(
+                "pow-buster-anubis",
+                &pipelines.anubis,
+                &buffers.anubis_input,
+            ),
+            generic: create(
+                "pow-buster-sha256-single-block",
+                &pipelines.generic,
+                &buffers.generic_input,
+            ),
+            double: create(
+                "pow-buster-sha256-double-block",
+                &pipelines.double,
+                &buffers.generic_input,
+            ),
+            goaway: create(
+                "pow-buster-sha256-goaway",
+                &pipelines.goaway,
+                &buffers.generic_input,
+            ),
+            binary: create(
+                "pow-buster-sha256-binary",
+                &pipelines.binary,
+                &buffers.generic_input,
+            ),
+            cerberus: create(
+                "pow-buster-cerberus",
+                &pipelines.cerberus,
+                &buffers.generic_input,
+            ),
+            altcha: create(
+                "pow-buster-altcha",
+                &pipelines.altcha,
+                &buffers.generic_input,
+            ),
+        }
+    }
+}
+
+fn select_gpu_adapter(
+    instance: &wgpu::Instance,
+) -> core::pin::Pin<Box<dyn core::future::Future<Output = Result<wgpu::Adapter, GpuError>> + '_>> {
+    Box::pin(async move {
+        if let Ok(requested) = std::env::var("WGPU_ADAPTER_NAME") {
+            let requested = requested.to_lowercase();
+            let adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN).await;
+            let available = adapters
+                .iter()
+                .map(|adapter| adapter.get_info().name)
+                .collect::<Vec<_>>();
+            return adapters
+                .into_iter()
+                .find(|adapter| {
+                    let info = adapter.get_info();
+                    info.device_type != wgpu::DeviceType::Cpu
+                        && info.name.to_lowercase().contains(&requested)
+                })
+                .ok_or_else(|| {
+                    GpuError::new(format!(
+                        "WGPU_ADAPTER_NAME={requested:?} matched no GPU adapter; available: {}",
+                        available.join(", ")
+                    ))
+                });
+        }
+
+        instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                ..wgpu::RequestAdapterOptions::default()
+            })
+            .await
+            .map_err(|e| GpuError::new(format!("request GPU adapter: {e}")))
+    })
+}
+
+impl GpuContext {
+    /// Enumerate usable non-CPU GPU adapters.
+    pub fn adapter_names() -> Pin<Box<dyn Future<Output = Vec<String>>>> {
+        Box::pin(async {
+            let instance = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
+            let mut names = instance
+                .enumerate_adapters(wgpu::Backends::VULKAN)
+                .await
+                .into_iter()
+                .filter_map(|adapter| {
+                    let info = adapter.get_info();
+                    (info.device_type != wgpu::DeviceType::Cpu).then_some(info.name)
+                })
+                .collect::<Vec<_>>();
+            names.sort();
+            names.dedup();
+            names
+        })
+    }
+
+    /// Create a GPU solver. `WGPU_ADAPTER_NAME` forces a matching adapter; otherwise
+    /// the high-performance adapter selected by `wgpu` is used.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no requested/usable adapter is available or the device cannot be created.
+    pub fn create() -> Pin<Box<dyn Future<Output = Result<Self, GpuError>>>> {
+        Box::pin(async {
+            let instance = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
+            let adapter = select_gpu_adapter(&instance).await?;
+            let info = adapter.get_info();
+            let adapter_name = format!("{} ({:?}, {})", info.name, info.backend, info.driver);
+            let limits = adapter.limits();
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    required_limits: wgpu::Limits::downlevel_defaults(),
+                    ..wgpu::DeviceDescriptor::default()
+                })
+                .await
+                .map_err(|e| GpuError::new(format!("request GPU device: {e}")))?;
+
+            let pipelines = GpuPipelines::create(&device);
+            let buffers = GpuBuffers::create(&device);
+            let bindings = GpuBindings::create(&device, &pipelines, &buffers);
+
+            Ok(Self {
+                device,
+                queue,
+                pipeline: pipelines.anubis,
+                in_buf: buffers.anubis_input,
+                generic_pipeline: pipelines.generic,
+                double_pipeline: pipelines.double,
+                goaway_pipeline: pipelines.goaway,
+                binary_pipeline: pipelines.binary,
+                cerberus_pipeline: pipelines.cerberus,
+                altcha_pipeline: pipelines.altcha,
+                generic_in_buf: buffers.generic_input,
+                out_buf: buffers.output,
+                staging: buffers.staging,
+                bind_group: bindings.anubis,
+                generic_bind_group: bindings.generic,
+                double_bind_group: bindings.double,
+                goaway_bind_group: bindings.goaway,
+                binary_bind_group: bindings.binary,
+                cerberus_bind_group: bindings.cerberus,
+                altcha_bind_group: bindings.altcha,
+                max_wgs: limits.max_compute_workgroups_per_dimension,
+                adapter: adapter_name,
+            })
         })
     }
 
@@ -351,7 +447,11 @@ impl GpuContext {
     ///
     /// Browser WebGPU implementations may defer substantial pipeline work until the first submit.
     /// Extensions can call this once during startup so the first real challenge does not pay that cost.
-    pub async fn warm_up(&mut self) -> Result<(), GpuError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
+    pub async fn warm_up(&self) -> Result<(), GpuError> {
         let mut params = Params { words: [0; 16] };
         params.words[..8].copy_from_slice(&crate::sha256::IV);
         params.words[10] = 19 * 8;
@@ -422,13 +522,18 @@ impl GpuContext {
     }
 
     /// Human-readable adapter/backend description.
+    #[must_use]
     pub fn adapter(&self) -> &str {
         &self.adapter
     }
 
     /// Solve an Anubis SHA-256 challenge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_anubis(
-        &mut self,
+        &self,
         prefix: &[u8],
         difficulty: NonZeroU8,
     ) -> Result<GpuSolution, GpuError> {
@@ -438,8 +543,12 @@ impl GpuContext {
     }
 
     /// Solve an Anubis SHA-256 challenge while dispatching at most `max_hashes` candidates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_anubis_with_limit(
-        &mut self,
+        &self,
         prefix: &[u8],
         difficulty: NonZeroU8,
         max_hashes: u64,
@@ -465,8 +574,8 @@ impl GpuContext {
         let mut params = Params { words: [0; 16] };
         params.words[..8].copy_from_slice(&mid);
         params.words[10] = bitlen;
-        params.words[11] = (mask >> 32) as u32;
-        params.words[12] = mask as u32;
+        params.words[11] = high_u32(mask);
+        params.words[12] = low_u32(mask);
         self.queue.write_buffer(&self.out_buf, 0, &[0; 48]);
 
         let expected = 16_u64.saturating_pow(u32::from(difficulty.get()));
@@ -479,9 +588,9 @@ impl GpuContext {
             let batch = desired
                 .min(remaining)
                 .min(u64::from(self.max_wgs) * HASHES_PER_WG);
-            let wgs = batch.div_ceil(HASHES_PER_WG).max(1) as u32;
-            params.words[8] = base as u32;
-            params.words[9] = (base >> 32) as u32;
+            let wgs = gpu_u32(batch.div_ceil(HASHES_PER_WG).max(1), "workgroup count")?;
+            params.words[8] = low_u32(base);
+            params.words[9] = high_u32(base);
             self.queue
                 .write_buffer(&self.in_buf, 0, bytemuck::bytes_of(&params));
 
@@ -527,8 +636,12 @@ impl GpuContext {
 
     /// Solve a parsed Anubis challenge descriptor.
     #[cfg(feature = "adapter")]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_anubis_descriptor(
-        &mut self,
+        &self,
         descriptor: &crate::adapter::anubis::ChallengeDescriptor,
     ) -> Result<GpuSolution, GpuError> {
         if descriptor.rules().algorithm() == "preact" {
@@ -546,7 +659,7 @@ impl GpuContext {
     }
 
     async fn solve_single_block_inner<const TYPE: u8>(
-        &mut self,
+        &self,
         message: &crate::message::SingleBlockMessage,
         target: u64,
         mask: u64,
@@ -576,7 +689,7 @@ impl GpuContext {
     }
 
     async fn solve_fast_single_block_message(
-        &mut self,
+        &self,
         message: &crate::message::SingleBlockMessage,
         mask: u64,
         max_hashes: u64,
@@ -584,9 +697,9 @@ impl GpuContext {
         let mut params = Params { words: [0; 16] };
         params.words[..8].copy_from_slice(&message.prefix_state);
         params.words[10] = message.message[15];
-        params.words[11] = (mask >> 32) as u32;
+        params.words[11] = high_u32(mask);
         params.words[12] = if cfg!(feature = "compare-64bit") {
-            mask as u32
+            low_u32(mask)
         } else {
             0
         };
@@ -604,9 +717,9 @@ impl GpuContext {
             let batch = desired
                 .min(remaining)
                 .min(u64::from(self.max_wgs) * HASHES_PER_WG);
-            let wgs = batch.div_ceil(HASHES_PER_WG).max(1) as u32;
-            params.words[8] = base as u32;
-            params.words[9] = (base >> 32) as u32;
+            let wgs = gpu_u32(batch.div_ceil(HASHES_PER_WG).max(1), "workgroup count")?;
+            params.words[8] = low_u32(base);
+            params.words[9] = high_u32(base);
             self.queue
                 .write_buffer(&self.in_buf, 0, bytemuck::bytes_of(&params));
 
@@ -651,7 +764,7 @@ impl GpuContext {
     }
 
     async fn solve_generic_single_block<const TYPE: u8>(
-        &mut self,
+        &self,
         message: &crate::message::SingleBlockMessage,
         target: u64,
         mask: u64,
@@ -671,13 +784,13 @@ impl GpuContext {
         let mut params = [0_u32; 40];
         params[..8].copy_from_slice(&message.prefix_state);
         params[8..24].copy_from_slice(&message.message);
-        params[25] = message.digit_index as u32;
-        params[26] = message.nonce_addend as u32;
-        params[27] = (message.nonce_addend >> 32) as u32;
-        params[28] = (target >> 32) as u32;
-        params[29] = target as u32;
-        params[30] = (mask >> 32) as u32;
-        params[31] = mask as u32;
+        params[25] = gpu_usize_u32(message.digit_index, "digit index")?;
+        params[26] = low_u32(message.nonce_addend);
+        params[27] = high_u32(message.nonce_addend);
+        params[28] = high_u32(target);
+        params[29] = low_u32(target);
+        params[30] = high_u32(mask);
+        params[31] = low_u32(mask);
         params[32] = u32::from(TYPE);
         params[33] = u32::from(message.no_trailing_zeros)
             | (u32::from(cfg!(feature = "compare-64bit")) << 1);
@@ -691,11 +804,11 @@ impl GpuContext {
             let batch = desired
                 .min(remaining)
                 .min(u64::from(self.max_wgs) * HASHES_PER_WG);
-            let wgs = batch.div_ceil(HASHES_PER_WG).max(1) as u32;
+            let wgs = gpu_u32(batch.div_ceil(HASHES_PER_WG).max(1), "workgroup count")?;
             let candidate_start = start + offset;
             let candidate_end = start + offset + batch;
-            params[24] = candidate_start as u32;
-            params[34] = candidate_end as u32;
+            params[24] = gpu_u32(candidate_start, "candidate start")?;
+            params[34] = gpu_u32(candidate_end, "candidate end")?;
             self.queue
                 .write_buffer(&self.generic_in_buf, 0, bytemuck::cast_slice(&params));
 
@@ -739,7 +852,7 @@ impl GpuContext {
     }
 
     async fn dispatch_multi(
-        &mut self,
+        &self,
         params: &[u32; 64],
         workgroups: u32,
     ) -> Result<Option<(u64, [u32; 8])>, GpuError> {
@@ -794,7 +907,7 @@ impl GpuContext {
     }
 
     async fn dispatch_cerberus(
-        &mut self,
+        &self,
         params: &[u32; 64],
         workgroups: u32,
     ) -> Result<Option<(u64, [u32; 8])>, GpuError> {
@@ -829,7 +942,7 @@ impl GpuContext {
     }
 
     async fn dispatch_altcha(
-        &mut self,
+        &self,
         params: &[u32; 64],
         workgroups: u32,
     ) -> Result<Option<(u64, [u32; 8])>, GpuError> {
@@ -910,7 +1023,7 @@ impl From<crate::message::SingleBlockMessage> for SingleBlockSolver {
 
 impl SingleBlockSolver {
     /// Set the maximum number of candidates dispatched by this solver.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
 
@@ -918,14 +1031,19 @@ impl SingleBlockSolver {
     ///
     /// GPU workgroups cooperatively stop after a hit, so this is an upper bound on candidates
     /// actually executed by the device.
-    pub fn attempted_nonces(&self) -> u64 {
+    #[must_use]
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
     /// Solve this SHA-256 single-block message on the GPU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -940,9 +1058,13 @@ impl SingleBlockSolver {
     }
 
     /// Solve and return only the nonce.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_nonce_only<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<u64>, GpuError> {
@@ -972,18 +1094,23 @@ impl From<crate::message::DoubleBlockMessage> for DoubleBlockSolver {
 
 impl DoubleBlockSolver {
     /// Set the maximum number of candidates dispatched.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
     /// Number of candidates dispatched so far.
-    pub fn attempted_nonces(&self) -> u64 {
+    #[must_use]
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
     /// Solve this double-block decimal message on the GPU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -1004,30 +1131,29 @@ impl DoubleBlockSolver {
             let batch = desired
                 .min(limit - offset)
                 .min(u64::from(gpu.max_wgs) * HASHES_PER_WG);
-            let wgs = batch.div_ceil(HASHES_PER_WG).max(1) as u32;
+            let wgs = gpu_u32(batch.div_ceil(HASHES_PER_WG).max(1), "workgroup count")?;
             let mut p = [0_u32; 64];
             p[0] = 1;
             p[1] = u32::from(TYPE);
             p[2] = u32::from(cfg!(feature = "compare-64bit"));
-            p[3] = (start + offset) as u32;
-            p[5] = batch as u32;
-            p[6] = (target >> 32) as u32;
-            p[7] = target as u32;
-            p[8] = (mask >> 32) as u32;
-            p[9] = mask as u32;
+            p[3] = gpu_u32(start + offset, "double-block candidate start")?;
+            p[5] = gpu_u32(batch, "batch size")?;
+            p[6] = high_u32(target);
+            p[7] = low_u32(target);
+            p[8] = high_u32(mask);
+            p[9] = low_u32(mask);
             p[16..24].copy_from_slice(&self.message.prefix_state);
             p[24..40].copy_from_slice(&self.message.message);
             let mut hot_state = self.message.prefix_state;
-            crate::sha256::ingest_message_prefix::<13>(
-                &mut hot_state,
-                self.message.message[..13].try_into().unwrap(),
-            );
+            let mut hot_prefix = [0_u32; 13];
+            hot_prefix.copy_from_slice(&self.message.message[..13]);
+            crate::sha256::ingest_message_prefix::<13>(&mut hot_state, hot_prefix);
             p[44..52].copy_from_slice(&hot_state);
-            p[40] = self.message.nonce_addend as u32;
-            p[41] = (self.message.nonce_addend >> 32) as u32;
+            p[40] = low_u32(self.message.nonce_addend);
+            p[41] = high_u32(self.message.nonce_addend);
             let bitlen = self.message.message_length.saturating_mul(8);
-            p[42] = (bitlen >> 32) as u32;
-            p[43] = bitlen as u32;
+            p[42] = high_u32(bitlen);
+            p[43] = low_u32(bitlen);
             if let Some((nonce, hash)) = gpu.dispatch_multi(&p, wgs).await? {
                 self.attempted_nonces = offset + batch;
                 if !verify_double_block::<TYPE>(&self.message, nonce, hash, target, mask) {
@@ -1046,9 +1172,13 @@ impl DoubleBlockSolver {
     }
 
     /// Solve and return only the nonce.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_nonce_only<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<u64>, GpuError> {
@@ -1078,23 +1208,28 @@ impl From<crate::message::DecimalMessage> for DecimalSolver {
 
 impl DecimalSolver {
     /// Set the maximum number of candidates dispatched.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         match self {
             Self::SingleBlock(s) => s.set_limit(limit),
             Self::DoubleBlock(s) => s.set_limit(limit),
         }
     }
     /// Number of candidates dispatched so far.
-    pub fn attempted_nonces(&self) -> u64 {
+    #[must_use]
+    pub const fn attempted_nonces(&self) -> u64 {
         match self {
             Self::SingleBlock(s) => s.attempted_nonces(),
             Self::DoubleBlock(s) => s.attempted_nonces(),
         }
     }
     /// Solve a decimal SHA-256 message.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -1105,7 +1240,7 @@ impl DecimalSolver {
     }
 }
 
-/// Async GPU GoAway SHA-256 solver.
+/// Async GPU `GoAway` SHA-256 solver.
 pub struct GoAwaySolver {
     message: crate::message::GoAwayMessage,
     attempted_nonces: u64,
@@ -1124,17 +1259,22 @@ impl From<crate::message::GoAwayMessage> for GoAwaySolver {
 
 impl GoAwaySolver {
     /// Set the maximum number of candidates dispatched.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
     /// Number of candidates dispatched so far.
-    pub fn attempted_nonces(&self) -> u64 {
+    #[must_use]
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
-    /// Solve a GoAway message on the GPU.
+    /// Solve a `GoAway` message on the GPU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -1145,17 +1285,17 @@ impl GoAwaySolver {
             let batch = desired
                 .min(limit - offset)
                 .min(u64::from(gpu.max_wgs) * HASHES_PER_WG);
-            let wgs = batch.div_ceil(HASHES_PER_WG).max(1) as u32;
+            let wgs = gpu_u32(batch.div_ceil(HASHES_PER_WG).max(1), "workgroup count")?;
             let mut p = [0_u32; 64];
             p[0] = 2;
             p[1] = u32::from(TYPE);
             p[2] = u32::from(cfg!(feature = "compare-64bit"));
-            p[3] = offset as u32;
-            p[5] = batch as u32;
-            p[6] = (target >> 32) as u32;
-            p[7] = target as u32;
-            p[8] = (mask >> 32) as u32;
-            p[9] = mask as u32;
+            p[3] = gpu_u32(offset, "candidate offset")?;
+            p[5] = gpu_u32(batch, "batch size")?;
+            p[6] = high_u32(target);
+            p[7] = low_u32(target);
+            p[8] = high_u32(mask);
+            p[9] = low_u32(mask);
             p[16..24].copy_from_slice(&self.message.challenge);
             p[24] = self.message.high_word;
             let mut hot_state = crate::sha256::IV;
@@ -1181,9 +1321,13 @@ impl GoAwaySolver {
         Ok(None)
     }
     /// Solve and return only the nonce.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_nonce_only<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<u64>, GpuError> {
@@ -1211,17 +1355,22 @@ impl From<crate::message::BinaryMessage> for BinarySolver {
 }
 impl BinarySolver {
     /// Set the maximum number of candidates dispatched.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
     /// Number of candidates dispatched so far.
-    pub fn attempted_nonces(&self) -> u64 {
+    #[must_use]
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
     /// Solve a binary-nonce SHA-256 message on the GPU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -1235,21 +1384,21 @@ impl BinarySolver {
             let batch = desired
                 .min(limit - base)
                 .min(u64::from(gpu.max_wgs) * HASHES_PER_WG);
-            let wgs = batch.div_ceil(HASHES_PER_WG).max(1) as u32;
+            let wgs = gpu_u32(batch.div_ceil(HASHES_PER_WG).max(1), "workgroup count")?;
             let mut p = [0_u32; 64];
             p[0] = 3;
             p[1] = u32::from(TYPE);
             p[2] = u32::from(cfg!(feature = "compare-64bit"));
-            p[3] = base as u32;
-            p[4] = (base >> 32) as u32;
-            p[5] = batch as u32;
-            p[6] = (target >> 32) as u32;
-            p[7] = target as u32;
-            p[8] = (mask >> 32) as u32;
-            p[9] = mask as u32;
+            p[3] = low_u32(base);
+            p[4] = high_u32(base);
+            p[5] = gpu_u32(batch, "batch size")?;
+            p[6] = high_u32(target);
+            p[7] = low_u32(target);
+            p[8] = high_u32(mask);
+            p[9] = low_u32(mask);
             p[10] = used;
             p[11] = u32::from(self.message.nonce_byte_count.get());
-            p[12] = self.message.salt_residual_len as u32;
+            p[12] = gpu_usize_u32(self.message.salt_residual_len, "salt residual length")?;
             p[16..24].copy_from_slice(&self.message.prefix_state);
             p[24..40].copy_from_slice(&templates[0]);
             p[40..56].copy_from_slice(&templates[1]);
@@ -1270,9 +1419,13 @@ impl BinarySolver {
         Ok(None)
     }
     /// Solve and return only the nonce.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_nonce_only<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<u64>, GpuError> {
@@ -1302,21 +1455,26 @@ impl From<crate::message::CerberusMessage> for CerberusSolver {
 
 impl CerberusSolver {
     /// Set the maximum number of candidates dispatched.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
 
     /// Number of candidates dispatched so far.
-    pub fn attempted_nonces(&self) -> u64 {
+    #[must_use]
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
     /// Solve a Cerberus message on the GPU.
     ///
     /// Cerberus uses a zero target plus bit mask; this mirrors the CPU backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -1338,12 +1496,12 @@ impl CerberusSolver {
                 .min(limit - base)
                 .min(u64::from(gpu.max_wgs) * HASHES_PER_WG)
                 .min(u64::from(u32::MAX));
-            let wgs = batch.div_ceil(HASHES_PER_WG).max(1) as u32;
+            let wgs = gpu_u32(batch.div_ceil(HASHES_PER_WG).max(1), "workgroup count")?;
             let mut p = [0_u32; 64];
-            p[1] = base as u32;
-            p[2] = batch as u32;
-            p[3] = (mask >> 32) as u32;
-            p[4] = mask as u32;
+            p[1] = low_u32(base);
+            p[2] = gpu_u32(batch, "batch size")?;
+            p[3] = high_u32(mask);
+            p[4] = low_u32(mask);
 
             match &self.message {
                 crate::message::CerberusMessage::Decimal(message) => {
@@ -1352,11 +1510,11 @@ impl CerberusSolver {
                     for (i, chunk) in message.salt_residual.as_chunks::<4>().0.iter().enumerate() {
                         p[16 + i] = u32::from_le_bytes(*chunk);
                     }
-                    p[32] = message.salt_residual_len as u32;
-                    p[33] = message.salt_residual_len as u32 + 9;
+                    p[32] = gpu_usize_u32(message.salt_residual_len, "salt residual length")?;
+                    p[33] = gpu_usize_u32(message.salt_residual_len, "salt residual length")? + 9;
                     p[34] = message.flags;
-                    p[35] = message.nonce_addend as u32;
-                    p[36] = (message.nonce_addend >> 32) as u32;
+                    p[35] = low_u32(message.nonce_addend);
+                    p[36] = high_u32(message.nonce_addend);
                 }
                 crate::message::CerberusMessage::Binary(message) => {
                     p[0] = 1;
@@ -1383,9 +1541,13 @@ impl CerberusSolver {
     }
 
     /// Solve and return only the nonce.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_nonce_only<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<u64>, GpuError> {
@@ -1415,19 +1577,24 @@ impl From<crate::message::AltchaMessage> for AltchaSha256Solver {
 
 impl AltchaSha256Solver {
     /// Set the maximum number of candidates dispatched.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
 
     /// Number of candidates dispatched so far.
-    pub fn attempted_nonces(&self) -> u64 {
+    #[must_use]
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 
     /// Solve an Altcha SHA-256 or PBKDF2 challenge on the GPU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<GpuSolution>, GpuError> {
@@ -1443,24 +1610,20 @@ impl AltchaSha256Solver {
                 .min(limit - base)
                 .min(max_batch)
                 .min(u64::from(u32::MAX));
-            let wgs = batch.div_ceil(u64::from(WG_SIZE)).max(1) as u32;
+            let wgs = gpu_u32(batch.div_ceil(u64::from(WG_SIZE)).max(1), "workgroup count")?;
             let mut p = [0_u32; 64];
             p[0] = u32::from(self.message.pbkdf2);
-            p[1] = base as u32;
-            p[2] = batch as u32;
+            p[1] = low_u32(base);
+            p[2] = gpu_u32(batch, "batch size")?;
             p[3] = u32::from(TYPE);
-            p[4] = (target >> 32) as u32;
-            p[5] = target as u32;
-            p[6] = (mask >> 32) as u32;
-            p[7] = mask as u32;
+            p[4] = high_u32(target);
+            p[5] = low_u32(target);
+            p[6] = high_u32(mask);
+            p[7] = low_u32(mask);
             p[8] = self.message.cost.get();
             p[9] = self.message.key_length.get().min(32);
-            for i in 0..4 {
-                p[16 + i] =
-                    u32::from_be_bytes(self.message.salt[i * 4..i * 4 + 4].try_into().unwrap());
-                p[20 + i] =
-                    u32::from_be_bytes(self.message.nonce[i * 4..i * 4 + 4].try_into().unwrap());
-            }
+            p[16..20].copy_from_slice(&be_words_4(&self.message.salt));
+            p[20..24].copy_from_slice(&be_words_4(&self.message.nonce));
 
             if let Some((nonce, hash)) = gpu.dispatch_altcha(&p, wgs).await? {
                 self.attempted_nonces = base + batch;
@@ -1480,9 +1643,13 @@ impl AltchaSha256Solver {
     }
 
     /// Solve and return only the nonce.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if GPU setup, submission, synchronization, or result readback fails.
     pub async fn solve_nonce_only<const TYPE: u8>(
         &mut self,
-        gpu: &mut GpuContext,
+        gpu: &GpuContext,
         target: u64,
         mask: u64,
     ) -> Result<Option<u64>, GpuError> {
@@ -1493,7 +1660,7 @@ impl AltchaSha256Solver {
     }
 }
 
-fn single_block_search_space(message: &crate::message::SingleBlockMessage) -> u64 {
+const fn single_block_search_space(message: &crate::message::SingleBlockMessage) -> u64 {
     if message.nonce_addend == 0 {
         900_000_000
     } else {
@@ -1501,7 +1668,7 @@ fn single_block_search_space(message: &crate::message::SingleBlockMessage) -> u6
     }
 }
 
-fn single_block_fast_compatible(message: &crate::message::SingleBlockMessage) -> bool {
+const fn single_block_fast_compatible(message: &crate::message::SingleBlockMessage) -> bool {
     if message.digit_index != 10
         || message.nonce_addend != 1_000_000_000_000_000_000
         || message.no_trailing_zeros
@@ -1538,9 +1705,9 @@ fn expected_work<const TYPE: u8>(target: u64, mask: u64) -> u64 {
         32
     };
     let t = if bits == 64 {
-        target as u128
+        u128::from(target)
     } else {
-        (target >> 32) as u128
+        u128::from(target >> 32)
     };
     let space = 1_u128 << bits;
     let success = if TYPE == crate::solver::SOLVE_TYPE_LT {
@@ -1548,15 +1715,13 @@ fn expected_work<const TYPE: u8>(target: u64, mask: u64) -> u64 {
     } else {
         space.saturating_sub(t).saturating_sub(1).max(1)
     };
-    (space / success).min(u64::MAX as u128) as u64
+    u64::try_from((space / success).min(u128::from(u64::MAX))).unwrap_or(u64::MAX)
 }
 
 fn midstate(prefix: &[u8]) -> [u32; 8] {
     let mut state = crate::sha256::IV;
     for block in prefix.as_chunks::<64>().0 {
-        let words = core::array::from_fn(|i| {
-            u32::from_be_bytes(block[i * 4..i * 4 + 4].try_into().unwrap())
-        });
+        let words = be_words_16(block);
         crate::sha256::digest_block(&mut state, &words);
     }
     state
@@ -1574,10 +1739,9 @@ fn verify(prefix: &[u8], nonce: u64, hash: [u32; 8], mask: u64) -> bool {
     let mut hasher = Sha256::new();
     hasher.update(prefix);
     hasher.update(nonce.to_string().as_bytes());
-    let digest = hasher.finalize();
-    let expected =
-        core::array::from_fn(|i| u32::from_be_bytes(digest[i * 4..i * 4 + 4].try_into().unwrap()));
-    expected == hash && ((((hash[0] as u64) << 32) | hash[1] as u64) & mask) == 0
+    let digest: [u8; 32] = hasher.finalize().into();
+    let expected = be_words_8(&digest);
+    expected == hash && (((u64::from(hash[0]) << 32) | u64::from(hash[1])) & mask) == 0
 }
 
 fn digest_single_block_message(
@@ -1589,7 +1753,7 @@ fn digest_single_block_message(
         return None;
     }
     let mut words = message.message;
-    let mut x = suffix as u32;
+    let mut x = u32::try_from(suffix).ok()?;
     for j in 0..9 {
         let digit = x % 10;
         x /= 10;
@@ -1618,8 +1782,8 @@ fn result_matches<const TYPE: u8>(hash: [u32; 8], target: u64, mask: u64) -> boo
         }
     } else {
         let value = hash[0];
-        let target = (target >> 32) as u32;
-        let mask = (mask >> 32) as u32;
+        let target = high_u32(target);
+        let mask = high_u32(mask);
         if TYPE == crate::solver::SOLVE_TYPE_LT {
             value < target
         } else if TYPE == crate::solver::SOLVE_TYPE_GT {
@@ -1655,8 +1819,7 @@ fn verify_fast_single_block(
     block[..19].copy_from_slice(nonce.as_bytes());
     block[19] = 0x80;
     block[60..64].copy_from_slice(&message.message[15].to_be_bytes());
-    let words =
-        core::array::from_fn(|i| u32::from_be_bytes(block[i * 4..i * 4 + 4].try_into().unwrap()));
+    let words = be_words_16(&block);
     let mut state = message.prefix_state;
     crate::sha256::digest_block(&mut state, &words);
     state == hash && result_matches::<{ crate::solver::SOLVE_TYPE_MASK }>(hash, 0, mask)
@@ -1678,27 +1841,28 @@ fn verify_cerberus(
             }
             let mut bytes = message.salt_residual;
             for i in (0..9).rev() {
-                bytes[message.salt_residual_len + i] = (suffix % 10) as u8 + b'0';
+                bytes[message.salt_residual_len + i] = (suffix % 10).to_le_bytes()[0] + b'0';
                 suffix /= 10;
             }
-            let words = core::array::from_fn(|i| {
-                u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
-            });
+            let words = le_words_16(&bytes);
+            let Ok(salt_residual_len) = u32::try_from(message.salt_residual_len) else {
+                return false;
+            };
             crate::blake3::compress8(
                 &message.prefix_state,
                 &words,
                 0,
-                message.salt_residual_len as u32 + 9,
+                salt_residual_len + 9,
                 message.flags,
             )
         }
         crate::message::CerberusMessage::Binary(message) => {
-            if (nonce >> 32) as u32 != message.first_word {
+            if high_u32(nonce) != message.first_word {
                 return false;
             }
             let mut words = [0_u32; 16];
             words[0] = message.first_word;
-            words[1] = nonce as u32;
+            words[1] = low_u32(nonce);
             crate::blake3::compress8(
                 &message.midstate,
                 &words,
@@ -1708,7 +1872,7 @@ fn verify_cerberus(
             )
         }
     };
-    expected == hash && ((((hash[0] as u64) << 32) | u64::from(hash[1])) & mask) == 0
+    expected == hash && (((u64::from(hash[0]) << 32) | u64::from(hash[1])) & mask) == 0
 }
 
 fn expected_work_full64<const TYPE: u8>(target: u64, mask: u64) -> u64 {
@@ -1722,7 +1886,7 @@ fn expected_work_full64<const TYPE: u8>(target: u64, mask: u64) -> u64 {
     } else {
         space.saturating_sub(t).saturating_sub(1).max(1)
     };
-    (space / success).min(u128::from(u64::MAX)) as u64
+    u64::try_from((space / success).min(u128::from(u64::MAX))).unwrap_or(u64::MAX)
 }
 
 fn result_matches_full64<const TYPE: u8>(hash: [u32; 8], target: u64, mask: u64) -> bool {
@@ -1761,18 +1925,18 @@ fn verify_altcha<const TYPE: u8>(
         {
             return false;
         }
-        core::array::from_fn(|i| u32::from_be_bytes(output[i * 4..i * 4 + 4].try_into().unwrap()))
+        be_words_8(&output)
     } else {
         let mut first = [0_u8; 36];
         first[..16].copy_from_slice(&message.salt);
         first[16..32].copy_from_slice(&message.nonce);
         first[32..].copy_from_slice(&counter.to_be_bytes());
-        let mut digest = Sha256::digest(first).to_vec();
-        let key_len = message.key_length.get().min(32) as usize;
+        let mut digest: [u8; 32] = Sha256::digest(first).into();
+        let key_len = usize::try_from(message.key_length.get().min(32)).unwrap_or(32);
         for _ in 1..message.cost.get() {
-            digest = Sha256::digest(&digest[..key_len]).to_vec();
+            digest = Sha256::digest(&digest[..key_len]).into();
         }
-        core::array::from_fn(|i| u32::from_be_bytes(digest[i * 4..i * 4 + 4].try_into().unwrap()))
+        be_words_8(&digest)
     };
     expected == hash && result_matches_full64::<TYPE>(hash, target, mask)
 }
@@ -1782,12 +1946,29 @@ fn altcha_shader_source() -> String {
     for (t, k) in crate::sha256::K32.iter().enumerate() {
         let i = t & 15;
         if t >= 16 {
-            rounds.push_str(&format!("w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",(t-2)&15,(t-2)&15,(t-2)&15,(t-7)&15,(t-15)&15,(t-15)&15,(t-15)&15));
+            append_fmt(
+                &mut rounds,
+                format_args!(
+                    "w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 7) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15
+                ),
+            );
         }
-        rounds.push_str(&format!("{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"));
+        append_fmt(
+            &mut rounds,
+            format_args!(
+                "{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"
+            ),
+        );
     }
     format!(
-        r#"
+        r"
 const IV:array<u32,8>=array<u32,8>(0x6a09e667u,0xbb67ae85u,0x3c6ef372u,0xa54ff53au,0x510e527fu,0x9b05688cu,0x1f83d9abu,0x5be0cd19u);
 struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }};
 @group(0) @binding(0) var<storage,read> P:array<u32>;
@@ -1826,7 +2007,7 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
  }}
  if(target_ok(out[0],out[1])&&atomicExchange(&R.flag,1u)==0u){{R.nonce_lo=candidate;R.nonce_hi=0u;for(var i=0u;i<8u;i=i+1u){{R.hash[i]=out[i];}}}}
 }}
-"#
+"
     )
 }
 
@@ -1852,13 +2033,16 @@ fn cerberus_shader_source() -> String {
         for &(a, b, c, d, x, y) in &gs {
             let mx = sched[x];
             let my = sched[y];
-            rounds.push_str(&format!(
-                "v[{a}]=v[{a}]+v[{b}]+m[{mx}];v[{d}]=rotr(v[{d}]^v[{a}],16u);v[{c}]=v[{c}]+v[{d}];v[{b}]=rotr(v[{b}]^v[{c}],12u);v[{a}]=v[{a}]+v[{b}]+m[{my}];v[{d}]=rotr(v[{d}]^v[{a}],8u);v[{c}]=v[{c}]+v[{d}];v[{b}]=rotr(v[{b}]^v[{c}],7u);\n"
-            ));
+            append_fmt(
+                &mut rounds,
+                format_args!(
+                    "v[{a}]=v[{a}]+v[{b}]+m[{mx}];v[{d}]=rotr(v[{d}]^v[{a}],16u);v[{c}]=v[{c}]+v[{d}];v[{b}]=rotr(v[{b}]^v[{c}],12u);v[{a}]=v[{a}]+v[{b}]+m[{my}];v[{d}]=rotr(v[{d}]^v[{a}],8u);v[{c}]=v[{c}]+v[{d}];v[{b}]=rotr(v[{b}]^v[{c}],7u);\n"
+                ),
+            );
         }
     }
     format!(
-        r#"
+        r"
 struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }};
 @group(0) @binding(0) var<storage,read> P:array<u32>;
 @group(0) @binding(1) var<storage,read_write> R:OutBuf;
@@ -1889,28 +2073,46 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
   if((h[0]&P[3])==0u&&(h[1]&P[4])==0u){{if(atomicExchange(&R.flag,1u)==0u){{R.nonce_lo=nlo;R.nonce_hi=nhi;for(var i=0u;i<8u;i=i+1u){{R.hash[i]=h[i];}}}}}}
  }}
 }}
-"#,
+",
         CANCEL_INTERVAL - 1
     )
 }
 
-fn multi_layout_shader_source() -> String {
-    let build_rounds = |start: usize| {
-        let mut rounds = String::new();
-        for (t, k) in crate::sha256::K32.iter().enumerate().skip(start) {
-            let i = t & 15;
-            if t >= 16 {
-                rounds.push_str(&format!("w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",(t-2)&15,(t-2)&15,(t-2)&15,(t-7)&15,(t-15)&15,(t-15)&15,(t-15)&15));
-            }
-            rounds.push_str(&format!("{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"));
+fn multi_layout_rounds(start: usize) -> String {
+    let mut rounds = String::new();
+    for (t, k) in crate::sha256::K32.iter().enumerate().skip(start) {
+        let i = t & 15;
+        if t >= 16 {
+            append_fmt(
+                &mut rounds,
+                format_args!(
+                    "w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 7) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15
+                ),
+            );
         }
-        rounds
-    };
-    let rounds = build_rounds(0);
-    let rounds9 = build_rounds(9);
-    let rounds13 = build_rounds(13);
+        append_fmt(
+            &mut rounds,
+            format_args!(
+                "{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"
+            ),
+        );
+    }
+    rounds
+}
+
+fn multi_layout_shader_source() -> String {
+    let rounds = multi_layout_rounds(0);
+    let rounds9 = multi_layout_rounds(9);
+    let rounds13 = multi_layout_rounds(13);
     format!(
-        r#"
+        r"
 const IV:array<u32,8>=array<u32,8>(0x6a09e667u,0xbb67ae85u,0x3c6ef372u,0xa54ff53au,0x510e527fu,0x9b05688cu,0x1f83d9abu,0x5be0cd19u);
 override MODE:u32;
 struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }};
@@ -1990,7 +2192,7 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
   }}
  }}
 }}
-"#,
+",
         CANCEL_INTERVAL - 1
     )
 }
@@ -2010,9 +2212,9 @@ fn verify_double_block<const TYPE: u8>(
     }
     let mut block = message.message;
     for j in (0..9).rev() {
-        let digit = (suffix % 10) as u32;
+        let digit = u32::from((suffix % 10).to_le_bytes()[0]);
         suffix /= 10;
-        let pos = crate::message::DoubleBlockMessage::DIGIT_IDX as usize + j;
+        let pos = crate::message::DoubleBlockMessage::DIGIT_IDX + j;
         let wi = pos / 4;
         let sh = (3 - (pos % 4)) * 8;
         block[wi] = (block[wi] & !(0xffu32 << sh)) | ((u32::from(b'0') + digit) << sh);
@@ -2021,8 +2223,8 @@ fn verify_double_block<const TYPE: u8>(
     crate::sha256::digest_block(&mut state, &block);
     let mut tail = [0u32; 16];
     let bits = message.message_length * 8;
-    tail[14] = (bits >> 32) as u32;
-    tail[15] = bits as u32;
+    tail[14] = high_u32(bits);
+    tail[15] = low_u32(bits);
     crate::sha256::digest_block(&mut state, &tail);
     state == hash && result_matches::<TYPE>(hash, target, mask)
 }
@@ -2033,13 +2235,13 @@ fn verify_goaway<const TYPE: u8>(
     target: u64,
     mask: u64,
 ) -> bool {
-    if (nonce >> 32) as u32 != message.high_word {
+    if high_u32(nonce) != message.high_word {
         return false;
     }
     let mut block = [0u32; 16];
     block[..8].copy_from_slice(&message.challenge);
     block[8] = message.high_word;
-    block[9] = nonce as u32;
+    block[9] = low_u32(nonce);
     block[10] = 0x8000_0000;
     block[15] = 320;
     let mut state = crate::sha256::IV;
@@ -2064,14 +2266,15 @@ fn binary_templates(message: &crate::message::BinaryMessage) -> ([[u32; 16]; 2],
     if ptr + 8 > 64 {
         cur = 1;
     }
-    bytes[cur][56..64].copy_from_slice(&((message.message_length as u64) * 8).to_be_bytes());
+    bytes[cur][56..64].copy_from_slice(
+        &(u64::try_from(message.message_length)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(8))
+        .to_be_bytes(),
+    );
     (
-        core::array::from_fn(|b| {
-            core::array::from_fn(|i| {
-                u32::from_be_bytes(bytes[b][i * 4..i * 4 + 4].try_into().unwrap())
-            })
-        }),
-        (cur + 1) as u32,
+        core::array::from_fn(|b| be_words_16(&bytes[b])),
+        u32::try_from(cur + 1).unwrap_or(2),
     )
 }
 fn verify_binary<const TYPE: u8>(
@@ -2097,9 +2300,10 @@ fn verify_binary<const TYPE: u8>(
         flat[wi] = (flat[wi] & !(0xffu32 << sh)) | (u32::from(*byte) << sh);
     }
     let mut state = message.prefix_state;
-    crate::sha256::digest_block(&mut state, flat[..16].try_into().unwrap());
+    let blocks = flat.as_chunks::<16>().0;
+    crate::sha256::digest_block(&mut state, &blocks[0]);
     if used == 2 {
-        crate::sha256::digest_block(&mut state, flat[16..32].try_into().unwrap());
+        crate::sha256::digest_block(&mut state, &blocks[1]);
     }
     state == hash && result_matches::<TYPE>(hash, target, mask)
 }
@@ -2109,12 +2313,29 @@ fn generic_single_block_shader_source() -> String {
     for (t, k) in crate::sha256::K32.iter().enumerate() {
         let i = t & 15;
         if t >= 16 {
-            rounds.push_str(&format!("w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",(t-2)&15,(t-2)&15,(t-2)&15,(t-7)&15,(t-15)&15,(t-15)&15,(t-15)&15));
+            append_fmt(
+                &mut rounds,
+                format_args!(
+                    "w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 7) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15
+                ),
+            );
         }
-        rounds.push_str(&format!("{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"));
+        append_fmt(
+            &mut rounds,
+            format_args!(
+                "{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"
+            ),
+        );
     }
     format!(
-        r#"
+        r"
 struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }};
 @group(0) @binding(0) var<storage,read> P:array<u32>;
 @group(0) @binding(1) var<storage,read_write> R:OutBuf;
@@ -2171,7 +2392,7 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
   }}
  }}
 }}
-"#,
+",
         CANCEL_INTERVAL - 1
     )
 }
@@ -2181,12 +2402,29 @@ fn shader_source() -> String {
     for (t, k) in crate::sha256::K32.iter().enumerate() {
         let i = t & 15;
         if t >= 16 {
-            rounds.push_str(&format!("w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",(t-2)&15,(t-2)&15,(t-2)&15,(t-7)&15,(t-15)&15,(t-15)&15,(t-15)&15));
+            append_fmt(
+                &mut rounds,
+                format_args!(
+                    "w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 7) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15
+                ),
+            );
         }
-        rounds.push_str(&format!("{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"));
+        append_fmt(
+            &mut rounds,
+            format_args!(
+                "{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"
+            ),
+        );
     }
     format!(
-        r#"
+        r"
 struct InParams {{ s0:u32,s1:u32,s2:u32,s3:u32,s4:u32,s5:u32,s6:u32,s7:u32,base_lo:u32,base_hi:u32,bitlen:u32,mask0:u32,mask1:u32 }};
 struct OutBuf {{ flag:atomic<u32>,nonce_lo:u32,nonce_hi:u32,hash:array<u32,8> }};
 @group(0) @binding(0) var<uniform> P:InParams;
@@ -2209,7 +2447,7 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
   let ns=step+1u;if(ns<{STEPS}u){{nw4=nw4^GM[countTrailingZeros(ns)];}}
  }}
 }}
-"#,
+",
         CANCEL_INTERVAL - 1
     )
 }
@@ -2222,7 +2460,7 @@ mod tests {
     fn counter_conversion_is_decimal_octal_digits() {
         assert_eq!(counter_to_decimal_nonce(0), 1_000_000_000_000_000_000);
         assert_eq!(
-            counter_to_decimal_nonce(0o1234567),
+            counter_to_decimal_nonce(0o1_234_567),
             1_000_000_000_001_234_567
         );
         assert!(counter_to_decimal_nonce(COUNTER_SPACE - 1) < u64::MAX);

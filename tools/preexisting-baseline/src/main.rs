@@ -162,14 +162,14 @@ fn current_cases(sample: u32, limit: u64) -> anyhow::Result<()> {
         "wasm-sha256-1.28",
         sample,
         limit,
-        current::BinarySolver::from(current::message::BinaryMessage::new(
-            &binary,
-            NonZeroU8::new(4).unwrap()
-        )),
+        current::BinarySolver::from(
+            current::message::BinaryMessage::new(&binary, NonZeroU8::new(4).unwrap())
+                .expect("four-byte baseline nonce width"),
+        ),
         current::solver::SOLVE_TYPE_MASK
     );
     let mut mc = Vec::new();
-    current::build_mcaptcha_prefix(
+    let _ = current::build_mcaptcha_prefix(
         &mut mc,
         "challenge-disasterer-matrix",
         &format!("matrix-salt-{sample:08x}"),

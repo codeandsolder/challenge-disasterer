@@ -1,0 +1,15 @@
+[project]
+name = "challenge-disasterer-ci-tools"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "argon2-cffi>=25",
+    "numpy>=2",
+    "pyopencl>=2025.2",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.3",
+    "ty>=0.0.95",
+]

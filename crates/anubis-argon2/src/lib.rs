@@ -1,5 +1,8 @@
 #![feature(portable_simd)]
-#![allow(clippy::inline_always)] // Hot SIMD helpers must inline into target-feature wrappers.
+#![expect(
+    clippy::inline_always,
+    reason = "hot SIMD helpers must inline into target-feature wrappers"
+)]
 
 //! Focused Argon2id v1.3 engine for Anubis' fixed m=19456 KiB, t=2, p=1 parameters.
 //!
@@ -97,7 +100,13 @@ pub fn hash(password: &[u8], salt: [u8; 8], memory: &mut Memory) -> Option<[u8; 
     Some(finalize(&memory.blocks[MEMORY_KIB - 1]))
 }
 
-#[allow(unsafe_code)]
+#[cfg_attr(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    expect(
+        unsafe_code,
+        reason = "runtime AVX2 detection guards the single target-feature call boundary"
+    )
+)]
 fn fill(memory: &mut [Block], independent_refs: &[usize], backend: Backend) -> Option<()> {
     match backend {
         Backend::Portable => fill_all(memory, independent_refs),
@@ -323,7 +332,7 @@ fn load(block: &Block) -> State {
 }
 
 #[inline(always)]
-fn load_vec(block: &Block, i: usize) -> V {
+const fn load_vec(block: &Block, i: usize) -> V {
     let base = i * 4;
     V::from_array([
         block.0[base],
@@ -334,7 +343,7 @@ fn load_vec(block: &Block, i: usize) -> V {
 }
 
 #[inline(always)]
-fn store_vec(block: &mut Block, i: usize, value: V) {
+const fn store_vec(block: &mut Block, i: usize, value: V) {
     let base = i * 4;
     let lanes = value.to_array();
     block.0[base] = lanes[0];

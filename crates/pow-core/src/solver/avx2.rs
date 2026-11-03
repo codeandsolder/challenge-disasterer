@@ -122,6 +122,7 @@ impl crate::solver::Solver for SingleBlockSolver {
 
         macro_rules! dispatch {
             ($idx0:literal, $idx1_inc:literal) => {
+                // SAFETY: Solver::solve checked AVX2 before entering this dispatch.
                 unsafe {
                     if self.message.digit_index % 4 == 2 {
                         // if we have to much search space it doesn't matter
@@ -297,7 +298,10 @@ impl From<crate::solver::safe::BinarySolver> for BinarySolver {
 impl BinarySolver {
     #[inline(never)]
     #[target_feature(enable = "avx2")]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "const-generic SHA block specialization keeps hot solver inputs explicit"
+    )]
     fn solve_impl<
         const TYPE: u8,
         const FIRST_NONCE_WORD_IDX: usize,
@@ -350,59 +354,30 @@ impl crate::solver::Solver for BinarySolver {
         // needs a distinct shuffle layout. Keep those rare cases on the scalar fallback instead of
         // burdening the hot SIMD path with extra setup and branches.
         if (self.message.nonce_byte_count.get() == 1)
-            || (self.message.salt_residual_len + self.message.nonce_byte_count.get() as usize > 64)
+            || (self.message.salt_residual_len + usize::from(self.message.nonce_byte_count.get())
+                > 64)
         {
             crate::unlikely();
             let mut solver = crate::solver::safe::BinarySolver::from(self.message.clone());
             return solver.solve::<TYPE>(target, mask);
         }
 
-        let salt = &self.message.salt_residual[..self.message.salt_residual_len];
-        let mut blocks = [[0u8; 64]; 2];
-        blocks[0][..salt.len()].copy_from_slice(salt);
-        let mut ptr = salt.len();
-        let mut cur_block = 0;
-
-        for _ in 0..self.message.nonce_byte_count.get() {
-            blocks[cur_block][ptr] = 0;
-            ptr += 1;
-            if ptr == 64 {
-                cur_block = 1;
-                ptr = 0;
-            }
-        }
-        blocks[cur_block][ptr] = 0x80;
-        ptr += 1;
-        if ptr + 8 > 64 {
-            cur_block = 1;
-        }
-        blocks[cur_block][(64 - 8)..]
-            .copy_from_slice(&(self.message.message_length * 8).to_be_bytes());
-
-        let used_blocks = &mut blocks[..=cur_block];
-
-        let mut block_template_be = [0; 16];
-        for i in 0..16 {
-            block_template_be[i] =
-                u32::from_be_bytes(used_blocks[0][i * 4..][..4].try_into().unwrap());
-        }
-
-        let mut second_block_schedule = [0; 64];
-        if cur_block == 1 {
-            for i in 0..16 {
-                second_block_schedule[i] =
-                    u32::from_be_bytes(used_blocks[1][i * 4..][..4].try_into().unwrap());
-            }
-            crate::sha256::do_message_schedule_k_w(&mut second_block_schedule);
-        }
+        let super::PreparedBinaryBlocks {
+            mut blocks,
+            current_block,
+            first_block,
+            second_block_schedule,
+        } = super::prepare_binary_blocks(&self.message)?;
+        let used_blocks = &mut blocks[..=current_block];
 
         macro_rules! dispatch {
             ($skipped_rounds:expr) => {
+                // SAFETY: Solver::solve checked AVX2 before entering this dispatch.
                 unsafe {
-                    if cur_block == 1 {
+                    if current_block == 1 {
                         if let Some(nonce) = self.solve_impl::<TYPE, { $skipped_rounds }, true>(
                             self.message.prefix_state,
-                            &block_template_be,
+                            &first_block,
                             &second_block_schedule,
                             self.message.salt_residual_len,
                             self.message.nonce_byte_count,
@@ -410,7 +385,7 @@ impl crate::solver::Solver for BinarySolver {
                             mask,
                         ) {
                             let mut final_sha_state = self.message.prefix_state;
-                            for i in 0..self.message.nonce_byte_count.get() as usize {
+                            for i in 0..usize::from(self.message.nonce_byte_count.get()) {
                                 used_blocks[0][self.message.salt_residual_len + i] =
                                     nonce.to_le_bytes()[i];
                             }
@@ -420,7 +395,7 @@ impl crate::solver::Solver for BinarySolver {
                     } else {
                         if let Some(nonce) = self.solve_impl::<TYPE, { $skipped_rounds }, false>(
                             self.message.prefix_state,
-                            &block_template_be,
+                            &first_block,
                             &[0; 64],
                             self.message.salt_residual_len,
                             self.message.nonce_byte_count,
@@ -428,7 +403,7 @@ impl crate::solver::Solver for BinarySolver {
                             mask,
                         ) {
                             let mut final_sha_state = self.message.prefix_state;
-                            for i in 0..self.message.nonce_byte_count.get() as usize {
+                            for i in 0..usize::from(self.message.nonce_byte_count.get()) {
                                 used_blocks[0][self.message.salt_residual_len + i] =
                                     nonce.to_le_bytes()[i];
                             }
@@ -466,7 +441,7 @@ impl crate::solver::Solver for BinarySolver {
     }
 }
 
-/// AVX2 GoAway solver.
+/// AVX2 `GoAway` solver.
 ///
 ///
 /// Current implementation: 8 way SIMD with 1-round hotstart granularity.
@@ -540,8 +515,8 @@ impl crate::solver::Solver for GoAwaySolver {
         let mut output_msg = [0; 16];
         let nonce = self.solve_nonce_only::<TYPE>(target, mask)?;
         output_msg[..8].copy_from_slice(&self.message.challenge);
-        output_msg[8] = (nonce >> 32) as u32;
-        output_msg[9] = nonce as u32;
+        output_msg[8] = crate::high_u32(nonce);
+        output_msg[9] = crate::low_u32(nonce);
         output_msg[10] = u32::from_be_bytes([0x80, 0, 0, 0]);
         output_msg[15] = Self::MSG_LEN as _;
 
@@ -573,12 +548,13 @@ impl From<CerberusMessage> for CerberusSolver {
 
 impl CerberusSolver {
     /// Set the limit.
-    pub fn set_limit(&mut self, limit: u64) {
+    pub const fn set_limit(&mut self, limit: u64) {
         self.limit = limit;
     }
 
     /// Get the attempted nonces.
-    pub fn attempted_nonces(&self) -> u64 {
+    #[must_use]
+    pub const fn attempted_nonces(&self) -> u64 {
         self.attempted_nonces
     }
 }
@@ -642,6 +618,7 @@ impl crate::solver::Solver for CerberusSolver {
             return None;
         }
         match &self.message {
+            // SAFETY: the RequiredFeatures gate above proves AVX2 before dispatch.
             CerberusMessage::Binary(_) => unsafe { self.solve_binary_impl(target, mask) },
             CerberusMessage::Decimal(message) => {
                 // two digits as lane ID, N=\x00, ? is prefix
@@ -656,33 +633,18 @@ impl crate::solver::Solver for CerberusSolver {
                 let salt_residual_len = message.salt_residual_len;
                 let position_mod = message.salt_residual_len % 4;
 
-                for resid0 in 0..10u64 {
-                    for resid1 in 0..10u64 {
+                for resid0 in 0..10_u8 {
+                    for resid1 in 0..10_u8 {
                         if self.attempted_nonces >= self.limit {
                             return None;
                         }
-                        let mut msg = salt_residual;
-
-                        match position_mod {
-                            0 => {
-                                msg[salt_residual_len] = resid0 as u8 + b'0';
-                                msg[salt_residual_len + 8] = resid1 as u8 + b'0';
-                            }
-                            1 => {
-                                msg[salt_residual_len + 7] = resid0 as u8 + b'0';
-                                msg[salt_residual_len + 8] = resid1 as u8 + b'0';
-                            }
-                            2 => {
-                                msg[salt_residual_len] = resid0 as u8 + b'0';
-                                msg[salt_residual_len + 1] = resid1 as u8 + b'0';
-                            }
-                            3 => {
-                                msg[salt_residual_len] = resid0 as u8 + b'0';
-                                msg[salt_residual_len + 8] = resid1 as u8 + b'0';
-                            }
-                            _ => unreachable!(),
-                        }
-
+                        let msg = super::patch_cerberus_decimal_residual(
+                            salt_residual,
+                            salt_residual_len,
+                            position_mod,
+                            resid0,
+                            resid1,
+                        );
                         let msg = core::array::from_fn(|i| {
                             u32::from_le_bytes([
                                 msg[i * 4],
@@ -695,12 +657,14 @@ impl crate::solver::Solver for CerberusSolver {
                         macro_rules! dispatch {
                             ($center_word_idx:literal) => {
                                 if position_mod < 2 {
+                                    // SAFETY: the RequiredFeatures gate above proves AVX2 before dispatch.
                                     unsafe {
                                         self.solve_decimal_impl::<$center_word_idx, { $center_word_idx - 1 }, {$center_word_idx - 1}>(
                                         msg, target, mask,
                                         )
                                     }
                                 } else {
+                                    // SAFETY: same AVX2 runtime gate as the branch above.
                                     unsafe {
                                         self.solve_decimal_impl::<$center_word_idx, { $center_word_idx + 1 }, $center_word_idx>(
                                         msg, target, mask,
@@ -728,36 +692,16 @@ impl crate::solver::Solver for CerberusSolver {
                             15 => dispatch!(15),
                             _ => unreachable!(),
                         } {
-                            let output_nonce = nonce_addend
-                                + match position_mod {
-                                    0 => {
-                                        10 * middle_word
-                                            + 100_000 * success_lane_idx
-                                            + 100_000_000 * resid0
-                                            + resid1
-                                    }
-                                    1 => {
-                                        100 * middle_word
-                                            + 1_000_000 * success_lane_idx
-                                            + 10 * resid0
-                                            + resid1
-                                    }
-                                    2 => {
-                                        1000 * middle_word
-                                            + success_lane_idx
-                                            + 100_000_000 * resid0
-                                            + 10_000_000 * resid1
-                                    }
-                                    3 => {
-                                        10000 * middle_word
-                                            + 10 * success_lane_idx
-                                            + 100_000_000 * resid0
-                                            + resid1
-                                    }
-                                    _ => unreachable!(),
-                                };
-
-                            return Some(output_nonce);
+                            return Some(
+                                nonce_addend
+                                    + super::cerberus_decimal_nonce(
+                                        position_mod,
+                                        middle_word,
+                                        success_lane_idx,
+                                        resid0,
+                                        resid1,
+                                    ),
+                            );
                         }
                     }
                 }
@@ -775,7 +719,8 @@ impl crate::solver::Solver for CerberusSolver {
 
                     let mut nonce_copy = nonce;
                     for i in (0..9).rev() {
-                        msg[message.salt_residual_len + i] = (nonce_copy % 10) as u8 + b'0';
+                        msg[message.salt_residual_len + i] =
+                            (nonce_copy % 10).to_le_bytes()[0] + b'0';
                         nonce_copy /= 10;
                     }
 
@@ -792,7 +737,7 @@ impl crate::solver::Solver for CerberusSolver {
                         &message.prefix_state,
                         &msg,
                         0,
-                        message.salt_residual_len as u32 + 9,
+                        u32::try_from(message.salt_residual_len).ok()? + 9,
                         message.flags,
                     );
 
@@ -801,7 +746,7 @@ impl crate::solver::Solver for CerberusSolver {
                 CerberusMessage::Binary(message) => {
                     let mut msg = [0; 16];
                     msg[0] = message.first_word;
-                    msg[1] = nonce as u32;
+                    msg[1] = crate::low_u32(nonce);
                     let hash = crate::blake3::compress8(
                         &message.midstate,
                         &msg,
@@ -809,7 +754,7 @@ impl crate::solver::Solver for CerberusSolver {
                         8,
                         crate::blake3::FLAG_CHUNK_END | crate::blake3::FLAG_ROOT,
                     );
-                    Some((msg[1] as u64 | (msg[0] as u64) << 32, hash))
+                    Some((u64::from(msg[1]) | u64::from(msg[0]) << 32, hash))
                 }
             }
         } else {
@@ -896,9 +841,10 @@ mod tests {
 
     use super::*;
     #[test]
-    fn test_single_block_attempt_accounting() {
+    fn test_single_block_attempt_accounting() -> anyhow::Result<()> {
         for limit in [1, 8, 9, 17] {
-            let message = SingleBlockMessage::new(&[b'a'; 64], 0).expect("single block");
+            let message = SingleBlockMessage::new(&[b'a'; 64], 0)
+                .ok_or_else(|| anyhow::anyhow!("single-block fixture is invalid"))?;
             let mut solver = SingleBlockSolver::from(message);
             solver.set_limit(limit);
             assert!(
@@ -908,10 +854,11 @@ mod tests {
             );
             assert_eq!(solver.attempted_nonces(), limit);
         }
+        Ok(())
     }
 
     #[test]
-    fn test_vector_tail_attempt_limits() {
+    fn test_vector_tail_attempt_limits() -> anyhow::Result<()> {
         fn check<S: crate::solver::Solver<Output = [u32; 8]>>(mut solver: S) {
             solver.set_limit(1);
             assert!(
@@ -931,57 +878,67 @@ mod tests {
         }
 
         let salt = [b'a'; 32];
-        check(BinarySolver::from(BinaryMessage::new(
-            &salt,
-            4.try_into().unwrap(),
-        )));
+        let nonce_width =
+            NonZeroU8::new(4).ok_or_else(|| anyhow::anyhow!("nonce width is nonzero"))?;
+        check(BinarySolver::from(
+            BinaryMessage::new(&salt, nonce_width)
+                .ok_or_else(|| anyhow::anyhow!("binary fixture is invalid"))?,
+        ));
         check(GoAwaySolver::from(GoAwayMessage::new_bytes(&salt, 0)));
+        Ok(())
     }
 
     #[cfg(feature = "compare-64bit")]
     #[test]
-    fn test_full64_lt_comparisons() {
+    fn test_full64_lt_comparisons() -> anyhow::Result<()> {
         const TARGET: u64 = 1u64 << 63;
-        fn check<S: crate::solver::Solver<Output = [u32; 8]>>(mut solver: S) {
+        fn check<S: crate::solver::Solver<Output = [u32; 8]>>(mut solver: S) -> anyhow::Result<()> {
             solver.set_limit(1_000_000);
             let (_, hash) = solver
                 .solve::<{ crate::solver::SOLVE_TYPE_LT }>(TARGET, u64::MAX)
-                .expect("full-width LT solver should find an easy target");
+                .ok_or_else(|| anyhow::anyhow!("full-width LT solver found no easy target"))?;
             let value = (u64::from(hash[0]) << 32) | u64::from(hash[1]);
             assert!(value < TARGET, "{value:#018x} is not below {TARGET:#018x}");
+            Ok(())
         }
 
         let salt = [b'a'; 64];
         check(SingleBlockSolver::from(
-            SingleBlockMessage::new(&salt, 0).expect("single block"),
-        ));
+            SingleBlockMessage::new(&salt, 0)
+                .ok_or_else(|| anyhow::anyhow!("single-block fixture is invalid"))?,
+        ))?;
         let double = (0..64)
             .find_map(|len| DoubleBlockMessage::new(&salt[..len], 0))
-            .expect("double block shape");
-        check(DoubleBlockSolver::from(double));
-        check(BinarySolver::from(BinaryMessage::new(
-            &salt,
-            4.try_into().unwrap(),
-        )));
-        check(GoAwaySolver::from(GoAwayMessage::new_bytes(
-            (&salt[..32]).try_into().unwrap(),
-            0,
-        )));
+            .ok_or_else(|| anyhow::anyhow!("no double-block fixture shape"))?;
+        check(DoubleBlockSolver::from(double))?;
+        let nonce_width =
+            NonZeroU8::new(4).ok_or_else(|| anyhow::anyhow!("nonce width is nonzero"))?;
+        check(BinarySolver::from(
+            BinaryMessage::new(&salt, nonce_width)
+                .ok_or_else(|| anyhow::anyhow!("binary fixture is invalid"))?,
+        ))?;
+        let challenge: &[u8; 32] = (&salt[..32]).try_into()?;
+        check(GoAwaySolver::from(GoAwayMessage::new_bytes(challenge, 0)))?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_decimal() {
-        crate::solver::tests::test_decimal_validator::<DecimalSolver, _>(|prefix, search_space| {
-            if let Some(solver) = SingleBlockMessage::new(prefix, search_space).map(Into::into) {
-                Some(DecimalSolver::SingleBlock(solver))
-            } else {
-                DoubleBlockMessage::new(prefix, search_space).map(Into::into)
-            }
-        });
+    fn test_solve_decimal() -> anyhow::Result<()> {
+        crate::solver::tests::test_decimal_validator::<DecimalSolver, _>(
+            |prefix, search_space| {
+                if let Some(solver) = SingleBlockMessage::new(prefix, search_space).map(Into::into)
+                {
+                    Some(DecimalSolver::SingleBlock(solver))
+                } else {
+                    DoubleBlockMessage::new(prefix, search_space).map(Into::into)
+                }
+            },
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_decimal_f64() {
+    fn test_solve_decimal_f64() -> anyhow::Result<()> {
         crate::solver::tests::test_decimal_validator_f64_safe::<DecimalSolver, _>(
             |prefix, search_space| {
                 if let Some((solver, p)) =
@@ -993,22 +950,24 @@ mod tests {
                         .map(|x| (DecimalSolver::DoubleBlock(x.into()), None))
                 }
             },
-        );
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_cerberus_decimal() {
+    fn test_solve_cerberus_decimal() -> anyhow::Result<()> {
         for i in 0..=1 {
             crate::solver::tests::test_cerberus_decimal_validator::<CerberusSolver, _>(|prefix| {
                 Some(CerberusMessage::Decimal(CerberusDecimalMessage::new(prefix, i)?).into())
-            });
+            })?;
         }
+        Ok(())
     }
 
     #[test]
-    fn test_cerberus_decimal_exact_limit() {
+    fn test_cerberus_decimal_exact_limit() -> anyhow::Result<()> {
         let message = CerberusDecimalMessage::new(b"cerberus-decimal-benchmark|", 0)
-            .expect("valid Cerberus decimal message");
+            .ok_or_else(|| anyhow::anyhow!("Cerberus decimal fixture is invalid"))?;
         let mut solver = CerberusSolver::from(CerberusMessage::Decimal(message));
         solver.set_limit(17);
         assert!(
@@ -1017,27 +976,30 @@ mod tests {
                 .is_none()
         );
         assert_eq!(solver.attempted_nonces(), 17);
+        Ok(())
     }
 
     #[test]
-    fn test_solve_cerberus_binary() {
+    fn test_solve_cerberus_binary() -> anyhow::Result<()> {
         for i in 0..=1 {
             crate::solver::tests::test_cerberus_binary_validator::<CerberusSolver, _>(|prefix| {
                 Some(CerberusMessage::Binary(CerberusBinaryMessage::new(prefix, i)).into())
-            });
+            })?;
         }
+        Ok(())
     }
     #[test]
-    fn test_solve_binary() {
+    fn test_solve_binary() -> anyhow::Result<()> {
         crate::solver::tests::test_binary_validator::<BinarySolver, _>(
             |prefix, nonce_byte_count| {
-                BinarySolver::from(BinaryMessage::new(prefix, nonce_byte_count))
+                BinaryMessage::new(prefix, nonce_byte_count).map(BinarySolver::from)
             },
-        )
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_goaway() {
+    fn test_solve_goaway() -> anyhow::Result<()> {
         crate::solver::tests::test_goaway_validator::<GoAwaySolver, _>(|prefix| {
             GoAwaySolver::from(GoAwayMessage::new(
                 core::array::from_fn(|i| {
@@ -1050,13 +1012,15 @@ mod tests {
                 }),
                 0,
             ))
-        });
+        })?;
+        Ok(())
     }
 
     #[test]
-    fn test_solve_altcha() {
+    fn test_solve_altcha() -> anyhow::Result<()> {
         crate::solver::tests::test_altcha_validator::<AltchaSha256Solver, _>(|message| {
             Some(AltchaSha256Solver::from(message))
-        });
+        })?;
+        Ok(())
     }
 }

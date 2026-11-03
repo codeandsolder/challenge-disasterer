@@ -130,7 +130,7 @@ type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
 
 #[cfg(feature = "gpu")]
 async fn solve_general_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     solver: &str,
     challenge: Value,
 ) -> anyhow::Result<classic_pow::Result> {
@@ -149,6 +149,14 @@ async fn solve_general_gpu(
 }
 
 impl AppState {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "service initialization keeps calibration and backend bring-up in one ordered transaction"
+    )]
+    #[expect(
+        clippy::future_not_send,
+        reason = "general WGPU initialization intentionally awaits a local non-Send future before any service worker is spawned"
+    )]
     pub async fn initialize(config: Config) -> anyhow::Result<Self> {
         anyhow::ensure!(
             config.cpu_workers > 0,
@@ -176,23 +184,24 @@ impl AppState {
         #[cfg(feature = "gpu")]
         let (gpu_tx, gpu_rate, gpu_adapter) = if config.gpu_enabled {
             match GpuSolver::create().await {
-                Ok(mut gpu) => {
+                Ok(gpu) => {
                     let adapter = gpu.adapter().to_owned();
                     match gpu.calibrate(config.gpu_calibration_hashes) {
                         Ok(rate) => {
                             info!(adapter = %adapter, mh_s = rate / 1e6, "GPU calibration complete");
                             let (tx, mut rx) = mpsc::channel::<GpuJob>(1024);
-                            let queued_work = queue_work.clone();
-                            let queued_depth = queue_depth.clone();
-                            let active_work = active_work.clone();
+                            let worker_queue_work = queue_work.clone();
+                            let worker_queue_depth = queue_depth.clone();
+                            let worker_active_work = active_work.clone();
                             tokio::spawn(async move {
                                 while let Some(job) = rx.recv().await {
-                                    queued_depth.fetch_sub(1, Ordering::Relaxed);
-                                    queued_work.fetch_sub(job.expected_work, Ordering::Relaxed);
-                                    active_work.store(job.expected_work, Ordering::Relaxed);
+                                    worker_queue_depth.fetch_sub(1, Ordering::Relaxed);
+                                    worker_queue_work
+                                        .fetch_sub(job.expected_work, Ordering::Relaxed);
+                                    worker_active_work.store(job.expected_work, Ordering::Relaxed);
                                     let _ = job.started.send(());
                                     let result = gpu.solve(&job.challenge);
-                                    active_work.store(0, Ordering::Relaxed);
+                                    worker_active_work.store(0, Ordering::Relaxed);
                                     let _ = job.result.send(result);
                                 }
                             });
@@ -259,7 +268,7 @@ impl AppState {
         #[cfg(feature = "gpu")]
         let (general_gpu_tx, general_gpu_operational) = if config.gpu_enabled {
             match pow_buster::gpu::GpuContext::create().await {
-                Ok(mut gpu) => {
+                Ok(gpu) => {
                     let adapter = gpu.adapter().to_owned();
                     match gpu.warm_up().await {
                         Ok(()) => {
@@ -268,8 +277,7 @@ impl AppState {
                             tokio::spawn(async move {
                                 while let Some(job) = rx.recv().await {
                                     let result =
-                                        solve_general_gpu(&mut gpu, &job.solver, job.challenge)
-                                            .await;
+                                        solve_general_gpu(&gpu, &job.solver, job.challenge).await;
                                     let _ = job.result.send(result);
                                 }
                             });
@@ -745,6 +753,10 @@ impl AppState {
         self.run_hashx_jit(challenge, queued_at).await
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "routing fallback order is intentionally linear and mirrors the calibrated route sequence"
+    )]
     async fn route_anubis(
         &self,
         algorithm: &str,
@@ -866,6 +878,10 @@ impl AppState {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "HTTP solver dispatch remains explicit so protocol-specific validation and routing are auditable"
+)]
 pub async fn solve(
     State(state): State<Arc<AppState>>,
     Json(request): Json<SolveRequest>,
@@ -1120,12 +1136,13 @@ pub async fn solve(
     match result {
         Ok(mut response) => {
             response.solver = request.solver.clone();
-            let mut stats = state.stats.write().await;
+            let mut stats_guard = state.stats.write().await;
             if request.solver.starts_with("anubis") {
-                stats.record(difficulty, &response.backend, response.total_ms);
+                stats_guard.record(difficulty, &response.backend, response.total_ms);
             } else {
-                stats.record_generic(&response.backend);
+                stats_guard.record_generic(&response.backend);
             }
+            drop(stats_guard);
             Ok(Json(response))
         }
         Err(err) => {
@@ -1169,7 +1186,19 @@ pub struct StatsResponse {
     general: crate::stats::GeneralStats,
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "queue ETA is approximate telemetry and does not require integer-exact f64 representation"
+)]
+const fn telemetry_work_as_f64(work: u64) -> f64 {
+    work as f64
+}
+
 #[derive(Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "serialized stats expose independent backend capability/configuration flags"
+)]
 pub struct StatsConfig {
     cpu_workers: usize,
     argon2_workers: usize,
@@ -1180,6 +1209,10 @@ pub struct StatsConfig {
     routing_calibration_loaded: bool,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "stats response construction is a flat serialization map of solver capabilities"
+)]
 pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
     let queued_work = state.gpu_queue_work.load(Ordering::Relaxed);
     let gpu_queue_depth = state.gpu_queue_depth.load(Ordering::Relaxed);
@@ -1187,12 +1220,11 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
     let work_ahead = queued_work.saturating_add(active_work);
     let mut expected = BTreeMap::new();
     for difficulty in 1..=16_u8 {
-        let work = 16_u64.saturating_pow(u32::from(difficulty)) as f64;
-        let eta_ms = if let Some(gpu) = state.calibration.gpu_hashes_per_second {
-            (work_ahead as f64 + work) / gpu * 1000.0
-        } else {
-            work / state.calibration.cpu_hashes_per_second_per_worker * 1000.0
-        };
+        let work = telemetry_work_as_f64(16_u64.saturating_pow(u32::from(difficulty)));
+        let eta_ms = state.calibration.gpu_hashes_per_second.map_or_else(
+            || work / state.calibration.cpu_hashes_per_second_per_worker * 1000.0,
+            |gpu| (telemetry_work_as_f64(work_ahead) + work) / gpu * 1000.0,
+        );
         expected.insert(difficulty, eta_ms);
     }
     let general = state.stats.read().await.snapshot();

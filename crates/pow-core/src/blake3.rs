@@ -1,16 +1,24 @@
+#![expect(
+    clippy::inline_always,
+    reason = "fixed-round BLAKE3 kernels force inlining across backend wrappers to preserve codegen"
+)]
+#![expect(
+    clippy::many_single_char_names,
+    reason = "BLAKE3 compression uses the canonical a/b/c/d and message-word notation"
+)]
 #[macro_use]
 mod loop_macros;
 
-pub(crate) mod portable;
+pub mod portable;
 
 /// Initial hash values for BLAKE3
-pub(crate) const IV: [u32; 8] = crate::sha256::IV;
+pub const IV: [u32; 8] = crate::sha256::IV;
 
-pub(crate) const FLAG_CHUNK_START: u32 = 0x01;
-pub(crate) const FLAG_CHUNK_END: u32 = 0x02;
-#[expect(unused, reason = "TODO, maybe never going to need this")]
-pub(crate) const FLAG_PARENT: u32 = 0x04;
-pub(crate) const FLAG_ROOT: u32 = 0x08;
+pub const FLAG_CHUNK_START: u32 = 0x01;
+pub const FLAG_CHUNK_END: u32 = 0x02;
+#[expect(dead_code, reason = "reserved for the parent-node BLAKE3 mode")]
+pub const FLAG_PARENT: u32 = 0x04;
+pub const FLAG_ROOT: u32 = 0x08;
 
 const PERMUTATION: [usize; 16] = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
 
@@ -36,7 +44,7 @@ const MESSAGE_SCHEDULE: [[usize; 16]; 7] = {
 
 // The mixing function, G, which mixes either a column or a diagonal.
 #[inline(always)]
-fn g(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, mx: u32, my: u32) {
+const fn g(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, mx: u32, my: u32) {
     state[a] = state[a].wrapping_add(state[b]).wrapping_add(mx);
     state[d] = (state[d] ^ state[a]).rotate_right(16);
     state[c] = state[c].wrapping_add(state[d]);
@@ -48,7 +56,7 @@ fn g(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, mx: u32, my:
 }
 
 #[inline(always)]
-fn round_fixed(state: &mut [u32; 16], m: &[u32; 16], round: usize) {
+const fn round_fixed(state: &mut [u32; 16], m: &[u32; 16], round: usize) {
     // Mix the columns.
     g(
         state,
@@ -176,7 +184,7 @@ pub fn ingest_message_prefix(
         IV[1],
         IV[2],
         IV[3],
-        counter as u32,
+        crate::low_u32(counter),
         0,
         block_len,
         flags,
@@ -194,8 +202,8 @@ pub fn compress8(
     block_len: u32,
     flags: u32,
 ) -> [u32; 8] {
-    let counter_low = counter as u32;
-    let counter_high = (counter >> 32) as u32;
+    let counter_low = crate::low_u32(counter);
+    let counter_high = crate::high_u32(counter);
     #[rustfmt::skip]
     let mut state = [
         chaining_value[0], chaining_value[1], chaining_value[2], chaining_value[3],
@@ -212,7 +220,9 @@ pub fn compress8(
     for i in 0..8 {
         state[i] ^= state[i + 8];
     }
-    state[..8].try_into().unwrap()
+    let mut output = [0_u32; 8];
+    output.copy_from_slice(&state[..8]);
+    output
 }
 
 #[cfg(test)]
@@ -243,11 +253,17 @@ mod tests {
             let count_chunks = msg.len().div_ceil(64);
             ctr = 0;
             let (chunks, remainder) = msg.as_chunks::<64>();
-            assert!(remainder.is_empty());
+            assert_eq!(remainder, &[0_u8; 0]);
             let mut output = [0u32; 8];
             for chunk in chunks {
                 let block = core::array::from_fn(|i| {
-                    u32::from_le_bytes(chunk[i * 4..i * 4 + 4].try_into().unwrap())
+                    let base = i * 4;
+                    u32::from_le_bytes([
+                        chunk[base],
+                        chunk[base + 1],
+                        chunk[base + 2],
+                        chunk[base + 3],
+                    ])
                 });
 
                 let this_flag = if ctr == 0 { FLAG_CHUNK_START } else { 0 }
@@ -261,12 +277,17 @@ mod tests {
                 ctr += 1;
             }
 
-            let output: [u32; 8] = output[..8].try_into().unwrap();
             let mut expected = [0u32; 8];
-            for i in 0..8 {
-                expected[i] = u32::from_le_bytes(hash[i * 4..i * 4 + 4].try_into().unwrap());
+            for (i, word) in expected.iter_mut().enumerate() {
+                let base = i * 4;
+                *word = u32::from_le_bytes([
+                    hash[base],
+                    hash[base + 1],
+                    hash[base + 2],
+                    hash[base + 3],
+                ]);
             }
-            assert_eq!(output, expected, "output mismatch (blockc: {})", blockc);
+            assert_eq!(output, expected, "output mismatch (blockc: {blockc})");
         }
     }
 }

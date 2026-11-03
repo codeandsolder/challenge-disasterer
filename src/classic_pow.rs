@@ -1,6 +1,6 @@
 use std::{
     num::{NonZeroU8, NonZeroU32, NonZeroU64},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use altcha::{
@@ -112,7 +112,7 @@ pub fn solve(kind: &str, challenge: Value, implementation: Option<&str>) -> anyh
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Implementation {
+pub enum Implementation {
     Auto,
     Safe,
     Avx2,
@@ -132,7 +132,7 @@ impl Implementation {
         }
     }
 
-    pub(crate) fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Auto => "auto",
             Self::Safe => "safe",
@@ -143,7 +143,7 @@ impl Implementation {
     }
 }
 
-pub(crate) trait DynPow {
+pub trait DynPow {
     fn set_limit(&mut self, limit: u64);
     fn attempted(&self) -> u64;
     fn solve(&mut self, target: u64, ty: u8, mask: u64) -> Option<(u64, [u32; 8])>;
@@ -210,12 +210,18 @@ fn decimal_solver(
         Implementation::Avx512 => Ok(Box::new(pow_buster::solver::avx512::DecimalSolver::from(
             message,
         ))),
-        #[allow(unreachable_patterns)]
+        #[cfg_attr(
+            target_arch = "x86_64",
+            expect(
+                unreachable_patterns,
+                reason = "all solver implementations in this match are available on x86_64"
+            )
+        )]
         _ => bail!("implementation unavailable on this target"),
     }
 }
 
-pub(crate) fn binary_solver(
+pub fn binary_solver(
     implementation: Implementation,
     message: pow_buster::message::BinaryMessage,
 ) -> anyhow::Result<Box<dyn DynPow>> {
@@ -263,7 +269,13 @@ fn goaway_solver(
         Implementation::Avx512 => Ok(Box::new(pow_buster::solver::avx512::GoAwaySolver::from(
             message,
         ))),
-        #[allow(unreachable_patterns)]
+        #[cfg_attr(
+            target_arch = "x86_64",
+            expect(
+                unreachable_patterns,
+                reason = "all solver implementations in this match are available on x86_64"
+            )
+        )]
         _ => bail!("implementation unavailable on this target"),
     }
 }
@@ -365,13 +377,13 @@ fn finish_goaway(
 ) -> Result {
     let (nonce, hash) = solution;
     let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let token = format!("{}{:016x}", config.challenge(), nonce);
-    let id = hash
-        .into_iter()
-        .take(4)
-        .flat_map(u32::to_ne_bytes)
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let token = format!("{}{nonce:016x}", config.challenge());
+    let id = hex::encode(
+        hash.into_iter()
+            .take(4)
+            .flat_map(u32::to_ne_bytes)
+            .collect::<Vec<_>>(),
+    );
     Result {
         answer: json!({
             "nonce": nonce.to_string(),
@@ -450,9 +462,10 @@ fn solve_cap_decimal_cpu(
         let result = solver.solve(target, SOLVE_TYPE_MASK, mask);
         attempted = attempted.saturating_add(solver.attempted());
         if let Some((nonce, _)) = result {
-            let nonce = fixup
-                .map(|value| value.fixup(nonce))
-                .unwrap_or(nonce as f64);
+            let nonce = match fixup {
+                Some(value) => value.fixup(nonce),
+                None => js_safe_integer_as_f64(nonce)?,
+            };
             return Ok((nonce, attempted));
         }
     }
@@ -461,7 +474,7 @@ fn solve_cap_decimal_cpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_cap_decimal_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     prefix: &[u8],
     target: u64,
     mask: u64,
@@ -476,9 +489,10 @@ async fn solve_cap_decimal_gpu(
         let result = solver.solve::<SOLVE_TYPE_MASK>(gpu, target, mask).await?;
         attempted = attempted.saturating_add(solver.attempted_nonces());
         if let Some(solution) = result {
-            let nonce = fixup
-                .map(|value| value.fixup(solution.nonce))
-                .unwrap_or(solution.nonce as f64);
+            let nonce = match fixup {
+                Some(value) => value.fixup(solution.nonce),
+                None => js_safe_integer_as_f64(solution.nonce)?,
+            };
             return Ok((nonce, attempted));
         }
     }
@@ -492,7 +506,7 @@ fn solve_capjs(challenge: Value, implementation: Implementation) -> anyhow::Resu
     let descriptor: CapJsChallenge =
         serde_json::from_value(challenge).context("invalid Cap.js challenge")?;
     let rules = *descriptor.rules();
-    let token = descriptor.token.clone();
+    let token = descriptor.token;
     let emitter = CapJSEmitter::new(token.as_bytes());
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
@@ -500,21 +514,29 @@ fn solve_capjs(challenge: Value, implementation: Implementation) -> anyhow::Resu
     for index in 0..rules.count {
         let mut salt = vec![0_u8; rules.salt_length];
         let mut targets = [0_u32; 2];
-        emitter.emit(&mut salt, &mut targets, index as u32 + 1);
-        let mask = u64::MAX << (64 - u64::from(rules.difficulty) * 4);
+        let subchallenge = u32::try_from(index)
+            .context("Cap.js subchallenge index exceeds u32")?
+            .checked_add(1)
+            .context("Cap.js subchallenge index overflow")?;
+        emitter.emit(&mut salt, &mut targets, subchallenge);
+        let mask = rules
+            .mask()
+            .context("Cap.js difficulty exceeds the supported 64-bit target width")?;
         let target = (u64::from(targets[0]) << 32) | u64::from(targets[1]);
         let (nonce, attempted) = solve_cap_decimal_cpu(&salt, target, mask, implementation)?;
         attempted_nonces = attempted_nonces.saturating_add(attempted);
         solutions.push(nonce);
     }
-    let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let elapsed = started.elapsed();
+    let solve_ms = elapsed.as_secs_f64() * 1000.0;
+    let (elapsed_us, hashrate) = elapsed_work_metadata(elapsed, attempted_nonces);
     let answer = json!({
         "token": token,
         "solutions": solutions,
         "_meta": {
-            "elapsed_us": (solve_ms * 1000.0) as u64,
+            "elapsed_us": elapsed_us,
             "attempted_nonces": attempted_nonces,
-            "hashrate": if solve_ms > 0.0 { (attempted_nonces as f64 / (solve_ms / 1000.0)) as u64 } else { 0 },
+            "hashrate": hashrate,
         },
         "attempted_nonces_total": attempted_nonces,
     });
@@ -697,9 +719,13 @@ fn solve_haphash(challenge: Value, implementation: Implementation) -> anyhow::Re
     );
     let prefix = challenge.prefix.as_bytes();
     ensure!(!prefix.is_empty(), "haphash prefix must not be empty");
-    let fast_mask = NonZeroU8::new(challenge.difficulty)
-        .filter(|difficulty| difficulty.get() <= 16)
-        .map(compute_mask_zero_nibbles);
+    let fast_mask = if challenge.difficulty == 0 {
+        Some(0)
+    } else {
+        NonZeroU8::new(challenge.difficulty)
+            .filter(|difficulty| difficulty.get() <= 16)
+            .map(compute_mask_zero_nibbles)
+    };
     let full_digest_bits = u64::from(challenge.difficulty) * 4;
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
@@ -738,7 +764,8 @@ fn solve_mcaptcha(challenge: Value, implementation: Implementation) -> anyhow::R
     let difficulty_factor = NonZeroU64::new(u64::from(request.config.difficulty_factor))
         .context("mCaptcha difficulty factor must be positive")?;
     let mut prefix = Vec::new();
-    build_mcaptcha_prefix(&mut prefix, &request.config.string, &request.config.salt);
+    build_mcaptcha_prefix(&mut prefix, &request.config.string, &request.config.salt)
+        .context("mCaptcha string length exceeds the wire format")?;
     let target = compute_target_mcaptcha(difficulty_factor);
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
@@ -824,7 +851,7 @@ fn try_solve_altcha_fast(
     challenge: &AltchaChallenge,
     implementation: Implementation,
 ) -> anyhow::Result<Option<Result>> {
-    let Some((message, target, mask, key_length)) = altcha_fast_case(challenge)? else {
+    let Some((message, target, mask, key_length)) = altcha_fast_case(challenge) else {
         return Ok(None);
     };
     let mut solver = altcha_solver(implementation, message)?;
@@ -848,9 +875,7 @@ fn try_solve_altcha_fast(
     }))
 }
 
-fn altcha_fast_case(
-    challenge: &AltchaChallenge,
-) -> anyhow::Result<Option<(AltchaMessage, u64, u64, usize)>> {
+fn altcha_fast_case(challenge: &AltchaChallenge) -> Option<(AltchaMessage, u64, u64, usize)> {
     let parameters = &challenge.parameters;
     if !matches!(parameters.algorithm.as_str(), "SHA-256" | "PBKDF2/SHA-256")
         || parameters.cost == 0
@@ -860,35 +885,18 @@ fn altcha_fast_case(
         || !parameters.key_prefix.len().is_multiple_of(2)
         || parameters.key_prefix.len() > 8
     {
-        return Ok(None);
+        return None;
     }
-    let nonce: [u8; 16] = match hex::decode(&parameters.nonce)
+    let nonce: [u8; 16] = hex::decode(&parameters.nonce)
         .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-    {
-        Some(value) => value,
-        None => return Ok(None),
-    };
-    let salt: [u8; 16] = match hex::decode(&parameters.salt)
+        .and_then(|bytes| bytes.try_into().ok())?;
+    let salt: [u8; 16] = hex::decode(&parameters.salt)
         .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-    {
-        Some(value) => value,
-        None => return Ok(None),
-    };
-    let Some(cost) = NonZeroU32::new(parameters.cost) else {
-        return Ok(None);
-    };
-    let Ok(key_length_u32) = u32::try_from(parameters.key_length) else {
-        return Ok(None);
-    };
-    let Some(key_length) = NonZeroU32::new(key_length_u32) else {
-        return Ok(None);
-    };
-    let (target, mask) = match prefix_target(&parameters.key_prefix) {
-        Ok(value) => value,
-        Err(_) => return Ok(None),
-    };
+        .and_then(|bytes| bytes.try_into().ok())?;
+    let cost = NonZeroU32::new(parameters.cost)?;
+    let key_length_u32 = u32::try_from(parameters.key_length).ok()?;
+    let key_length = NonZeroU32::new(key_length_u32)?;
+    let (target, mask) = prefix_target(&parameters.key_prefix).ok()?;
     let message = AltchaMessage {
         nonce,
         salt,
@@ -896,9 +904,33 @@ fn altcha_fast_case(
         pbkdf2: parameters.algorithm == "PBKDF2/SHA-256",
         key_length,
     };
-    Ok(Some((message, target, mask, parameters.key_length)))
+    Some((message, target, mask, parameters.key_length))
 }
 const JS_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "value is explicitly constrained to JavaScript's exactly representable integer range"
+)]
+fn js_safe_integer_as_f64(value: u64) -> anyhow::Result<f64> {
+    ensure!(
+        value <= JS_MAX_SAFE_INTEGER,
+        "Cap.js nonce exceeds JavaScript's maximum safe integer"
+    );
+    Ok(value as f64)
+}
+
+fn elapsed_work_metadata(elapsed: Duration, attempted: u64) -> (u64, u64) {
+    let elapsed_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+    let nanos = elapsed.as_nanos();
+    let hashrate = u128::from(attempted)
+        .saturating_mul(1_000_000_000)
+        .checked_div(nanos)
+        .map_or(0, |per_second| {
+            u64::try_from(per_second).unwrap_or(u64::MAX)
+        });
+    (elapsed_us, hashrate)
+}
 
 struct AltchaHexPrefix(Vec<u8>);
 
@@ -971,10 +1003,10 @@ fn altcha_derive_key(
             let mut out = vec![0_u8; key_length];
             match algorithm.as_str() {
                 "PBKDF2/SHA-384" => {
-                    pbkdf2_hmac::<Sha384>(password, salt, parameters.cost, &mut out)
+                    pbkdf2_hmac::<Sha384>(password, salt, parameters.cost, &mut out);
                 }
                 "PBKDF2/SHA-512" => {
-                    pbkdf2_hmac::<Sha512>(password, salt, parameters.cost, &mut out)
+                    pbkdf2_hmac::<Sha512>(password, salt, parameters.cost, &mut out);
                 }
                 _ => pbkdf2_hmac::<Sha256>(password, salt, parameters.cost, &mut out),
             }
@@ -1188,24 +1220,26 @@ fn prefix_target(prefix: &str) -> anyhow::Result<(u64, u64)> {
 }
 
 fn encode_words_le(words: [u32; 8]) -> String {
-    words
-        .into_iter()
-        .flat_map(u32::to_le_bytes)
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex::encode(
+        words
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn encode_words_be(words: [u32; 8]) -> String {
-    words
-        .into_iter()
-        .flat_map(u32::to_be_bytes)
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex::encode(
+        words
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect::<Vec<_>>(),
+    )
 }
 
 #[cfg(feature = "gpu")]
 pub async fn solve_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     kind: &str,
     challenge: Value,
 ) -> anyhow::Result<Result> {
@@ -1222,7 +1256,7 @@ pub async fn solve_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_cerberus_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let descriptor: CerberusChallenge =
@@ -1263,7 +1297,7 @@ async fn solve_cerberus_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_goaway_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let config: GoAwayConfig =
@@ -1315,7 +1349,7 @@ async fn solve_goaway_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_capjs_v2_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let envelope: CapV2Envelope =
@@ -1377,7 +1411,7 @@ async fn solve_capjs_v2_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_capjs_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     if challenge.get("format").and_then(Value::as_u64) == Some(2) {
@@ -1394,22 +1428,30 @@ async fn solve_capjs_gpu(
     for index in 0..rules.count {
         let mut salt = vec![0_u8; rules.salt_length];
         let mut targets = [0_u32; 2];
-        emitter.emit(&mut salt, &mut targets, index as u32 + 1);
-        let mask = u64::MAX << (64 - u64::from(rules.difficulty) * 4);
+        let subchallenge = u32::try_from(index)
+            .context("Cap.js subchallenge index exceeds u32")?
+            .checked_add(1)
+            .context("Cap.js subchallenge index overflow")?;
+        emitter.emit(&mut salt, &mut targets, subchallenge);
+        let mask = rules
+            .mask()
+            .context("Cap.js difficulty exceeds the supported 64-bit target width")?;
         let target = (u64::from(targets[0]) << 32) | u64::from(targets[1]);
         let (nonce, attempted) = solve_cap_decimal_gpu(gpu, &salt, target, mask).await?;
         attempted_nonces = attempted_nonces.saturating_add(attempted);
         solutions.push(nonce);
     }
-    let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let elapsed = started.elapsed();
+    let solve_ms = elapsed.as_secs_f64() * 1000.0;
+    let (elapsed_us, hashrate) = elapsed_work_metadata(elapsed, attempted_nonces);
     Ok(Result {
         answer: json!({
             "token": token,
             "solutions": solutions,
             "_meta": {
-                "elapsed_us": (solve_ms * 1000.0) as u64,
+                "elapsed_us": elapsed_us,
                 "attempted_nonces": attempted_nonces,
-                "hashrate": if solve_ms > 0.0 { (attempted_nonces as f64 / (solve_ms / 1000.0)) as u64 } else { 0 },
+                "hashrate": hashrate,
             },
             "attempted_nonces_total": attempted_nonces,
         }),
@@ -1420,7 +1462,7 @@ async fn solve_capjs_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_haphash_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let challenge: HaphashChallenge =
@@ -1431,9 +1473,13 @@ async fn solve_haphash_gpu(
     );
     let prefix = challenge.prefix.as_bytes();
     ensure!(!prefix.is_empty(), "haphash prefix must not be empty");
-    let fast_mask = NonZeroU8::new(challenge.difficulty)
-        .filter(|difficulty| difficulty.get() <= 16)
-        .map(compute_mask_zero_nibbles);
+    let fast_mask = if challenge.difficulty == 0 {
+        Some(0)
+    } else {
+        NonZeroU8::new(challenge.difficulty)
+            .filter(|difficulty| difficulty.get() <= 16)
+            .map(compute_mask_zero_nibbles)
+    };
     let full_digest_bits = u64::from(challenge.difficulty) * 4;
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
@@ -1470,7 +1516,7 @@ async fn solve_haphash_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_mcaptcha_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     let request: McaptchaRequest =
@@ -1478,7 +1524,8 @@ async fn solve_mcaptcha_gpu(
     let difficulty_factor = NonZeroU64::new(u64::from(request.config.difficulty_factor))
         .context("mCaptcha difficulty factor must be positive")?;
     let mut prefix = Vec::new();
-    build_mcaptcha_prefix(&mut prefix, &request.config.string, &request.config.salt);
+    build_mcaptcha_prefix(&mut prefix, &request.config.string, &request.config.salt)
+        .context("mCaptcha string length exceeds the wire format")?;
     let target = compute_target_mcaptcha(difficulty_factor);
     let started = Instant::now();
     let mut attempted_nonces = 0_u64;
@@ -1513,7 +1560,7 @@ async fn solve_mcaptcha_gpu(
 
 #[cfg(feature = "gpu")]
 async fn solve_altcha_gpu(
-    gpu: &mut pow_buster::gpu::GpuContext,
+    gpu: &pow_buster::gpu::GpuContext,
     challenge: Value,
 ) -> anyhow::Result<Result> {
     ensure!(
@@ -1522,7 +1569,7 @@ async fn solve_altcha_gpu(
     );
     let challenge: AltchaChallenge =
         serde_json::from_value(challenge).context("invalid ALTCHA v2 challenge")?;
-    let (message, target, mask, key_length) = altcha_fast_case(&challenge)?
+    let (message, target, mask, key_length) = altcha_fast_case(&challenge)
         .context("ALTCHA challenge shape is unsupported by the WGPU fast path")?;
     let mut solver = pow_buster::gpu::AltchaSha256Solver::from(message);
     solver.set_limit(u64::from(u32::MAX) + 1);
@@ -1550,22 +1597,25 @@ async fn solve_altcha_gpu(
 mod tests {
     use super::*;
 
-    #[test]
-    fn altcha_prefix_target_places_bytes_at_hash_front() {
-        assert_eq!(
-            prefix_target("12ab").unwrap(),
-            (0x12ab_0000_0000_0000, 0xffff_0000_0000_0000)
-        );
+    fn require_error<T>(result: anyhow::Result<T>, message: &str) -> anyhow::Result<anyhow::Error> {
+        result.err().ok_or_else(|| anyhow::anyhow!("{message}"))
     }
 
     #[test]
-    fn haphash_solver_returns_nonce_for_protocol_prefix() {
+    fn altcha_prefix_target_places_bytes_at_hash_front() -> anyhow::Result<()> {
+        let target = prefix_target("12ab").context("valid fixed ALTCHA prefix")?;
+        assert_eq!(target, (0x12ab_0000_0000_0000, 0xffff_0000_0000_0000));
+        Ok(())
+    }
+
+    #[test]
+    fn haphash_solver_returns_nonce_for_protocol_prefix() -> anyhow::Result<()> {
         let result = solve_haphash(
             json!({"prefix":"127.0.0.1;example.test;1759954402;","difficulty":1}),
             Implementation::Safe,
-        )
-        .unwrap();
+        )?;
         assert!(result.answer["nonce"].is_string());
+        Ok(())
     }
 
     #[test]
@@ -1587,28 +1637,31 @@ mod tests {
     }
 
     #[test]
-    fn haphash_zero_difficulty_is_trivial_for_accelerated_solver() {
+    fn haphash_zero_difficulty_is_trivial_for_accelerated_solver() -> anyhow::Result<()> {
         let result = solve_haphash(
             json!({"prefix":"127.0.0.1;example.test;1759954402;","difficulty":0}),
-            Implementation::Safe,
-        )
-        .unwrap();
+            Implementation::Auto,
+        )?;
         assert!(result.answer["nonce"].is_string());
         assert_eq!(result.answer["attempted_nonces"], 1);
+        Ok(())
     }
 
     #[test]
-    fn haphash_rejects_unsatisfiable_difficulty_above_digest_width() {
-        let error = solve_haphash(
-            json!({"prefix":"127.0.0.1;example.test;1759954402;","difficulty":65}),
-            Implementation::Safe,
-        )
-        .expect_err("difficulty above 64 nibbles must be rejected");
+    fn haphash_rejects_unsatisfiable_difficulty_above_digest_width() -> anyhow::Result<()> {
+        let error = require_error(
+            solve_haphash(
+                json!({"prefix":"127.0.0.1;example.test;1759954402;","difficulty":65}),
+                Implementation::Safe,
+            ),
+            "difficulty above 64 nibbles must be rejected",
+        )?;
         assert!(error.to_string().contains("64-nibble SHA-256 digest width"));
+        Ok(())
     }
 
     #[test]
-    fn altcha_fast_path_declines_nonstandard_nonce_shape() {
+    fn altcha_fast_path_declines_nonstandard_nonce_shape() -> anyhow::Result<()> {
         let challenge = AltchaChallenge {
             parameters: altcha::ChallengeParameters {
                 algorithm: "SHA-256".to_owned(),
@@ -1625,15 +1678,12 @@ mod tests {
             },
             signature: None,
         };
-        assert!(
-            try_solve_altcha_fast(&challenge, Implementation::Safe)
-                .expect("fast-path eligibility check")
-                .is_none()
-        );
+        assert!(try_solve_altcha_fast(&challenge, Implementation::Safe)?.is_none());
+        Ok(())
     }
 
     #[test]
-    fn altcha_string_counter_derivation_covers_js_safe_integer_max() {
+    fn altcha_string_counter_derivation_covers_js_safe_integer_max() -> anyhow::Result<()> {
         let parameters = altcha::ChallengeParameters {
             algorithm: "SHA-256".to_owned(),
             cost: 2,
@@ -1647,20 +1697,21 @@ mod tests {
             parallelism: None,
             salt: hex::encode((16_u8..32).collect::<Vec<_>>()),
         };
-        let nonce = hex::decode(&parameters.nonce).expect("fixed nonce");
-        let salt = hex::decode(&parameters.salt).expect("fixed salt");
+        let nonce = hex::decode(&parameters.nonce)?;
+        let salt = hex::decode(&parameters.salt)?;
         let mut password = nonce;
         password.extend_from_slice(b"9007199254740991");
-        let derived = altcha_derive_key(&parameters, &salt, &password)
-            .expect("derive max-safe-integer string counter");
+        let derived = altcha_derive_key(&parameters, &salt, &password)?;
         assert_eq!(
             hex::encode(derived),
             "fb46d9456a5caf40eb17da502cdec45ac202cc4f30f50ee667bddb40904be548"
         );
+        Ok(())
     }
 
     #[test]
-    fn altcha_generic_modes_match_upstream_empty_prefix_and_case_insensitive_algorithm() {
+    fn altcha_generic_modes_match_upstream_empty_prefix_and_case_insensitive_algorithm()
+    -> anyhow::Result<()> {
         let challenge = AltchaChallenge {
             parameters: altcha::ChallengeParameters {
                 algorithm: "sha-256".to_owned(),
@@ -1681,77 +1732,91 @@ mod tests {
             (AltchaCounterMode::Uint32, "altcha-generic"),
             (AltchaCounterMode::String, "altcha-string"),
         ] {
-            let result = solve_altcha_generic(&challenge, mode).expect("generic ALTCHA solve");
+            let result = solve_altcha_generic(&challenge, mode)?;
             assert_eq!(result.answer["counter"], 0);
             assert_eq!(result.implementation, implementation);
         }
+        Ok(())
     }
 
     #[test]
-    fn altcha_reference_is_uint32_only_and_has_one_canonical_name() {
-        let error = solve(
-            "altcha",
-            json!({"parameters": {}, "counterMode": "string"}),
-            Some("reference"),
-        )
-        .expect_err("reference must not advertise partial string-counter coverage");
+    fn altcha_reference_is_uint32_only_and_has_one_canonical_name() -> anyhow::Result<()> {
+        let error = require_error(
+            solve(
+                "altcha",
+                json!({"parameters": {}, "counterMode": "string"}),
+                Some("reference"),
+            ),
+            "reference must not advertise partial string-counter coverage",
+        )?;
         assert!(error.to_string().contains("uint32 counter mode only"));
 
-        let error = solve("altcha", json!({"parameters": {}}), Some("altcha-rust"))
-            .expect_err("obsolete ALTCHA reference alias must stay rejected");
+        let error = require_error(
+            solve("altcha", json!({"parameters": {}}), Some("altcha-rust")),
+            "obsolete ALTCHA reference alias must stay rejected",
+        )?;
         assert!(
             error
                 .to_string()
                 .contains("unsupported classic implementation")
         );
+        Ok(())
     }
 
     #[test]
-    fn cerberus_and_goaway_reject_unrepresentable_difficulties() {
-        let cerberus = solve_cerberus(
-            json!({
-                "challenge": "domain-test",
-                "difficulty": 17,
-                "nonce": 1,
-                "ts": 1,
-                "signature": "domain-test",
-                "version": "0.4.9"
-            }),
-            Implementation::Safe,
-        )
-        .expect_err("current Cerberus clients only define up to 16 dubits");
+    fn cerberus_and_goaway_reject_unrepresentable_difficulties() -> anyhow::Result<()> {
+        let cerberus = require_error(
+            solve_cerberus(
+                json!({
+                    "challenge": "domain-test",
+                    "difficulty": 17,
+                    "nonce": 1,
+                    "ts": 1,
+                    "signature": "domain-test",
+                    "version": "0.4.9"
+                }),
+                Implementation::Safe,
+            ),
+            "current Cerberus clients only define up to 16 dubits",
+        )?;
         assert!(cerberus.to_string().contains("above 16 dubits"));
 
-        let goaway = solve_goaway(
-            json!({
-                "challenge": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                "difficulty": 257
-            }),
-            Implementation::Safe,
-        )
-        .expect_err("go-away support must reject unsatisfiable difficulty above 256 bits");
+        let goaway = require_error(
+            solve_goaway(
+                json!({
+                    "challenge": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    "difficulty": 257
+                }),
+                Implementation::Safe,
+            ),
+            "go-away support must reject unsatisfiable difficulty above 256 bits",
+        )?;
         assert!(goaway.to_string().contains("256-bit SHA-256 digest width"));
+        Ok(())
     }
 
     #[test]
-    fn mcaptcha_rejects_zero_difficulty_factor() {
-        let error = solve_mcaptcha(
-            json!({
-                "config": {
-                    "string": "schema-test",
-                    "difficulty_factor": 0,
-                    "salt": "schema-test-salt"
-                },
-                "key": "schema-test"
-            }),
-            Implementation::Auto,
-        )
-        .expect_err("zero mCaptcha difficulty must be rejected before target calculation");
+    fn mcaptcha_rejects_zero_difficulty_factor() -> anyhow::Result<()> {
+        let error = require_error(
+            solve_mcaptcha(
+                json!({
+                    "config": {
+                        "string": "schema-test",
+                        "difficulty_factor": 0,
+                        "salt": "schema-test-salt"
+                    },
+                    "key": "schema-test"
+                }),
+                Implementation::Auto,
+            ),
+            "zero mCaptcha difficulty must be rejected before target calculation",
+        )?;
         assert!(error.to_string().contains("must be positive"));
+        Ok(())
     }
 
     #[test]
-    fn protocol_nonce_json_types_match_wire_contracts() {
+    fn protocol_nonce_json_types_match_wire_contracts() -> anyhow::Result<()> {
         let mcaptcha = solve_mcaptcha(
             json!({
                 "config": {
@@ -1762,8 +1827,7 @@ mod tests {
                 "key": "schema-test"
             }),
             Implementation::Auto,
-        )
-        .expect("easy mCaptcha solve");
+        )?;
         assert!(mcaptcha.answer["nonce"].is_u64());
 
         let goaway = solve_goaway(
@@ -1772,8 +1836,8 @@ mod tests {
                 "difficulty": 1
             }),
             Implementation::Auto,
-        )
-        .expect("easy go-away solve");
+        )?;
         assert!(goaway.answer["nonce"].is_string());
+        Ok(())
     }
 }

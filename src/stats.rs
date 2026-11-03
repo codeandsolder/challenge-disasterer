@@ -55,7 +55,7 @@ impl StatsStore {
             _ => {}
         }
     }
-    pub fn record_failure(&mut self) {
+    pub const fn record_failure(&mut self) {
         self.failures += 1;
     }
 

@@ -1,5 +1,4 @@
 #[rustfmt::skip]
-#[allow(unused_macros)]
 macro_rules! repeat7 {
     ($i:ident, $b:block) => {
         { let $i = 0; $b; }
@@ -12,7 +11,6 @@ macro_rules! repeat7 {
     };
 }
 #[rustfmt::skip]
-#[allow(unused_macros)]
 macro_rules! repeat8 {
     ($i:ident, $b:block) => {
         { let $i = 0; $b; }

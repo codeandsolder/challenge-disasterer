@@ -8,8 +8,16 @@ use crate::{
 use alloc::{format, string::String};
 use semver::{BuildMetadata, Prerelease};
 
+const VERSION_FOR_BINARY: semver::Version = semver::Version {
+    major: 0,
+    minor: 4,
+    patch: 6,
+    pre: Prerelease::EMPTY,
+    build: BuildMetadata::EMPTY,
+};
+
 #[derive(serde::Deserialize, Debug)]
-/// A Cerberus PoW challenge descriptor.
+/// A Cerberus `PoW` challenge descriptor.
 pub struct ChallengeDescriptor {
     challenge: String,
     difficulty: core::num::NonZeroU8,
@@ -30,28 +38,19 @@ impl<'de> serde::Deserialize<'de> for MaybeSemver {
     where
         D: serde::Deserializer<'de>,
     {
-        match semver::Version::deserialize(deserializer) {
-            Ok(v) => Ok(MaybeSemver::Yes(v)),
-            Err(_) => Ok(MaybeSemver::Unknown),
-        }
+        semver::Version::deserialize(deserializer)
+            .map_or_else(|_| Ok(Self::Unknown), |version| Ok(Self::Yes(version)))
     }
 }
 
 impl ChallengeDescriptor {
     /// Build a pre-formatted message for the challenge.
+    #[must_use]
     pub fn build_msg(&self, working_set: u32) -> Option<CerberusMessage> {
         let buf = format!(
             "{}|{}|{}|{}|",
             self.challenge, self.nonce, self.ts, self.signature
         );
-
-        const VERSION_FOR_BINARY: semver::Version = semver::Version {
-            major: 0,
-            minor: 4,
-            patch: 6,
-            pre: Prerelease::EMPTY,
-            build: BuildMetadata::EMPTY,
-        };
 
         Some(
             if let MaybeSemver::Yes(version) = &self.version
@@ -64,47 +63,55 @@ impl ChallengeDescriptor {
         )
     }
 
-    /// Set the version of a Cerberus PoW.
+    /// Set the version of a Cerberus `PoW`.
     pub fn set_version(&mut self, version: semver::Version) {
         self.version = MaybeSemver::Yes(version);
     }
 
     /// Return the challenge difficulty in Cerberus dubits (two bits each).
+    #[must_use]
     pub const fn difficulty(&self) -> core::num::NonZeroU8 {
         self.difficulty
     }
 
     /// Return the estimated workload.
+    #[must_use]
     pub fn estimated_workload(&self) -> u64 {
         4u64.saturating_pow(self.difficulty.get().into())
     }
 
     /// Return the mask.
-    pub fn mask(&self) -> u64 {
+    #[must_use]
+    pub const fn mask(&self) -> u64 {
         compute_mask_cerberus(self.difficulty)
     }
 
-    /// Get the nonce of a Cerberus PoW.
-    pub fn nonce(&self) -> u64 {
+    /// Get the nonce of a Cerberus `PoW`.
+    #[must_use]
+    pub const fn nonce(&self) -> u64 {
         self.nonce
     }
 
-    /// Get the timestamp of a Cerberus PoW.
-    pub fn ts(&self) -> u64 {
+    /// Get the timestamp of a Cerberus `PoW`.
+    #[must_use]
+    pub const fn ts(&self) -> u64 {
         self.ts
     }
 
-    /// Get the signature of a Cerberus PoW.
+    /// Get the signature of a Cerberus `PoW`.
+    #[must_use]
     pub fn signature(&self) -> &str {
         &self.signature
     }
 
-    /// Solve a Cerberus PoW.
+    /// Solve a Cerberus `PoW`.
+    #[must_use]
     pub fn solve(&self) -> (Option<(u64, [u32; 8])>, u64) {
         self.solve_with_limit(u64::MAX)
     }
 
-    /// Solve a Cerberus PoW with a limit.
+    /// Solve a Cerberus `PoW` with a limit.
+    #[must_use]
     pub fn solve_with_limit(&self, limit: u64) -> (Option<(u64, [u32; 8])>, u64) {
         let mask = compute_mask_cerberus(self.difficulty);
 
