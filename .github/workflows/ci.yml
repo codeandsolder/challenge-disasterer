@@ -14,19 +14,28 @@ permissions:
   contents: read
 
 jobs:
+  rust-argon2:
+    name: Vendored Argon2 Rust (shared sccache)
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
+    with:
+      rust-toolchain: "nightly-2026-11-02"
+      rust-components: "clippy rustfmt"
+      timeout-minutes: 15
+      command: |
+        cargo test --manifest-path vendor/argon2-fast/Cargo.toml --all-features
+        cargo clippy --manifest-path vendor/argon2-fast/Cargo.toml --lib --all-features -- -D warnings
+        cargo fmt --manifest-path vendor/argon2-fast/Cargo.toml -- --check
+        CARGO_TARGET_DIR="$CARGO_TARGET_DIR/argon2-soft" RUSTFLAGS='--cfg argon2_backend="soft"' cargo test --manifest-path vendor/argon2-fast/Cargo.toml --all-features
+
   rust-host:
     name: Host Rust (shared sccache)
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
     with:
       rust-toolchain: "nightly-2026-11-02"
       rust-components: "clippy rustfmt"
-      timeout-minutes: 30
+      timeout-minutes: 15
       command: |
         cargo fmt --check
-        cargo test --manifest-path vendor/argon2-fast/Cargo.toml --all-features
-        cargo clippy --manifest-path vendor/argon2-fast/Cargo.toml --lib --all-features -- -D warnings
-        cargo fmt --manifest-path vendor/argon2-fast/Cargo.toml -- --check
-        CARGO_TARGET_DIR="$CARGO_TARGET_DIR/argon2-soft" RUSTFLAGS='--cfg argon2_backend="soft"' cargo test --manifest-path vendor/argon2-fast/Cargo.toml --all-features
         cargo test --locked --workspace --all-features
         cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
         cargo test --locked -p challenge-disasterer-solver-matrix --no-default-features
