@@ -467,7 +467,8 @@ pub const fn compute_mask_cerberus(difficulty_factor: NonZeroU8) -> u64 {
     } else {
         !(!0u32 >> bits)
     };
-    u64::from(mask.swap_bytes()) << 32
+    let [b0, b1, b2, b3] = mask.swap_bytes().to_be_bytes();
+    u64::from_be_bytes([b0, b1, b2, b3, 0, 0, 0, 0])
 }
 
 /// Extract top 128 bits from a 64-bit word array
