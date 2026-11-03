@@ -1416,11 +1416,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             router: false,
             counter_mode: Some("uint32"),
             counter_max: Some(u64::from(u32::MAX)),
-            implementations: {
-                let mut implementations = classic_implementations(false, true);
-                implementations.push("reference");
-                implementations
-            },
+            implementations: classic_implementations(false, true),
         },
         SolverCapability {
             solver: "altcha",
@@ -1437,7 +1433,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             router: false,
             counter_mode: Some("uint32"),
             counter_max: Some(u64::from(u32::MAX)),
-            implementations: vec!["auto", "safe", "reference"],
+            implementations: vec!["auto", "safe"],
         },
         SolverCapability {
             solver: "altcha",
