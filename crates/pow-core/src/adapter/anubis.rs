@@ -1,11 +1,7 @@
 //! Anubis specific protocol structures.
 use sha2::Digest;
 
-use crate::{
-    compute_mask_zero_nibbles,
-    message::DecimalMessage,
-    solver::{SOLVE_TYPE_MASK, Solver},
-};
+use crate::solve_decimal_sha256_zero_nibbles;
 use alloc::string::String;
 
 #[derive(serde::Deserialize, Debug)]
@@ -117,31 +113,19 @@ impl ChallengeDescriptor {
             let hash_arr = core::array::from_fn(|i| u32::from_be_bytes(chunks[i]));
             return (Some((0, hash_arr)), 0);
         }
-        let Some(difficulty) = core::num::NonZeroU8::new(self.rules.difficulty) else {
-            return (None, 0);
-        };
-        let mask = compute_mask_zero_nibbles(difficulty);
-
-        let mut result = None;
-        let mut attempted_nonces = 0;
-        let mut remaining_limit = limit;
-        for search_bank in 0.. {
-            let Some(message) =
-                DecimalMessage::new(self.challenge.as_ref().as_bytes(), search_bank)
-            else {
-                break;
-            };
-            let mut solver = crate::DecimalSolver::from(message);
-            solver.set_limit(remaining_limit);
-            result = solver.solve::<{ SOLVE_TYPE_MASK }>(0, mask);
-            attempted_nonces += solver.attempted_nonces();
-            remaining_limit = remaining_limit.saturating_sub(solver.attempted_nonces());
-            if result.is_some() || remaining_limit == 0 {
-                break;
-            }
-        }
-
-        (result, attempted_nonces)
+        solve_decimal_sha256_zero_nibbles(
+            self.challenge.as_ref().as_bytes(),
+            self.rules.difficulty,
+            limit,
+        )
+        .map_or((None, 0), |search| {
+            (
+                search
+                    .solution
+                    .map(|solution| (solution.nonce, solution.digest)),
+                search.attempted,
+            )
+        })
     }
 }
 

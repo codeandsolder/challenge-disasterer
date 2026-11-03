@@ -9,6 +9,7 @@
 #[macro_use]
 mod loop_macros;
 
+#[cfg(feature = "portable-simd")]
 pub mod portable;
 
 /// Initial hash values for BLAKE3
@@ -133,6 +134,7 @@ const fn round_fixed(state: &mut [u32; 16], m: &[u32; 16], round: usize) {
     );
 }
 
+#[cfg(feature = "portable-simd")]
 #[inline(always)]
 pub fn round_gated(state: &mut [u32; 16], m: &[u32]) {
     debug_assert!(m.len() <= 16);
@@ -164,6 +166,7 @@ pub fn round_gated(state: &mut [u32; 16], m: &[u32]) {
     }
 }
 
+#[cfg(feature = "portable-simd")]
 pub fn ingest_message_prefix(
     state: [u32; 8],
     m: &[u32],

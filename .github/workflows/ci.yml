@@ -75,7 +75,7 @@ jobs:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: node ../../tools/wasm-wasi-runner.mjs
           NODE_NO_WARNINGS: 1
           RUSTFLAGS: -C target-feature=+simd128 -D warnings
-        run: cargo test --locked --target wasm32-wasip1 -p challenge-pow-core --no-default-features --features std,compare-64bit
+        run: cargo test --locked --target wasm32-wasip1 -p challenge-pow-core --no-default-features --features std,compare-64bit,portable-simd
 
       - name: Benchmark WASM SIMD128 backend
         env:
@@ -89,5 +89,5 @@ jobs:
         env:
           RUSTFLAGS: -C target-feature=+simd128 -D warnings
         run: |
-          cargo clippy --locked --target wasm32-wasip1 -p challenge-pow-core --no-default-features --features std,compare-64bit -- -D warnings
+          cargo clippy --locked --target wasm32-wasip1 -p challenge-pow-core --no-default-features --features std,compare-64bit,portable-simd -- -D warnings
           cargo clippy --locked --target wasm32-wasip1 -p challenge-disasterer-wasm-simd128-bench -- -D warnings
