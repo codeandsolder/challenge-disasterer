@@ -47,7 +47,7 @@ opt-level = 3
 workspace = true
 
 [workspace]
-members = ["crates/anubis-argon2", "crates/pow-core", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench"]
+members = ["crates/anubis-argon2", "crates/pow-core", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench", "tools/simd-width-bench"]
 resolver = "3"
 exclude = ["vendor/argon2-fast"]
 

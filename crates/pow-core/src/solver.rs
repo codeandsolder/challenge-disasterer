@@ -83,6 +83,10 @@ pub mod simd128;
 #[cfg(any(target_arch = "x86_64", target_arch = "wasm32"))]
 pub(crate) mod wide;
 
+#[cfg(all(feature = "internals", target_arch = "x86_64"))]
+#[doc(hidden)]
+pub mod width_bench;
+
 /// Safe solver
 pub mod safe;
 

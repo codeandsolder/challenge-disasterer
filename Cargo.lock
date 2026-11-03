@@ -481,6 +481,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "challenge-disasterer-simd-width-bench"
+version = "0.1.0"
+dependencies = [
+ "challenge-pow-core",
+ "serde_json",
+]
+
+[[package]]
 name = "challenge-disasterer-solver-matrix"
 version = "0.1.0"
 dependencies = [
