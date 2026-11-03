@@ -43,7 +43,7 @@ pub fn solve(
         solve_rustcrypto(challenge.seed.as_bytes(), offset, DEFAULT_LIMIT)
             .context("Linear.pub search exhausted configured limit")?;
     let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let cookie_value = format!("{}{}", challenge.seed, nonce);
+    let cookie_value = format!("{}{nonce}", challenge.seed);
 
     Ok(Result {
         answer: json!({

@@ -377,7 +377,7 @@ fn finish_goaway(
 ) -> Result {
     let (nonce, hash) = solution;
     let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let token = format!("{}{:016x}", config.challenge(), nonce);
+    let token = format!("{}{nonce:016x}", config.challenge());
     let id = hex::encode(
         hash.into_iter()
             .take(4)
