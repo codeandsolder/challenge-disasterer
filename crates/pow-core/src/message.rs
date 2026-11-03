@@ -1102,12 +1102,7 @@ mod tests {
             let mut salt_out = [0; S];
             let mut target_out = [0; (D + 3) / 8];
             emitter.emit(&mut salt_out, &mut target_out, u32::try_from(real_i)?);
-            assert_eq!(
-                salt_out,
-                salt.as_slice(),
-                "salt is different at index {}",
-                i
-            );
+            assert_eq!(salt_out, salt.as_slice(), "salt is different at index {i}");
             assert_eq!(target_out, *target);
         }
         Ok(())

@@ -2,6 +2,13 @@
     clippy::inline_always,
     reason = "fixed-width digit encoders are inner-loop primitives and intentionally force inlining"
 )]
+#[cfg_attr(
+    not(feature = "internals"),
+    expect(
+        clippy::redundant_pub_crate,
+        reason = "the same module becomes public with the internals feature, where crate-only visibility is intentional"
+    )
+)]
 pub(crate) static DIGIT_LUT_10000_LE_EVEN: [u32; 10000 / 2] = const {
     let mut out = [0; 10000 / 2];
     let mut i = 0;

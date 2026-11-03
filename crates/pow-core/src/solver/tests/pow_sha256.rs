@@ -17,7 +17,7 @@
 //!
 //!       let work = config.prove_work(&phrase, DIFFICULTY)?;
 //!       assert!(config.is_valid_proof(&work, &phrase));
-//!       assert!(config.is_sufficient_difficulty(&work, DIFFICULTY));
+//!       assert!(Config::is_sufficient_difficulty(&work, DIFFICULTY));
 //!       Ok(())
 //!   }
 //! ```
@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, digest::Update};
 
 /// Proof of work over concrete type `T`. `T` can be any type that implements `serde::Serialize`.
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
 pub struct PoW<T> {
     pub nonce: u64,
     pub result: String,
@@ -50,7 +50,7 @@ impl<T> PoW<T> {
 /// Please choose a long, unique value for salt
 /// Resistance to dictionary/rainbow attacks depend on uniqueness
 /// of the salt
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
 pub struct Config {
     pub salt: String,
 }
@@ -109,26 +109,23 @@ impl Config {
         dev::score(Sha256::new().chain(&self.salt).chain(target), pow.nonce)
     }
 
-    /// Verifies that the PoW is indeed generated out of the phrase provided.
+    /// Verifies that the `PoW` is indeed generated out of the phrase provided.
     pub fn is_valid_proof<T>(&self, pow: &PoW<T>, t: &T) -> bool
     where
         T: Serialize,
     {
-        match self.calculate(pow, t) {
-            Ok(res) => pow.result == res.to_string(),
-            Err(_) => false,
-        }
+        self.calculate(pow, t)
+            .is_ok_and(|res| pow.result == res.to_string())
     }
 
-    /// Checks if the PoW result is of sufficient difficulty
-    pub fn is_sufficient_difficulty<T>(&self, pow: &PoW<T>, target_diff: u32) -> bool
+    /// Checks if the `PoW` result is of sufficient difficulty
+    pub fn is_sufficient_difficulty<T>(pow: &PoW<T>, target_diff: u32) -> bool
     where
         T: Serialize,
     {
-        match pow.result.parse::<u128>() {
-            Ok(res) => res >= get_difficulty(target_diff),
-            Err(_) => false,
-        }
+        pow.result
+            .parse::<u128>()
+            .is_ok_and(|res| res >= get_difficulty(target_diff))
     }
 }
 
@@ -180,7 +177,7 @@ mod test {
         let pw = config.prove_work(&phrase, DIFFICULTY)?;
         assert!(config.calculate(&pw, &phrase)? >= get_difficulty(DIFFICULTY));
         assert!(config.is_valid_proof(&pw, &phrase));
-        assert!(config.is_sufficient_difficulty(&pw, DIFFICULTY));
+        assert!(Config::is_sufficient_difficulty(&pw, DIFFICULTY));
         Ok(())
     }
 
@@ -194,11 +191,11 @@ mod test {
 
         assert!(config.calculate(&pw, &phrase)? >= get_difficulty(DIFFICULTY));
         assert!(config.is_valid_proof(&pw, &phrase));
-        assert!(config.is_sufficient_difficulty(&pw, DIFFICULTY));
+        assert!(Config::is_sufficient_difficulty(&pw, DIFFICULTY));
 
         assert!(config.calculate(&pwpw, &pw)? >= get_difficulty(DIFFICULTY));
         assert!(config.is_valid_proof(&pwpw, &pw));
-        assert!(config.is_sufficient_difficulty(&pwpw, DIFFICULTY));
+        assert!(Config::is_sufficient_difficulty(&pwpw, DIFFICULTY));
         Ok(())
     }
 
@@ -249,7 +246,7 @@ mod test {
         let message_ser = bincode::serialize(&message)?;
         let recieved_message: (u8, PoW<u8>) = bincode::deserialize(&message_ser)?;
         assert_eq!(recieved_message, message);
-        assert!(config.is_sufficient_difficulty(&message.1, DIFFICULTY));
+        assert!(Config::is_sufficient_difficulty(&message.1, DIFFICULTY));
         assert!(config.is_valid_proof(&message.1, &target));
         Ok(())
     }

@@ -401,203 +401,193 @@ pub(crate) mod tests {
 
     use super::*;
 
-    /// Extract top 64 bits from a 64-bit word array
-    const fn extract64_be(inp: [u32; 8]) -> u64 {
-        (u64::from(inp[0]) << 32) | u64::from(inp[1])
+    const MCAPTCHA_TEST_DIFFICULTY: u32 = 100_000;
+    const BINARY_TEST_DIFFICULTY: u64 = 100_000;
+    const FULL_DIGEST_TEST_BITS: u64 = 4;
+
+    const fn cerberus_small_check(hash: &[u8; 32], n: u32) -> bool {
+        u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]).leading_zeros() >= n * 2
     }
 
-    pub(crate) fn test_decimal_validator<
+    /// Extract top 64 bits from a 64-bit word array
+    const fn extract64_be(inp: [u32; 8]) -> u64 {
+        let hi = inp[0].to_be_bytes();
+        let lo = inp[1].to_be_bytes();
+        u64::from_be_bytes([hi[0], hi[1], hi[2], hi[3], lo[0], lo[1], lo[2], lo[3]])
+    }
+
+    fn validate_decimal_full_digest<S: Solver<Output = [u32; 8]>>(
+        solver: &mut S,
+        prefix: &[u8],
+    ) -> anyhow::Result<()> {
+        let (nonce, result) = solver
+            .solve::<SOLVE_TYPE_LEADING_ZERO_BITS>(FULL_DIGEST_TEST_BITS, u64::MAX)
+            .context("full-digest solver failed")?;
+        let mut message = prefix.to_vec();
+        write!(message, "{nonce}")?;
+        let expected = Sha256::digest(&message);
+        let expected_words = core::array::from_fn(|i| {
+            let base = i * 4;
+            u32::from_be_bytes([
+                expected[base],
+                expected[base + 1],
+                expected[base + 2],
+                expected[base + 3],
+            ])
+        });
+        assert_eq!(result, expected_words);
+        assert!(crate::hash_has_leading_zero_bits(
+            &result,
+            FULL_DIGEST_TEST_BITS,
+        ));
+        Ok(())
+    }
+
+    fn validate_decimal_mcaptcha<S: Solver<Output = [u32; 8]>>(
+        solver: &mut S,
+        phrase: &str,
+        search_space: u32,
+    ) -> anyhow::Result<()> {
+        let difficulty = core::num::NonZeroU64::new(u64::from(MCAPTCHA_TEST_DIFFICULTY))
+            .context("mCaptcha test difficulty is nonzero")?;
+        let target = compute_target_mcaptcha(difficulty);
+        let target_u64 = u64::from_be_bytes(target.to_be_bytes()[..8].try_into()?);
+        let (nonce, result) = solver
+            .solve::<SOLVE_TYPE_GT>(target_u64, u64::MAX)
+            .context("GT solver failed")?;
+        let result_u128 = extract128_be(result);
+        let config = pow_sha256::Config {
+            salt: String::from("abc"),
+        };
+        let response = pow_sha256::PoW::new(nonce, result_u128.to_string());
+        let solver_name = core::any::type_name::<S>();
+
+        assert_eq!(
+            config.calculate(&response, &phrase)?,
+            result_u128,
+            "response {response:?} differs for solver {solver_name}, search_space={search_space}",
+        );
+        assert!(
+            config.is_valid_proof(&response, &phrase),
+            "{result_u128} is not a valid proof for solver {solver_name}",
+        );
+        assert!(
+            pow_sha256::Config::is_sufficient_difficulty(&response, MCAPTCHA_TEST_DIFFICULTY),
+            "{result_u128:016x} is below expected target {target:032x} for solver {solver_name}",
+        );
+        Ok(())
+    }
+
+    fn validate_decimal_anubis<S: Solver<Output = [u32; 8]>>(
+        solver: &mut S,
+        prefix: &[u8],
+        search_space: u32,
+        difficulty: NonZeroU8,
+    ) -> anyhow::Result<()> {
+        let mask = compute_mask_zero_nibbles(difficulty);
+        let (nonce, result) = solver
+            .solve::<SOLVE_TYPE_MASK>(0, mask)
+            .context("Anubis mask solver failed")?;
+        let result_u64 = extract64_be(result);
+        let result_bytes = result_u64.to_be_bytes();
+        let mut message = prefix.to_vec();
+        write!(message, "{nonce}")?;
+        let expected = Sha256::digest(&message);
+        let solver_name = core::any::type_name::<S>();
+
+        assert_eq!(expected[..8], result_bytes);
+        assert_eq!(
+            result_u64 & mask,
+            0,
+            "Anubis result {result_u64:016x} misses mask {mask:016x} for solver {solver_name}, search_space={search_space}",
+        );
+        for nibble_index in 0..usize::from(difficulty.get()) {
+            let byte_index = nibble_index / 2;
+            let shift = (1 - nibble_index % 2) * 4;
+            let nibble = (result_bytes[byte_index] >> shift) & 0x0f;
+            assert_eq!(
+                nibble, 0,
+                "{result_u64:016x} is not valid Anubis proof for solver {solver_name}, nibble={nibble_index}",
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_decimal_equality<S: Solver<Output = [u32; 8]>>(
+        solver: &mut S,
+        search_space: u32,
+    ) -> anyhow::Result<()> {
+        let target = 0b10111 << (64 - 5);
+        let (_, result) = solver
+            .solve::<SOLVE_TYPE_MASK>(target, u64::MAX << (64 - 5))
+            .context("64-bit equality solver failed")?;
+        let result_u128 = extract128_be(result);
+        let solver_name = core::any::type_name::<S>();
+        assert_eq!(
+            result_u128 >> (128 - 5),
+            0b10111,
+            "equality result {result_u128:016x} differs for solver {solver_name}, search_space={search_space}",
+        );
+
+        #[cfg(all(feature = "compare-64bit", target_arch = "x86_64"))]
+        {
+            let target = 0b10111 << (32 - 5);
+            let mask = 0b11111 << (32 - 5);
+            let (_, result) = solver
+                .solve::<SOLVE_TYPE_MASK>(target, mask)
+                .context("32-bit equality solver failed")?;
+            let result_u64 = extract64_be(result);
+            assert_eq!(
+                result_u64 & mask,
+                target,
+                "32-bit equality result {result_u64:016x} differs for solver {solver_name}, search_space={search_space}",
+            );
+        }
+        Ok(())
+    }
+
+    pub fn test_decimal_validator<
         S: Solver<Output = [u32; 8]>,
         F: for<'a> FnMut(&'a [u8], u32) -> Option<S>,
     >(
         mut factory: F,
     ) -> anyhow::Result<()> {
+        let anubis_difficulty = NonZeroU8::new(4).context("Anubis test difficulty is nonzero")?;
         for phrase_len in 0..64 {
-            let mut concatenated_prefix = b"abc".to_vec();
-            let phrase_str = String::from_iter(std::iter::repeat_n('a', phrase_len));
-            concatenated_prefix.extend_from_slice(&bincode::serialize(&phrase_str)?);
-
-            let config = pow_sha256::Config {
-                salt: String::from("abc"),
-            };
-            const DIFFICULTY: u32 = 100_000;
-            let anubis_difficulty =
-                NonZeroU8::new(4).context("Anubis test difficulty is nonzero")?;
+            let phrase = String::from_iter(std::iter::repeat_n('a', phrase_len));
+            let mut prefix = b"abc".to_vec();
+            prefix.extend_from_slice(&bincode::serialize(&phrase)?);
 
             for search_space in [0, 1, 9, 10, 11] {
-                let Some(mut solver) = factory(&concatenated_prefix, search_space) else {
-                    assert_ne!(
-                        search_space, 0,
-                        "solver is None for search_space: {}",
-                        search_space
-                    );
-                    break;
-                };
-                let Some(mut anubis_solver) = factory(&concatenated_prefix, search_space) else {
-                    assert_ne!(
-                        search_space, 0,
-                        "anubis solver is None for search_space: {}",
-                        search_space
-                    );
-                    break;
-                };
-                let Some(mut eq_solver) = factory(&concatenated_prefix, search_space) else {
-                    assert_ne!(
-                        search_space, 0,
-                        "eq solver is None for search_space: {}",
-                        search_space
-                    );
-                    break;
-                };
-                let Some(mut full_digest_solver) = factory(&concatenated_prefix, search_space)
+                let [
+                    Some(mut solver),
+                    Some(mut anubis_solver),
+                    Some(mut eq_solver),
+                    Some(mut full_digest_solver),
+                ] = core::array::from_fn(|_| factory(&prefix, search_space))
                 else {
                     assert_ne!(
                         search_space, 0,
-                        "full-digest solver is None for search_space: {}",
-                        search_space
+                        "baseline decimal shape must construct every validation solver",
                     );
                     break;
                 };
 
-                let target_bytes = compute_target_mcaptcha(
-                    core::num::NonZeroU64::new(u64::from(DIFFICULTY))
-                        .context("mCaptcha test difficulty is nonzero")?,
-                )
-                .to_be_bytes();
-                let target_u64 = u64::from_be_bytes(target_bytes[..8].try_into()?);
-                let mask_anubis = compute_mask_zero_nibbles(anubis_difficulty);
-                const FULL_DIGEST_TEST_BITS: u64 = 4;
-                let (full_nonce, full_result) = full_digest_solver
-                    .solve::<SOLVE_TYPE_LEADING_ZERO_BITS>(FULL_DIGEST_TEST_BITS, u64::MAX)
-                    .context("full-digest solver failed")?;
-                let mut full_message = concatenated_prefix.clone();
-                write!(full_message, "{full_nonce}")?;
-                let full_expected = sha2::Sha256::digest(&full_message);
-                let full_expected_words: [u32; 8] = core::array::from_fn(|i| {
-                    let base = i * 4;
-                    u32::from_be_bytes([
-                        full_expected[base],
-                        full_expected[base + 1],
-                        full_expected[base + 2],
-                        full_expected[base + 3],
-                    ])
-                });
-                assert_eq!(full_result, full_expected_words);
-                assert!(crate::hash_has_leading_zero_bits(
-                    &full_result,
-                    FULL_DIGEST_TEST_BITS,
-                ));
-
-                let (nonce, result) = solver
-                    .solve::<SOLVE_TYPE_GT>(target_u64, !0)
-                    .context("GT solver failed")?;
-                let result_u128 = extract128_be(result);
-                let (anubis_nonce, anubis_result) = anubis_solver
-                    .solve::<SOLVE_TYPE_MASK>(0, mask_anubis)
-                    .context("Anubis mask solver failed")?;
-                let anubis_result_u64 = extract64_be(anubis_result);
-                let anubis_expected_hash = {
-                    let mut msg = concatenated_prefix.clone();
-                    write!(msg, "{anubis_nonce}")?;
-                    sha2::Sha256::digest(msg.as_slice())
-                };
-                let anubis_result_bytes = anubis_result_u64.to_be_bytes();
-                assert_eq!(anubis_expected_hash[..8], anubis_result_bytes);
-                assert_eq!(
-                    ((u64::from(anubis_result[0])) << 32 | u64::from(anubis_result[1]))
-                        & mask_anubis,
-                    0,
-                    "[{}] anubis_result: {:016x} & mask_anubis: {:016x} == 0 (solver: {}, search_space: {})",
-                    core::any::type_name::<S>(),
-                    anubis_result_u64,
-                    mask_anubis,
-                    core::any::type_name::<S>(),
-                    search_space
-                );
-
-                let test_response = pow_sha256::PoW::new(nonce, result_u128.to_string());
-                assert_eq!(
-                    config.calculate(&test_response, &phrase_str)?,
-                    result_u128,
-                    "test_response: {:?} (solver: {}, search_space: {})",
-                    test_response,
-                    core::any::type_name::<S>(),
-                    search_space
-                );
-
-                assert!(
-                    config.is_valid_proof(&test_response, &phrase_str),
-                    "{} is not valid proof (solver: {})",
-                    result_u128,
-                    core::any::type_name::<S>()
-                );
-
-                assert!(
-                    config.is_sufficient_difficulty(&test_response, DIFFICULTY),
-                    "{:016x} is not sufficient difficulty, expected {:016x} (solver: {})",
-                    result_u128,
-                    compute_target_mcaptcha(
-                        core::num::NonZeroU64::new(u64::from(DIFFICULTY))
-                            .context("mCaptcha test difficulty is nonzero")?,
-                    ),
-                    core::any::type_name::<S>()
-                );
-
-                // based on proof-of-work.mjs
-                for i in 0..usize::from(anubis_difficulty.get()) {
-                    let byte_index = i / 2;
-                    let nibble_index = 1 - i % 2;
-
-                    let nibble = (anubis_result_bytes[byte_index] >> (nibble_index * 4)) & 0x0f;
-                    assert_eq!(
-                        nibble,
-                        0,
-                        "{:08x} is not valid anubis proof (solver: {}, nibble: {})",
-                        anubis_result_u64,
-                        core::any::type_name::<S>(),
-                        i
-                    );
-                }
-
-                let u64_target = 0b10111 << (64 - 5);
-
-                let (_, eq_result) = eq_solver
-                    .solve::<{ SOLVE_TYPE_MASK }>(u64_target, !0 << (64 - 5))
-                    .context("64-bit equality solver failed")?;
-                let eq_solver_result_u128 = extract128_be(eq_result);
-                assert_eq!(
-                    eq_solver_result_u128 >> (128 - 5),
-                    0b10111,
-                    "eq_solver_result_u128: {:016x} (solver: {}, search_space: {})",
-                    eq_solver_result_u128,
-                    core::any::type_name::<S>(),
-                    search_space
-                );
-
-                #[cfg(all(feature = "compare-64bit", target_arch = "x86_64"))]
-                {
-                    // test that the target can be placed in the second register and it still works
-                    let u64_target = 0b10111 << (32 - 5);
-                    let u64_mask = 0b11111 << (32 - 5);
-                    let (_, eq_result) = eq_solver
-                        .solve::<{ SOLVE_TYPE_MASK }>(u64_target, u64_mask)
-                        .context("32-bit equality solver failed")?;
-                    let eq_solver_result_u64 = extract64_be(eq_result);
-                    assert_eq!(
-                        eq_solver_result_u64 & u64_mask,
-                        u64_target,
-                        "eq_solver_result_u64: {:016x} (solver: {}, search_space: {})",
-                        eq_solver_result_u64,
-                        core::any::type_name::<S>(),
-                        search_space
-                    );
-                }
+                validate_decimal_full_digest(&mut full_digest_solver, &prefix)?;
+                validate_decimal_mcaptcha(&mut solver, &phrase, search_space)?;
+                validate_decimal_anubis(
+                    &mut anubis_solver,
+                    &prefix,
+                    search_space,
+                    anubis_difficulty,
+                )?;
+                validate_decimal_equality(&mut eq_solver, search_space)?;
             }
         }
         Ok(())
     }
 
-    pub(crate) fn test_binary_validator<
+    pub fn test_binary_validator<
         S: Solver<Output = [u32; 8]>,
         F: for<'a> FnMut(&'a [u8], NonZeroU8) -> Option<S>,
     >(
@@ -610,9 +600,8 @@ pub(crate) mod tests {
                     .context("binary validator nonce width is nonzero")?;
                 let mut solver = factory(&msg, nonce_byte_count)
                     .context("supported binary validator width must construct")?;
-                const DIFFICULTY: u64 = 100_000;
                 let target = compute_target_mcaptcha(
-                    core::num::NonZeroU64::new(DIFFICULTY)
+                    core::num::NonZeroU64::new(BINARY_TEST_DIFFICULTY)
                         .context("binary test difficulty is nonzero")?,
                 );
                 let (nonce, result) = solver
@@ -627,18 +616,12 @@ pub(crate) mod tests {
                 assert_eq!(
                     expected_digest.as_slice(),
                     got_digest.as_slice(),
-                    "nonce: {}, prefix_len: {}",
-                    nonce,
-                    prefix_len,
+                    "nonce: {nonce}, prefix_len: {prefix_len}",
                 );
                 let got_difficulty = u64::from_be_bytes(got_digest[..8].try_into()?);
                 assert!(
                     got_difficulty >= target,
-                    "got_difficulty: {:016x} < target: {:016x} (nonce: {}, prefix_len: {})",
-                    got_difficulty,
-                    target,
-                    nonce,
-                    prefix_len,
+                    "got_difficulty: {got_difficulty:016x} < target: {target:016x} (nonce: {nonce}, prefix_len: {prefix_len})",
                 );
             }
         }
@@ -649,7 +632,7 @@ pub(crate) mod tests {
         clippy::cast_precision_loss,
         reason = "this test intentionally models JavaScript Number conversion of a u64 nonce"
     )]
-    pub(crate) fn test_decimal_validator_f64_safe<
+    pub fn test_decimal_validator_f64_safe<
         S: Solver<Output = [u32; 8]>,
         F: for<'a> FnMut(&'a [u8], u32) -> Option<(S, Option<IEEE754LosslessFixupPrefix>)>,
     >(
@@ -675,11 +658,10 @@ pub(crate) mod tests {
                         .context("f64-safe mask solver failed")?;
                     let mut final_message = salts[..len].to_vec();
                     let mut final_message_f64 = final_message.clone();
-                    let mut final_nonce = nonce as f64;
-                    if let Some(ref fixup_prefix) = fixup_prefix {
+                    let final_nonce = fixup_prefix.as_ref().map_or(nonce as f64, |fixup_prefix| {
                         final_message.extend_from_slice(fixup_prefix.as_ref());
-                        final_nonce = fixup_prefix.fixup(nonce);
-                    }
+                        fixup_prefix.fixup(nonce)
+                    });
                     if fixup_prefix.is_some() {
                         assert_ne!(nonce % 10, 0);
                     }
@@ -718,7 +700,7 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    pub(crate) fn test_cerberus_decimal_validator<
+    pub fn test_cerberus_decimal_validator<
         S: Solver<Output = [u32; 8]>,
         F: for<'a> FnMut(&'a [u8]) -> Option<S>,
     >(
@@ -729,7 +711,7 @@ pub(crate) mod tests {
         for df in (5_u8..=7).chain(core::iter::once(9)) {
             let difficulty = NonZeroU8::new(df).context("Cerberus test difficulty is nonzero")?;
             let mask = compute_mask_cerberus(difficulty);
-            eprintln!("mask: {:08x}", mask);
+            eprintln!("mask: {mask:08x}");
 
             let mut test_seed = [0_u8; 128];
             for (i, byte) in test_seed.iter_mut().enumerate() {
@@ -739,7 +721,7 @@ pub(crate) mod tests {
             for seed_len in 0..128 {
                 let Some(mut solver) = factory(&test_seed[..seed_len]) else {
                     if seed_len < 64 {
-                        eprintln!("solver is None for seed_len: {}", seed_len);
+                        eprintln!("solver is None for seed_len: {seed_len}");
                     }
                     continue;
                 };
@@ -749,15 +731,6 @@ pub(crate) mod tests {
                     .context("Cerberus decimal solver failed")?;
                 let mut msg = test_seed[..seed_len].to_vec();
                 write!(&mut msg, "{nonce}")?;
-
-                fn check_small(hash: &[u8; 32], n: u32) -> bool {
-                    // https://github.com/sjtug/cerberus/blob/ee8f903f1311da7022aec68c8686739b40f4a168/pow/src/check_dubit.rs
-                    let first_word: u32 = u32::from(hash[0]) << 24
-                        | u32::from(hash[1]) << 16
-                        | u32::from(hash[2]) << 8
-                        | u32::from(hash[3]);
-                    first_word.leading_zeros() >= n * 2
-                }
 
                 let mut ref_hasher = blake3::Hasher::new();
                 ref_hasher.update(msg.as_slice());
@@ -774,17 +747,16 @@ pub(crate) mod tests {
                 let hit = ((u64::from(ref_hash[0])) << 32 | u64::from(ref_hash[1])) & mask == 0;
                 assert_eq!(
                     hash, ref_hash,
-                    "incorrect output: {} (seed_len: {})",
-                    nonce, seed_len
+                    "incorrect output: {nonce} (seed_len: {seed_len})"
                 );
                 assert!(hit);
-                assert!(check_small(ref_hash_bytes, u32::from(df)));
+                assert!(cerberus_small_check(ref_hash_bytes, u32::from(df)));
             }
         }
         Ok(())
     }
 
-    pub(crate) fn test_cerberus_binary_validator<
+    pub fn test_cerberus_binary_validator<
         S: Solver<Output = [u32; 8]>,
         F: for<'a> FnMut(&'a [u8]) -> Option<S>,
     >(
@@ -797,7 +769,7 @@ pub(crate) mod tests {
                 let difficulty =
                     NonZeroU8::new(df).context("Cerberus test difficulty is nonzero")?;
                 let mask = compute_mask_cerberus(difficulty);
-                eprintln!("mask: {:08x}", mask);
+                eprintln!("mask: {mask:08x}");
 
                 let mut solver = factory(seed)
                     .with_context(|| format!("solver is unavailable for seed {seed:?}"))?;
@@ -807,15 +779,6 @@ pub(crate) mod tests {
                     .context("Cerberus binary solver failed")?;
                 let mut msg = seed_hash.as_bytes().to_vec();
                 msg.extend_from_slice(nonce.rotate_right(32).to_le_bytes().as_slice());
-
-                fn check_small(hash: &[u8; 32], n: u32) -> bool {
-                    // https://github.com/sjtug/cerberus/blob/ee8f903f1311da7022aec68c8686739b40f4a168/pow/src/check_dubit.rs
-                    let first_word: u32 = u32::from(hash[0]) << 24
-                        | u32::from(hash[1]) << 16
-                        | u32::from(hash[2]) << 8
-                        | u32::from(hash[3]);
-                    first_word.leading_zeros() >= n * 2
-                }
 
                 let mut ref_hasher = blake3::Hasher::new();
                 ref_hasher.update(msg.as_slice());
@@ -830,15 +793,15 @@ pub(crate) mod tests {
                     ])
                 });
                 let hit = ((u64::from(ref_hash[0])) << 32 | u64::from(ref_hash[1])) & mask == 0;
-                assert_eq!(hash, ref_hash, "incorrect output: {}", nonce);
+                assert_eq!(hash, ref_hash, "incorrect output: {nonce}");
                 assert!(hit);
-                assert!(check_small(ref_hash_bytes, u32::from(df)));
+                assert!(cerberus_small_check(ref_hash_bytes, u32::from(df)));
             }
         }
         Ok(())
     }
 
-    pub(crate) fn test_goaway_validator<
+    pub fn test_goaway_validator<
         S: Solver<Output = [u32; 8]>,
         F: for<'a> FnMut(&'a [u8; 32]) -> S,
     >(
@@ -855,7 +818,6 @@ pub(crate) mod tests {
         let mut eq_solver = factory(&test_prefix);
         let mut full_digest_solver = factory(&test_prefix);
 
-        const FULL_DIGEST_TEST_BITS: u64 = 4;
         let (full_nonce, full_result) = full_digest_solver
             .solve::<SOLVE_TYPE_LEADING_ZERO_BITS>(FULL_DIGEST_TEST_BITS, u64::MAX)
             .context("full-digest GoAway solver failed")?;
@@ -930,88 +892,98 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    pub(crate) fn test_altcha_validator<
+    fn validate_altcha_known_answer<S, F>(
+        factory: &mut F,
+        message: crate::message::AltchaMessage,
+        expected_nonce: u64,
+        expected_hash: [u32; 8],
+    ) -> anyhow::Result<()>
+    where
         S: Solver<Output = [u32; 8]>,
         F: FnMut(crate::message::AltchaMessage) -> Option<S>,
-    >(
-        mut factory: F,
-    ) -> anyhow::Result<()> {
-        // known answer tests
-        let msg = crate::message::AltchaMessage {
-            nonce: [
-                0xf0, 0xc5, 0x9c, 0x5f, 0x4b, 0x3a, 0xeb, 0x1f, 0xf3, 0x4d, 0x44, 0xab, 0xd1, 0x5f,
-                0x0f, 0x15,
-            ],
-            salt: [
-                0x7f, 0x49, 0x8a, 0x9e, 0xb9, 0x4b, 0xb8, 0x4f, 0x3c, 0xc2, 0xa6, 0xb4, 0x8b, 0x6e,
-                0xe6, 0x14,
-            ],
-            cost: 2000.try_into()?,
-            pbkdf2: true,
-            key_length: 32.try_into()?,
-        };
-        let expected_derived = [
-            0x0058_b155,
-            0x1f52_6b2e,
-            0xa174_87e5,
-            0xf6f7_edd0,
-            0x35ca_3847,
-            0x8030_a59d,
-            0x7b7b_ee49,
-            0xb090_c58e,
-        ];
-
-        let mut solver = factory(msg.clone()).context("ALTCHA solver unavailable")?;
+    {
+        let mut solver = factory(message).context("ALTCHA solver unavailable")?;
+        let difficulty = NonZeroU8::new(2).context("ALTCHA difficulty is nonzero")?;
         let (nonce, hash) = solver
-            .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(
-                0,
-                crate::compute_mask_zero_nibbles(
-                    NonZeroU8::new(2).context("ALTCHA difficulty is nonzero")?,
-                ),
-            )
+            .solve::<SOLVE_TYPE_MASK>(0, compute_mask_zero_nibbles(difficulty))
             .context("ALTCHA known-answer solver failed")?;
-        assert_eq!(nonce, 78);
-        assert_eq!(hash, expected_derived);
+        assert_eq!(nonce, expected_nonce);
+        assert_eq!(hash, expected_hash);
+        Ok(())
+    }
 
-        let msg = crate::message::AltchaMessage {
-            nonce: [
-                0xd9, 0x8d, 0x4a, 0x93, 0x45, 0x8a, 0x69, 0x7d, 0x4c, 0xc0, 0xe8, 0x29, 0x6b, 0x0d,
-                0x73, 0xc2,
+    fn validate_altcha_known_answers<S, F>(factory: &mut F) -> anyhow::Result<()>
+    where
+        S: Solver<Output = [u32; 8]>,
+        F: FnMut(crate::message::AltchaMessage) -> Option<S>,
+    {
+        validate_altcha_known_answer(
+            factory,
+            crate::message::AltchaMessage {
+                nonce: [
+                    0xf0, 0xc5, 0x9c, 0x5f, 0x4b, 0x3a, 0xeb, 0x1f, 0xf3, 0x4d, 0x44, 0xab, 0xd1,
+                    0x5f, 0x0f, 0x15,
+                ],
+                salt: [
+                    0x7f, 0x49, 0x8a, 0x9e, 0xb9, 0x4b, 0xb8, 0x4f, 0x3c, 0xc2, 0xa6, 0xb4, 0x8b,
+                    0x6e, 0xe6, 0x14,
+                ],
+                cost: 2000.try_into()?,
+                pbkdf2: true,
+                key_length: 32.try_into()?,
+            },
+            78,
+            [
+                0x0058_b155,
+                0x1f52_6b2e,
+                0xa174_87e5,
+                0xf6f7_edd0,
+                0x35ca_3847,
+                0x8030_a59d,
+                0x7b7b_ee49,
+                0xb090_c58e,
             ],
-            salt: [
-                0xdd, 0xd2, 0x93, 0x34, 0xb7, 0x49, 0xfd, 0x0a, 0xd5, 0x4d, 0x6d, 0x00, 0xc5, 0xcc,
-                0x48, 0x0a,
+        )?;
+        validate_altcha_known_answer(
+            factory,
+            crate::message::AltchaMessage {
+                nonce: [
+                    0xd9, 0x8d, 0x4a, 0x93, 0x45, 0x8a, 0x69, 0x7d, 0x4c, 0xc0, 0xe8, 0x29, 0x6b,
+                    0x0d, 0x73, 0xc2,
+                ],
+                salt: [
+                    0xdd, 0xd2, 0x93, 0x34, 0xb7, 0x49, 0xfd, 0x0a, 0xd5, 0x4d, 0x6d, 0x00, 0xc5,
+                    0xcc, 0x48, 0x0a,
+                ],
+                cost: 2000.try_into()?,
+                pbkdf2: false,
+                key_length: 32.try_into()?,
+            },
+            128,
+            [
+                0x0064_1b3e,
+                0x3f8d_b108,
+                0xd345_552e,
+                0x8d9f_78fe,
+                0x67a7_d0ae,
+                0x0faa_2ea0,
+                0x701a_0432,
+                0x0c40_7bb7,
             ],
-            cost: 2000.try_into()?,
-            pbkdf2: false,
-            key_length: 32.try_into()?,
-        };
-        let expected_derived = [
-            0x0064_1b3e,
-            0x3f8d_b108,
-            0xd345_552e,
-            0x8d9f_78fe,
-            0x67a7_d0ae,
-            0x0faa_2ea0,
-            0x701a_0432,
-            0x0c40_7bb7,
-        ];
-        let mut solver = factory(msg.clone()).context("ALTCHA solver unavailable")?;
-        let (nonce, hash) = solver
-            .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(
-                0,
-                crate::compute_mask_zero_nibbles(
-                    NonZeroU8::new(2).context("ALTCHA difficulty is nonzero")?,
-                ),
-            )
-            .context("ALTCHA known-answer solver failed")?;
-        assert_eq!(nonce, 128);
-        assert_eq!(hash, expected_derived);
+        )
+    }
 
+    fn validate_altcha_matrix<S, F>(factory: &mut F) -> anyhow::Result<()>
+    where
+        S: Solver<Output = [u32; 8]>,
+        F: FnMut(crate::message::AltchaMessage) -> Option<S>,
+    {
+        let difficulty = NonZeroU8::new(3).context("ALTCHA difficulty is nonzero")?;
+        let mask = compute_mask_zero_nibbles(difficulty);
         for q in 0..5 {
             for r in 0..5 {
                 for pbkdf2 in [false, true] {
-                    let msg = crate::message::AltchaMessage {
+                    let message = crate::message::AltchaMessage {
                         nonce: [
                             q, 0xc5, 0x9c, 0x5f, 0x4b, 0x3a, 0xeb, 0x1f, 0xf3, 0x4d, 0x44, 0xab,
                             0xd1, 0x5f, 0x0f, 0x15,
@@ -1024,45 +996,37 @@ pub(crate) mod tests {
                         pbkdf2,
                         key_length: 32.try_into()?,
                     };
-
                     let mut solver =
-                        factory(msg.clone()).context("ALTCHA matrix solver unavailable")?;
-                    let mask = crate::compute_mask_zero_nibbles(
-                        NonZeroU8::new(3).context("ALTCHA difficulty is nonzero")?,
-                    );
+                        factory(message.clone()).context("ALTCHA matrix solver unavailable")?;
                     let (nonce, hash) = solver
-                        .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(0, mask)
+                        .solve::<SOLVE_TYPE_MASK>(0, mask)
                         .context("ALTCHA matrix solver failed")?;
-                    assert_eq!(nonce >> 32, 0);
                     let nonce = u32::try_from(nonce)?;
                     assert_eq!(hash[0] & u32::try_from(mask >> 32)?, 0);
 
                     let mut expected_hash = [0; 32];
                     if pbkdf2 {
-                        let mut password = [0; 16 + 4];
-                        password[..16].copy_from_slice(&msg.nonce);
-                        password[16..16 + 4].copy_from_slice(&nonce.to_be_bytes());
+                        let mut password = [0; 20];
+                        password[..16].copy_from_slice(&message.nonce);
+                        password[16..].copy_from_slice(&nonce.to_be_bytes());
                         ::pbkdf2::pbkdf2::<Hmac<Sha256>>(
                             &password,
-                            &msg.salt,
+                            &message.salt,
                             64,
                             &mut expected_hash,
                         )?;
                     } else {
-                        let mut password = [0; 16 * 2 + 4];
-                        password[..16].copy_from_slice(&msg.salt);
-                        password[16..32].copy_from_slice(&msg.nonce);
-                        password[32..32 + 4].copy_from_slice(&nonce.to_be_bytes());
+                        let mut password = [0; 36];
+                        password[..16].copy_from_slice(&message.salt);
+                        password[16..32].copy_from_slice(&message.nonce);
+                        password[32..].copy_from_slice(&nonce.to_be_bytes());
                         let mut data = password.as_slice();
-                        let mut digest;
                         for _ in 0..64 {
-                            digest = ::sha2::Sha256::digest(data);
-                            data = digest.as_slice();
+                            expected_hash = Sha256::digest(data).into();
+                            data = &expected_hash;
                         }
-                        expected_hash = data.try_into()?;
                     }
-
-                    let expected_hash_u32 = core::array::from_fn(|i| {
+                    let expected_words = core::array::from_fn(|i| {
                         let base = i * 4;
                         u32::from_be_bytes([
                             expected_hash[base],
@@ -1071,13 +1035,22 @@ pub(crate) mod tests {
                             expected_hash[base + 3],
                         ])
                     });
-                    assert_eq!(hash, expected_hash_u32);
+                    assert_eq!(hash, expected_words);
                 }
             }
         }
+        Ok(())
+    }
 
-        for key_length in [1u32, 4, 5, 8, 12, 16, 20, 24, 28, 31] {
-            let msg = crate::message::AltchaMessage {
+    fn validate_altcha_truncated_keys<S, F>(factory: &mut F) -> anyhow::Result<()>
+    where
+        S: Solver<Output = [u32; 8]>,
+        F: FnMut(crate::message::AltchaMessage) -> Option<S>,
+    {
+        let difficulty = NonZeroU8::new(1).context("ALTCHA difficulty is nonzero")?;
+        let mask = compute_mask_zero_nibbles(difficulty);
+        for key_length in [1_u32, 4, 5, 8, 12, 16, 20, 24, 28, 31] {
+            let message = crate::message::AltchaMessage {
                 nonce: [0x35; 16],
                 salt: [0xa7; 16],
                 cost: 3.try_into()?,
@@ -1085,49 +1058,54 @@ pub(crate) mod tests {
                 key_length: key_length.try_into()?,
             };
             let mut solver =
-                factory(msg.clone()).context("ALTCHA truncated-key solver unavailable")?;
-            let mask = crate::compute_mask_zero_nibbles(
-                NonZeroU8::new(1).context("ALTCHA difficulty is nonzero")?,
-            );
+                factory(message.clone()).context("ALTCHA truncated-key solver unavailable")?;
             let (nonce, hash) = solver
-                .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(0, mask)
+                .solve::<SOLVE_TYPE_MASK>(0, mask)
                 .context("truncated-key solver failed")?;
             let nonce = u32::try_from(nonce).context("ALTCHA counter fits u32")?;
 
-            let mut first = [0u8; 36];
-            first[..16].copy_from_slice(&msg.salt);
-            first[16..32].copy_from_slice(&msg.nonce);
+            let mut first = [0_u8; 36];
+            first[..16].copy_from_slice(&message.salt);
+            first[16..32].copy_from_slice(&message.nonce);
             first[32..].copy_from_slice(&nonce.to_be_bytes());
             let mut digest = Sha256::digest(first);
-            for _ in 1..msg.cost.get() {
+            for _ in 1..message.cost.get() {
                 digest = Sha256::digest(&digest[..usize::try_from(key_length)?]);
             }
             let expected = core::array::from_fn(|i| {
+                let base = i * 4;
                 u32::from_be_bytes([
-                    digest[i * 4],
-                    digest[i * 4 + 1],
-                    digest[i * 4 + 2],
-                    digest[i * 4 + 3],
+                    digest[base],
+                    digest[base + 1],
+                    digest[base + 2],
+                    digest[base + 3],
                 ])
             });
             assert_eq!(
                 hash, expected,
-                "ALTCHA nested key_length={key_length}, nonce={nonce}"
+                "ALTCHA nested key_length={key_length}, nonce={nonce}",
             );
         }
+        Ok(())
+    }
 
-        let resume_message = crate::message::AltchaMessage {
+    fn validate_altcha_resume<S, F>(factory: &mut F) -> anyhow::Result<()>
+    where
+        S: Solver<Output = [u32; 8]>,
+        F: FnMut(crate::message::AltchaMessage) -> Option<S>,
+    {
+        let message = crate::message::AltchaMessage {
             nonce: [0x42; 16],
             salt: [0x91; 16],
             cost: 1.try_into()?,
             pbkdf2: false,
             key_length: 32.try_into()?,
         };
-        let target_nonce = 4u32;
+        let target_nonce = 4_u32;
         let reference = |counter: u32| {
-            let mut bytes = [0u8; 36];
-            bytes[..16].copy_from_slice(&resume_message.salt);
-            bytes[16..32].copy_from_slice(&resume_message.nonce);
+            let mut bytes = [0_u8; 36];
+            bytes[..16].copy_from_slice(&message.salt);
+            bytes[16..32].copy_from_slice(&message.nonce);
             bytes[32..].copy_from_slice(&counter.to_be_bytes());
             Sha256::digest(bytes)
         };
@@ -1144,38 +1122,47 @@ pub(crate) mod tests {
         ]);
         let mask = 0xffff_ffff_0000_0000;
         for counter in 0..target_nonce {
-            let digest = reference(counter);
             assert_ne!(
-                &digest[..4],
+                &reference(counter)[..4],
                 &target_digest[..4],
-                "resume test needs a unique 32-bit prefix before the target"
+                "resume test needs a unique 32-bit prefix before the target",
             );
         }
 
-        let mut solver = factory(resume_message).context("ALTCHA resume solver unavailable")?;
+        let mut solver = factory(message).context("ALTCHA resume solver unavailable")?;
         solver.set_limit(1);
-        assert!(
-            solver
-                .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(target, mask)
-                .is_none()
-        );
+        assert!(solver.solve::<SOLVE_TYPE_MASK>(target, mask).is_none());
         assert_eq!(solver.attempted_nonces(), 1);
 
-        solver.set_limit(u64::from(target_nonce) + 1);
+        let final_limit = u64::from(target_nonce) + 1;
+        solver.set_limit(final_limit);
         let (nonce, hash) = solver
-            .solve::<{ crate::solver::SOLVE_TYPE_MASK }>(target, mask)
+            .solve::<SOLVE_TYPE_MASK>(target, mask)
             .context("resumed ALTCHA search should reach counter 4")?;
         assert_eq!(nonce, u64::from(target_nonce));
         let expected = core::array::from_fn(|i| {
+            let base = i * 4;
             u32::from_be_bytes([
-                target_digest[i * 4],
-                target_digest[i * 4 + 1],
-                target_digest[i * 4 + 2],
-                target_digest[i * 4 + 3],
+                target_digest[base],
+                target_digest[base + 1],
+                target_digest[base + 2],
+                target_digest[base + 3],
             ])
         });
         assert_eq!(hash, expected);
-        assert_eq!(solver.attempted_nonces(), u64::from(target_nonce) + 1);
+        assert_eq!(solver.attempted_nonces(), final_limit);
         Ok(())
+    }
+
+    pub fn test_altcha_validator<
+        S: Solver<Output = [u32; 8]>,
+        F: FnMut(crate::message::AltchaMessage) -> Option<S>,
+    >(
+        mut factory: F,
+    ) -> anyhow::Result<()> {
+        validate_altcha_known_answers::<S, _>(&mut factory)?;
+        validate_altcha_matrix::<S, _>(&mut factory)?;
+        validate_altcha_truncated_keys::<S, _>(&mut factory)?;
+        validate_altcha_resume::<S, _>(&mut factory)
     }
 }

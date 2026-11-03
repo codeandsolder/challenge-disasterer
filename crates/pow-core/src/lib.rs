@@ -617,7 +617,7 @@ mod tests {
         let mask_lo = u32::try_from(mask & u64::from(u32::MAX))?;
         assert_eq!(mask_lo, 0);
         let hash_partial = (!mask_hi).to_le_bytes();
-        eprintln!("hash_partial: {:02x?}", hash_partial);
+        eprintln!("hash_partial: {hash_partial:02x?}");
         let mut test = [0; 32];
         test[..4].copy_from_slice(&hash_partial);
         assert!(check_small(&test, 7));

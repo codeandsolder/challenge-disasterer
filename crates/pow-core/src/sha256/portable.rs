@@ -97,13 +97,11 @@ mod tests {
         let mut blocks = [[0_u32; 16]; LANES];
         for lane_index in 0..LANES {
             let lane = u32::try_from(lane_index)?;
-            for word in 0..8 {
-                states[lane_index][word] =
-                    deterministic_test_word(lane, u32::try_from(word)?, 0x5354_4154);
+            for (word, state) in states[lane_index].iter_mut().enumerate() {
+                *state = deterministic_test_word(lane, u32::try_from(word)?, 0x5354_4154);
             }
-            for word in 0..16 {
-                blocks[lane_index][word] =
-                    deterministic_test_word(lane, u32::try_from(word)?, 0x424c_4f43);
+            for (word, block) in blocks[lane_index].iter_mut().enumerate() {
+                *block = deterministic_test_word(lane, u32::try_from(word)?, 0x424c_4f43);
             }
         }
         let mut state_simd: [Simd<u32, LANES>; 8] = core::array::from_fn(|word| {

@@ -683,12 +683,12 @@ mod tests {
     fn test_solve_decimal() -> anyhow::Result<()> {
         crate::solver::tests::test_decimal_validator::<DecimalSolver, _>(
             |prefix, search_space| {
-                if let Some(solver) = SingleBlockMessage::new(prefix, search_space).map(Into::into)
-                {
-                    Some(DecimalSolver::SingleBlock(solver))
-                } else {
-                    DoubleBlockMessage::new(prefix, search_space).map(Into::into)
-                }
+                SingleBlockMessage::new(prefix, search_space)
+                    .map(Into::into)
+                    .map_or_else(
+                        || DoubleBlockMessage::new(prefix, search_space).map(Into::into),
+                        |solver| Some(DecimalSolver::SingleBlock(solver)),
+                    )
             },
         )?;
         Ok(())
