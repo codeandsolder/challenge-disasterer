@@ -8,7 +8,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -27,17 +27,55 @@ jobs:
         cargo fmt --manifest-path vendor/argon2-fast/Cargo.toml -- --check
         CARGO_TARGET_DIR="$CARGO_TARGET_DIR/argon2-soft" RUSTFLAGS='--cfg argon2_backend="soft"' cargo test --manifest-path vendor/argon2-fast/Cargo.toml --all-features
 
-  rust-host:
-    name: Host Rust (shared sccache)
+  rust-solvers:
+    name: Solver core Rust (shared sccache)
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
     with:
       rust-toolchain: "nightly-2026-11-02"
-      rust-components: "clippy rustfmt"
+      timeout-minutes: 15
+      command: |
+        cargo test --locked -p challenge-solvers --all-features
+
+  rust-app:
+    name: Application Rust (shared sccache)
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
+    with:
+      rust-toolchain: "nightly-2026-11-02"
+      timeout-minutes: 15
+      command: |
+        cargo test --locked -p challenge-disasterer --all-features
+
+  rust-tools:
+    name: Rust tools (shared sccache)
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
+    with:
+      rust-toolchain: "nightly-2026-11-02"
+      rust-components: "rustfmt"
       timeout-minutes: 15
       command: |
         cargo fmt --check
-        cargo test --locked --workspace --all-features
-        cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+        cargo test --locked -p anubis-argon2
+        cargo test --locked -p challenge-disasterer-anubis-e2e
+        cargo test --locked -p challenge-disasterer-mcaptcha-e2e
+        cargo test --locked -p challenge-disasterer-wasm-simd128-bench
+        cargo test --locked -p challenge-disasterer-simd-width-bench
+
+  rust-matrix:
+    name: Solver matrix Rust (shared sccache)
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
+    with:
+      rust-toolchain: "nightly-2026-11-02"
+      timeout-minutes: 15
+      command: |
+        cargo test --locked -p challenge-disasterer-solver-matrix --all-features
+
+  rust-special:
+    name: Scalar and AVX-512 compile gates (shared sccache)
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
+    with:
+      rust-toolchain: "nightly-2026-11-02"
+      timeout-minutes: 15
+      command: |
         cargo test --locked -p challenge-disasterer-solver-matrix --no-default-features
         cargo clippy --locked -p challenge-disasterer-solver-matrix --no-default-features -- -D warnings
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-feature=+avx512f -D warnings' cargo test --locked --target x86_64-unknown-linux-gnu -p challenge-solvers --no-default-features --features std,portable-simd,compare-64bit --no-run
