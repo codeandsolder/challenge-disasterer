@@ -2,7 +2,7 @@
 //!
 //! The same Rust implementation targets native `wgpu` backends and browser WebGPU on `wasm32`.
 
-use core::{fmt, num::NonZeroU8};
+use core::{fmt, future::Future, num::NonZeroU8, pin::Pin};
 use std::{borrow::Cow, string::String, vec::Vec};
 
 use bytemuck::{Pod, Zeroable};
@@ -369,21 +369,24 @@ fn select_gpu_adapter(
 
 impl GpuContext {
     /// Enumerate usable non-CPU GPU adapters.
-    pub async fn adapter_names() -> Vec<String> {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let mut names = instance
-            .enumerate_adapters(wgpu::Backends::VULKAN)
-            .await
-            .into_iter()
-            .filter_map(|adapter| {
-                let info = adapter.get_info();
-                (info.device_type != wgpu::DeviceType::Cpu).then_some(info.name)
-            })
-            .collect::<Vec<_>>();
-        names.sort();
-        names.dedup();
-        names
+    pub fn adapter_names() -> Pin<Box<dyn Future<Output = Vec<String>>>> {
+        Box::pin(async {
+            let instance = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
+            let mut names = instance
+                .enumerate_adapters(wgpu::Backends::VULKAN)
+                .await
+                .into_iter()
+                .filter_map(|adapter| {
+                    let info = adapter.get_info();
+                    (info.device_type != wgpu::DeviceType::Cpu).then_some(info.name)
+                })
+                .collect::<Vec<_>>();
+            names.sort();
+            names.dedup();
+            names
+        })
     }
 
     /// Create a GPU solver. `WGPU_ADAPTER_NAME` forces a matching adapter; otherwise
@@ -392,48 +395,51 @@ impl GpuContext {
     /// # Errors
     ///
     /// Returns an error if no requested/usable adapter is available or the device cannot be created.
-    pub async fn create() -> Result<Self, GpuError> {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = select_gpu_adapter(&instance).await?;
-        let info = adapter.get_info();
-        let adapter_name = format!("{} ({:?}, {})", info.name, info.backend, info.driver);
-        let limits = adapter.limits();
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_limits: wgpu::Limits::downlevel_defaults(),
-                ..wgpu::DeviceDescriptor::default()
+    pub fn create() -> Pin<Box<dyn Future<Output = Result<Self, GpuError>>>> {
+        Box::pin(async {
+            let instance = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
+            let adapter = select_gpu_adapter(&instance).await?;
+            let info = adapter.get_info();
+            let adapter_name = format!("{} ({:?}, {})", info.name, info.backend, info.driver);
+            let limits = adapter.limits();
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    required_limits: wgpu::Limits::downlevel_defaults(),
+                    ..wgpu::DeviceDescriptor::default()
+                })
+                .await
+                .map_err(|e| GpuError::new(format!("request GPU device: {e}")))?;
+
+            let pipelines = GpuPipelines::create(&device);
+            let buffers = GpuBuffers::create(&device);
+            let bindings = GpuBindings::create(&device, &pipelines, &buffers);
+
+            Ok(Self {
+                device,
+                queue,
+                pipeline: pipelines.anubis,
+                in_buf: buffers.anubis_input,
+                generic_pipeline: pipelines.generic,
+                double_pipeline: pipelines.double,
+                goaway_pipeline: pipelines.goaway,
+                binary_pipeline: pipelines.binary,
+                cerberus_pipeline: pipelines.cerberus,
+                altcha_pipeline: pipelines.altcha,
+                generic_in_buf: buffers.generic_input,
+                out_buf: buffers.output,
+                staging: buffers.staging,
+                bind_group: bindings.anubis,
+                generic_bind_group: bindings.generic,
+                double_bind_group: bindings.double,
+                goaway_bind_group: bindings.goaway,
+                binary_bind_group: bindings.binary,
+                cerberus_bind_group: bindings.cerberus,
+                altcha_bind_group: bindings.altcha,
+                max_wgs: limits.max_compute_workgroups_per_dimension,
+                adapter: adapter_name,
             })
-            .await
-            .map_err(|e| GpuError::new(format!("request GPU device: {e}")))?;
-
-        let pipelines = GpuPipelines::create(&device);
-        let buffers = GpuBuffers::create(&device);
-        let bindings = GpuBindings::create(&device, &pipelines, &buffers);
-
-        Ok(Self {
-            device,
-            queue,
-            pipeline: pipelines.anubis,
-            in_buf: buffers.anubis_input,
-            generic_pipeline: pipelines.generic,
-            double_pipeline: pipelines.double,
-            goaway_pipeline: pipelines.goaway,
-            binary_pipeline: pipelines.binary,
-            cerberus_pipeline: pipelines.cerberus,
-            altcha_pipeline: pipelines.altcha,
-            generic_in_buf: buffers.generic_input,
-            out_buf: buffers.output,
-            staging: buffers.staging,
-            bind_group: bindings.anubis,
-            generic_bind_group: bindings.generic,
-            double_bind_group: bindings.double,
-            goaway_bind_group: bindings.goaway,
-            binary_bind_group: bindings.binary,
-            cerberus_bind_group: bindings.cerberus,
-            altcha_bind_group: bindings.altcha,
-            max_wgs: limits.max_compute_workgroups_per_dimension,
-            adapter: adapter_name,
         })
     }
 
@@ -2072,38 +2078,39 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>){{
     )
 }
 
-fn multi_layout_shader_source() -> String {
-    let build_rounds = |start: usize| {
-        let mut rounds = String::new();
-        for (t, k) in crate::sha256::K32.iter().enumerate().skip(start) {
-            let i = t & 15;
-            if t >= 16 {
-                append_fmt(
-                    &mut rounds,
-                    format_args!(
-                        "w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",
-                        (t - 2) & 15,
-                        (t - 2) & 15,
-                        (t - 2) & 15,
-                        (t - 7) & 15,
-                        (t - 15) & 15,
-                        (t - 15) & 15,
-                        (t - 15) & 15
-                    ),
-                );
-            }
+fn multi_layout_rounds(start: usize) -> String {
+    let mut rounds = String::new();
+    for (t, k) in crate::sha256::K32.iter().enumerate().skip(start) {
+        let i = t & 15;
+        if t >= 16 {
             append_fmt(
                 &mut rounds,
                 format_args!(
-                    "{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"
+                    "w{i}=(rotr(w{},17u)^rotr(w{},19u)^(w{}>>10u))+w{}+(rotr(w{},7u)^rotr(w{},18u)^(w{}>>3u))+w{i};\n",
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 2) & 15,
+                    (t - 7) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15,
+                    (t - 15) & 15
                 ),
             );
         }
-        rounds
-    };
-    let rounds = build_rounds(0);
-    let rounds9 = build_rounds(9);
-    let rounds13 = build_rounds(13);
+        append_fmt(
+            &mut rounds,
+            format_args!(
+                "{{let t1=h+(rotr(e,6u)^rotr(e,11u)^rotr(e,25u))+(g^(e&(f^g)))+0x{k:08x}u+w{i};let t2=(rotr(a,2u)^rotr(a,13u)^rotr(a,22u))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}}\n"
+            ),
+        );
+    }
+    rounds
+}
+
+fn multi_layout_shader_source() -> String {
+    let rounds = multi_layout_rounds(0);
+    let rounds9 = multi_layout_rounds(9);
+    let rounds13 = multi_layout_rounds(13);
     format!(
         r"
 const IV:array<u32,8>=array<u32,8>(0x6a09e667u,0xbb67ae85u,0x3c6ef372u,0xa54ff53au,0x510e527fu,0x9b05688cu,0x1f83d9abu,0x5be0cd19u);

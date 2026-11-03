@@ -118,8 +118,12 @@ impl Plucker for () {}
 // ARX network using altered data layout
 #[inline]
 #[target_feature(enable = "sse4.1,sha")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "unrolled SHA-NI round network keeps the fixed message schedule and register layout visible to codegen"
+)]
 pub fn multiway_arx_abef_cdgh<const BEGIN_ROUND_BY_4: usize, const LANES: usize, P: Plucker>(
-    state: [&mut [__m128i; 2]; LANES],
+    state: &mut [&mut [__m128i; 2]; LANES],
     block_template: &[u32; 16],
     mut plucker: P,
 ) {
@@ -316,7 +320,7 @@ mod tests {
         let mut prepared_state_1 = prepare_state(&state);
 
         multiway_arx_abef_cdgh::<0, 2, ()>(
-            [&mut prepared_state_0, &mut prepared_state_1],
+            &mut [&mut prepared_state_0, &mut prepared_state_1],
             &input_block,
             (),
         );

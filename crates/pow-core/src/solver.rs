@@ -98,6 +98,113 @@ pub(crate) fn increment_ascii_decimal(digits: &mut [u8]) -> bool {
     true
 }
 
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+struct PreparedBinaryBlocks {
+    blocks: [[u8; 64]; 2],
+    current_block: usize,
+    first_block: [u32; 16],
+    second_block_schedule: [u32; 64],
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+fn prepare_binary_blocks(message: &crate::message::BinaryMessage) -> Option<PreparedBinaryBlocks> {
+    let salt = &message.salt_residual[..message.salt_residual_len];
+    let mut blocks = [[0u8; 64]; 2];
+    blocks[0][..salt.len()].copy_from_slice(salt);
+    let mut ptr = salt.len() + usize::from(message.nonce_byte_count.get());
+    let mut current_block = ptr / 64;
+    ptr %= 64;
+
+    blocks[current_block][ptr] = 0x80;
+    ptr += 1;
+    if ptr + 8 > 64 {
+        current_block = 1;
+    }
+    let bit_length = message.message_length.checked_mul(8)?;
+    blocks[current_block][56..].copy_from_slice(&bit_length.to_be_bytes());
+
+    let first_chunks = blocks[0].as_chunks::<4>().0;
+    let first_block = core::array::from_fn(|i| u32::from_be_bytes(first_chunks[i]));
+    let mut second_block_schedule = [0; 64];
+    if current_block == 1 {
+        let second_chunks = blocks[1].as_chunks::<4>().0;
+        for (word, chunk) in second_block_schedule[..16].iter_mut().zip(second_chunks) {
+            *word = u32::from_be_bytes(*chunk);
+        }
+        crate::sha256::do_message_schedule_k_w(&mut second_block_schedule);
+    }
+
+    Some(PreparedBinaryBlocks {
+        blocks,
+        current_block,
+        first_block,
+        second_block_schedule,
+    })
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+fn patch_cerberus_decimal_residual(
+    mut message: [u8; 64],
+    residual_len: usize,
+    position_mod: usize,
+    resid0: u8,
+    resid1: u8,
+) -> [u8; 64] {
+    match position_mod {
+        0 | 3 => {
+            message[residual_len] = resid0 + b'0';
+            message[residual_len + 8] = resid1 + b'0';
+        }
+        1 => {
+            message[residual_len + 7] = resid0 + b'0';
+            message[residual_len + 8] = resid1 + b'0';
+        }
+        2 => {
+            message[residual_len] = resid0 + b'0';
+            message[residual_len + 1] = resid1 + b'0';
+        }
+        _ => unreachable!(),
+    }
+    message
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+fn cerberus_decimal_nonce(
+    position_mod: usize,
+    middle_word: u64,
+    success_lane: u64,
+    resid0: u8,
+    resid1: u8,
+) -> u64 {
+    match position_mod {
+        0 => {
+            10 * middle_word
+                + 100_000 * success_lane
+                + 100_000_000 * u64::from(resid0)
+                + u64::from(resid1)
+        }
+        1 => {
+            100 * middle_word
+                + 1_000_000 * success_lane
+                + 10 * u64::from(resid0)
+                + u64::from(resid1)
+        }
+        2 => {
+            1000 * middle_word
+                + success_lane
+                + 100_000_000 * u64::from(resid0)
+                + 10_000_000 * u64::from(resid1)
+        }
+        3 => {
+            10000 * middle_word
+                + 10 * success_lane
+                + 100_000_000 * u64::from(resid0)
+                + u64::from(resid1)
+        }
+        _ => unreachable!(),
+    }
+}
+
 /// Less than test (such as Anubis)
 pub const SOLVE_TYPE_LT: u8 = 1;
 /// Greater than test (such as mCaptcha)

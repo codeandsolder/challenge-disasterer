@@ -362,63 +362,22 @@ impl crate::solver::Solver for BinarySolver {
             return solver.solve::<TYPE>(target, mask);
         }
 
-        let salt = &self.message.salt_residual[..self.message.salt_residual_len];
-        let mut blocks = [[0u8; 64]; 2];
-        blocks[0][..salt.len()].copy_from_slice(salt);
-        let mut ptr = salt.len();
-        let mut cur_block = 0;
-
-        for _ in 0..self.message.nonce_byte_count.get() {
-            blocks[cur_block][ptr] = 0;
-            ptr += 1;
-            if ptr == 64 {
-                cur_block = 1;
-                ptr = 0;
-            }
-        }
-        blocks[cur_block][ptr] = 0x80;
-        ptr += 1;
-        if ptr + 8 > 64 {
-            cur_block = 1;
-        }
-        let bit_length = u64::try_from(self.message.message_length)
-            .ok()?
-            .checked_mul(8)?;
-        blocks[cur_block][(64 - 8)..].copy_from_slice(&bit_length.to_be_bytes());
-
-        let used_blocks = &mut blocks[..=cur_block];
-
-        let mut block_template_be = [0; 16];
-        for i in 0..16 {
-            block_template_be[i] = u32::from_be_bytes([
-                used_blocks[0][i * 4],
-                used_blocks[0][i * 4 + 1],
-                used_blocks[0][i * 4 + 2],
-                used_blocks[0][i * 4 + 3],
-            ]);
-        }
-
-        let mut second_block_schedule = [0; 64];
-        if cur_block == 1 {
-            for i in 0..16 {
-                second_block_schedule[i] = u32::from_be_bytes([
-                    used_blocks[1][i * 4],
-                    used_blocks[1][i * 4 + 1],
-                    used_blocks[1][i * 4 + 2],
-                    used_blocks[1][i * 4 + 3],
-                ]);
-            }
-            crate::sha256::do_message_schedule_k_w(&mut second_block_schedule);
-        }
+        let super::PreparedBinaryBlocks {
+            mut blocks,
+            current_block,
+            first_block,
+            second_block_schedule,
+        } = super::prepare_binary_blocks(&self.message)?;
+        let used_blocks = &mut blocks[..=current_block];
 
         macro_rules! dispatch {
             ($skipped_rounds:expr) => {
                 // SAFETY: Solver::solve checked AVX-512F before entering this dispatch.
                 unsafe {
-                    if cur_block == 1 {
+                    if current_block == 1 {
                         if let Some(nonce) = self.solve_impl::<TYPE, { $skipped_rounds }, true>(
                             self.message.prefix_state,
-                            &block_template_be,
+                            &first_block,
                             &second_block_schedule,
                             self.message.salt_residual_len,
                             self.message.nonce_byte_count,
@@ -436,7 +395,7 @@ impl crate::solver::Solver for BinarySolver {
                     } else {
                         if let Some(nonce) = self.solve_impl::<TYPE, { $skipped_rounds }, false>(
                             self.message.prefix_state,
-                            &block_template_be,
+                            &first_block,
                             &[0; 64],
                             self.message.salt_residual_len,
                             self.message.nonce_byte_count,
@@ -666,24 +625,13 @@ impl crate::solver::Solver for CerberusSolver {
                         if self.attempted_nonces >= self.limit {
                             return None;
                         }
-                        let mut msg = salt_residual;
-
-                        match position_mod {
-                            0 | 3 => {
-                                msg[salt_residual_len] = resid0 + b'0';
-                                msg[salt_residual_len + 8] = resid1 + b'0';
-                            }
-                            1 => {
-                                msg[salt_residual_len + 7] = resid0 + b'0';
-                                msg[salt_residual_len + 8] = resid1 + b'0';
-                            }
-                            2 => {
-                                msg[salt_residual_len] = resid0 + b'0';
-                                msg[salt_residual_len + 1] = resid1 + b'0';
-                            }
-                            _ => unreachable!(),
-                        }
-
+                        let msg = super::patch_cerberus_decimal_residual(
+                            salt_residual,
+                            salt_residual_len,
+                            position_mod,
+                            resid0,
+                            resid1,
+                        );
                         let msg = core::array::from_fn(|i| {
                             u32::from_le_bytes([
                                 msg[i * 4],
@@ -728,36 +676,16 @@ impl crate::solver::Solver for CerberusSolver {
                             15 => dispatch!(15),
                             _ => unreachable!(),
                         } {
-                            let output_nonce = nonce_addend
-                                + match position_mod {
-                                    0 => {
-                                        10 * middle_word
-                                            + 100_000 * success_lane_idx
-                                            + 100_000_000 * u64::from(resid0)
-                                            + u64::from(resid1)
-                                    }
-                                    1 => {
-                                        100 * middle_word
-                                            + 1_000_000 * success_lane_idx
-                                            + 10 * u64::from(resid0)
-                                            + u64::from(resid1)
-                                    }
-                                    2 => {
-                                        1000 * middle_word
-                                            + success_lane_idx
-                                            + 100_000_000 * u64::from(resid0)
-                                            + 10_000_000 * u64::from(resid1)
-                                    }
-                                    3 => {
-                                        10000 * middle_word
-                                            + 10 * success_lane_idx
-                                            + 100_000_000 * u64::from(resid0)
-                                            + u64::from(resid1)
-                                    }
-                                    _ => unreachable!(),
-                                };
-
-                            return Some(output_nonce);
+                            return Some(
+                                nonce_addend
+                                    + super::cerberus_decimal_nonce(
+                                        position_mod,
+                                        middle_word,
+                                        success_lane_idx,
+                                        resid0,
+                                        resid1,
+                                    ),
+                            );
                         }
                     }
                 }

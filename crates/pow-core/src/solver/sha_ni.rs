@@ -270,6 +270,10 @@ impl SingleBlockSolver {
 
     #[inline(never)]
     #[target_feature(enable = "sse4.1,sha")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "SHA-NI decimal hot loop keeps lane state, Gray-code mutation, and target comparison together for codegen"
+    )]
     fn solve_inner<
         const DIGIT_WORD_IDX0_DIV_4_TIMES_4: usize,
         const DIGIT_WORD_IDX0_DIV_4: usize,
@@ -355,7 +359,7 @@ impl SingleBlockSolver {
                 let mut state3 = prepared_state;
 
                 crate::sha256::sha_ni::multiway_arx_abef_cdgh::<{ DIGIT_WORD_IDX0_DIV_4 }, 4, _>(
-                    [&mut state0, &mut state1, &mut state2, &mut state3],
+                    &mut [&mut state0, &mut state1, &mut state2, &mut state3],
                     &self.message.message,
                     SingleBlockLaneIdPlucker::<
                         DIGIT_WORD_IDX0_DIV_4,
@@ -567,6 +571,10 @@ impl crate::solver::Solver for DoubleBlockSolver {
 
 impl DoubleBlockSolver {
     #[target_feature(enable = "sse4.1,sha")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "SHA-NI double-block hot loop keeps four lane states and terminal compression local for codegen"
+    )]
     fn solve_impl<const TYPE: u8>(&mut self, target: u64, mask: u64) -> Option<(u64, [u32; 8])> {
         if self.attempted_nonces >= self.limit {
             return None;
@@ -622,7 +630,7 @@ impl DoubleBlockSolver {
                 let mut states3 = prepared_state;
 
                 crate::sha256::sha_ni::multiway_arx_abef_cdgh::<3, 4, DoubleBlockLaneIdPlucker>(
-                    [&mut states0, &mut states1, &mut states2, &mut states3],
+                    &mut [&mut states0, &mut states1, &mut states2, &mut states3],
                     &msg0,
                     DoubleBlockLaneIdPlucker {
                         lane_index_value_v: &lane_index_value_v,
@@ -643,7 +651,7 @@ impl DoubleBlockSolver {
                 // this isn't really SIMD so we can't really amortize the cost of fetching message schedule
                 // so let's compute it with sha-ni
                 crate::sha256::sha_ni::multiway_arx_abef_cdgh::<0, 4, _>(
-                    [&mut states0, &mut states1, &mut states2, &mut states3],
+                    &mut [&mut states0, &mut states1, &mut states2, &mut states3],
                     &terminal_message,
                     (),
                 );
@@ -876,7 +884,7 @@ impl GoAwaySolver {
                 message_block[9] = low_word_u32;
 
                 crate::sha256::sha_ni::multiway_arx_abef_cdgh::<2, 4, _>(
-                    [&mut states0, &mut states1, &mut states2, &mut states3],
+                    &mut [&mut states0, &mut states1, &mut states2, &mut states3],
                     &message_block,
                     GoAwayLaneIdPlucker,
                 );
