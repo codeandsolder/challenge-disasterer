@@ -25,6 +25,9 @@ jobs:
         implementation: [auto, safe]
     steps:
       - uses: actions/checkout@v7
+
+      - name: Setup canonical sccache
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
       - uses: actions/setup-node@v7
         with:
           node-version: 26
@@ -35,6 +38,10 @@ jobs:
           CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-altcha-e2e.sh
 
+      - name: Finalize canonical sccache
+        if: always()
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+
   capjs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -44,6 +51,9 @@ jobs:
         implementation: [auto, safe]
     steps:
       - uses: actions/checkout@v7
+
+      - name: Setup canonical sccache
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
       - uses: actions/setup-node@v7
         with:
           node-version: 26
@@ -53,6 +63,10 @@ jobs:
         env:
           CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-capjs-e2e.sh
+
+      - name: Finalize canonical sccache
+        if: always()
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
 
   cerberus:
     runs-on: ubuntu-latest
@@ -64,6 +78,9 @@ jobs:
         upstream_ref: [dist, v0.4.9, v0.4.8, v0.4.7, v0.4.6, v0.4.5]
     steps:
       - uses: actions/checkout@v7
+
+      - name: Setup canonical sccache
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
       - uses: actions/setup-node@v7
         with:
           node-version: 26
@@ -78,6 +95,10 @@ jobs:
           CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-cerberus-e2e.sh
 
+      - name: Finalize canonical sccache
+        if: always()
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+
   goaway:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -87,6 +108,9 @@ jobs:
         implementation: [auto, safe]
     steps:
       - uses: actions/checkout@v7
+
+      - name: Setup canonical sccache
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
       - uses: actions/setup-go@v7
         with:
           go-version: "1.27.x"
@@ -96,6 +120,10 @@ jobs:
         env:
           CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-goaway-e2e.sh
+
+      - name: Finalize canonical sccache
+        if: always()
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
 
   haphash:
     runs-on: ubuntu-latest
@@ -107,6 +135,9 @@ jobs:
         difficulty: [4, 0]
     steps:
       - uses: actions/checkout@v7
+
+      - name: Setup canonical sccache
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
       - uses: actions/setup-node@v7
         with:
           node-version: 26
@@ -125,11 +156,18 @@ jobs:
           HAPHASH_DIFFICULTY: ${{ matrix.difficulty }}
         run: ./ci/live-haphash-e2e.sh
 
+      - name: Finalize canonical sccache
+        if: always()
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+
   linear:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+
+      - name: Setup canonical sccache
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
       - name: Set up uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
@@ -138,6 +176,10 @@ jobs:
         run: cargo --version
       - name: Verify against live Linear.pub gate
         run: ./ci/live-linear-e2e.sh
+
+      - name: Finalize canonical sccache
+        if: always()
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
 
   mcaptcha:
     runs-on: ubuntu-latest
@@ -148,6 +190,9 @@ jobs:
         implementation: [auto, safe]
     steps:
       - uses: actions/checkout@v7
+
+      - name: Setup canonical sccache
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
       - name: Set up Rust
         run: cargo --version
       - name: Install ripgrep
@@ -156,3 +201,7 @@ jobs:
         env:
           CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-mcaptcha-e2e.sh
+
+      - name: Finalize canonical sccache
+        if: always()
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
