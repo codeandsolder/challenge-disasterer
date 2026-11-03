@@ -976,28 +976,39 @@ impl GpuContext {
         Ok(Some((nonce, hash)))
     }
 
-    async fn read_result(&self) -> Result<Vec<u32>, GpuError> {
-        let slice = self.staging.slice(..);
+    fn read_result(
+        &self,
+    ) -> impl core::future::Future<Output = Result<Vec<u32>, GpuError>> + Send + 'static {
+        let staging = self.staging.clone();
+        let callback_staging = staging.clone();
         let (tx, rx) = futures_channel::oneshot::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
+        staging.map_async(wgpu::MapMode::Read, .., move |result| {
+            let result = result
+                .map_err(|e| GpuError::new(format!("map GPU result: {e}")))
+                .and_then(|()| {
+                    let values = callback_staging
+                        .get_mapped_range(..)
+                        .map(|mapped| bytemuck::cast_slice::<u8, u32>(&mapped).to_vec())
+                        .map_err(|e| GpuError::new(format!("read mapped GPU result: {e}")));
+                    callback_staging.unmap();
+                    values
+                });
             let _ = tx.send(result);
         });
 
         #[cfg(not(target_arch = "wasm32"))]
-        self.device
+        let poll_result = self
+            .device
             .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| GpuError::new(format!("poll GPU: {e}")))?;
+            .map_err(|e| GpuError::new(format!("poll GPU: {e}")));
+        #[cfg(target_arch = "wasm32")]
+        let poll_result: Result<(), GpuError> = Ok(());
 
-        rx.await
-            .map_err(|_| GpuError::new("GPU map callback dropped"))?
-            .map_err(|e| GpuError::new(format!("map GPU result: {e}")))?;
-        let mapped = slice
-            .get_mapped_range()
-            .map_err(|e| GpuError::new(format!("read mapped GPU result: {e}")))?;
-        let values = bytemuck::cast_slice::<u8, u32>(&mapped).to_vec();
-        drop(mapped);
-        self.staging.unmap();
-        Ok(values)
+        async move {
+            poll_result?;
+            rx.await
+                .map_err(|_| GpuError::new("GPU map callback dropped"))?
+        }
     }
 }
 

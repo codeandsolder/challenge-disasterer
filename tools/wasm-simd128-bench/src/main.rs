@@ -11,6 +11,10 @@ mod wasm_bench {
     };
     use serde_json::json;
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "benchmark throughput is approximate floating-point telemetry"
+    )]
     fn measure<S: Solver>(name: &str, mut solver: S, limit: u64) {
         solver.set_limit(limit);
         let started = Instant::now();
@@ -40,29 +44,29 @@ mod wasm_bench {
         );
     }
 
-    pub fn run() {
-        let limit = std::env::args()
-            .nth(1)
-            .map(|value| {
-                value
-                    .parse::<u64>()
-                    .expect("work limit must be a positive integer")
-            })
-            .unwrap_or(1_120_000);
-        assert!(limit > 0, "work limit must be positive");
+    pub fn run() -> Result<(), String> {
+        let limit = match std::env::args().nth(1) {
+            Some(value) => value
+                .parse::<u64>()
+                .map_err(|error| format!("invalid work limit {value:?}: {error}"))?,
+            None => 1_120_000,
+        };
+        if limit == 0 {
+            return Err(String::from("work limit must be positive"));
+        }
 
         let salt = [b'a'; 64];
+        let single = SingleBlockMessage::new(&salt, 0)
+            .ok_or_else(|| String::from("single-block benchmark shape is invalid"))?;
         measure(
             "sha256-single-block",
-            simd128::SingleBlockSolver::from(
-                SingleBlockMessage::new(&salt, 0).expect("single-block benchmark shape"),
-            ),
+            simd128::SingleBlockSolver::from(single),
             limit,
         );
 
         let double = (0..salt.len())
             .find_map(|len| DoubleBlockMessage::new(&salt[..len], 0))
-            .expect("double-block benchmark shape");
+            .ok_or_else(|| String::from("no double-block benchmark shape found"))?;
         measure(
             "sha256-double-block",
             simd128::DoubleBlockSolver::from(double),
@@ -72,7 +76,8 @@ mod wasm_bench {
         measure(
             "sha256-decimal",
             simd128::DecimalSolver::from(
-                DecimalMessage::new(&[b'd'; 96], 0).expect("decimal benchmark shape"),
+                DecimalMessage::new(&[b'd'; 96], 0)
+                    .ok_or_else(|| String::from("decimal benchmark shape is invalid"))?,
             ),
             limit,
         );
@@ -96,16 +101,17 @@ mod wasm_bench {
             "cerberus-decimal",
             simd128::CerberusSolver::from(CerberusMessage::Decimal(
                 CerberusDecimalMessage::new(b"cerberus-decimal-benchmark|", 0)
-                    .expect("Cerberus decimal benchmark shape"),
+                    .ok_or_else(|| String::from("Cerberus decimal benchmark shape is invalid"))?,
             )),
             limit,
         );
+        Ok(())
     }
 }
 
 #[cfg(target_arch = "wasm32")]
-fn main() {
-    wasm_bench::run();
+fn main() -> Result<(), String> {
+    wasm_bench::run()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
