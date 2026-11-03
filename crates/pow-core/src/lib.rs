@@ -1,4 +1,5 @@
 #![feature(portable_simd)]
+#![cfg_attr(feature = "gpu", recursion_limit = "256")]
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 #![doc = "Internal protocol `PoW` solver core for challenge-disasterer."]
 #![deny(missing_docs)]
