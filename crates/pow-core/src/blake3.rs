@@ -253,7 +253,7 @@ mod tests {
             let count_chunks = msg.len().div_ceil(64);
             ctr = 0;
             let (chunks, remainder) = msg.as_chunks::<64>();
-            assert_eq!(remainder, []);
+            assert_eq!(remainder, &[0_u8; 0]);
             let mut output = [0u32; 8];
             for chunk in chunks {
                 let block = core::array::from_fn(|i| {
