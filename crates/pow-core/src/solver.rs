@@ -120,7 +120,7 @@ fn prepare_binary_blocks(message: &crate::message::BinaryMessage) -> Option<Prep
     if ptr + 8 > 64 {
         current_block = 1;
     }
-    let bit_length = message.message_length.checked_mul(8)?;
+    let bit_length = u64::try_from(message.message_length).ok()?.checked_mul(8)?;
     blocks[current_block][56..].copy_from_slice(&bit_length.to_be_bytes());
 
     let first_chunks = blocks[0].as_chunks::<4>().0;
