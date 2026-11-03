@@ -184,7 +184,7 @@ impl AppState {
         #[cfg(feature = "gpu")]
         let (gpu_tx, gpu_rate, gpu_adapter) = if config.gpu_enabled {
             match GpuSolver::create().await {
-                Ok(mut gpu) => {
+                Ok(gpu) => {
                     let adapter = gpu.adapter().to_owned();
                     match gpu.calibrate(config.gpu_calibration_hashes) {
                         Ok(rate) => {

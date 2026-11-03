@@ -9,6 +9,8 @@ use pow_buster::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+const HEX: &[u8; 16] = b"0123456789abcdef";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Challenge {
     pub data: String,

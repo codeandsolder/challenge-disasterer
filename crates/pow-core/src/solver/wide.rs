@@ -766,6 +766,9 @@ fn solve_altcha_nested_impl<const LANES: usize, const TYPE: u8, const KEY_WORDS:
 #[cfg(target_arch = "x86_64")]
 #[expect(
     clippy::similar_names,
+    reason = "HMAC terminology conventionally names the inner and outer pad midstates ipad and opad"
+)]
+#[expect(
     clippy::too_many_lines,
     reason = "PBKDF2 SIMD hot loop keeps ipad/opad midstates and digest chaining local to avoid per-round state plumbing"
 )]

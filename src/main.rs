@@ -20,7 +20,7 @@ mod routing;
 mod service;
 mod stats;
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
 use axum::{
@@ -136,10 +136,11 @@ async fn main() -> anyhow::Result<()> {
         let solver = gpu::GpuSolver::create().await?;
         let adapter = solver.adapter().to_owned();
         let hashes_per_second = solver.calibrate(hashes)?;
-        let solve_ns =
-            Duration::try_from_secs_f64(benchmark_work_as_f64(hashes) / hashes_per_second)
-                .context("benchmark solve duration is not finite")?
-                .as_nanos();
+        let solve_ns = std::time::Duration::try_from_secs_f64(
+            benchmark_work_as_f64(hashes) / hashes_per_second,
+        )
+        .context("benchmark solve duration is not finite")?
+        .as_nanos();
         println!(
             "{}",
             serde_json::json!({
