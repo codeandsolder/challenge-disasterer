@@ -31,7 +31,7 @@ jobs:
         cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
         cargo test --locked -p challenge-disasterer-solver-matrix --no-default-features
         cargo clippy --locked -p challenge-disasterer-solver-matrix --no-default-features -- -D warnings
-        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-feature=+avx512f -D warnings' cargo test --locked --target x86_64-unknown-linux-gnu -p challenge-pow-core --no-default-features --features std,compare-64bit --no-run
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-feature=+avx512f -D warnings' cargo test --locked --target x86_64-unknown-linux-gnu -p challenge-solvers --no-default-features --features std,compare-64bit --no-run
 
   rust-portable:
     name: Portable/MSRV Rust
@@ -75,7 +75,7 @@ jobs:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: node ../../tools/wasm-wasi-runner.mjs
           NODE_NO_WARNINGS: 1
           RUSTFLAGS: -C target-feature=+simd128 -D warnings
-        run: cargo test --locked --target wasm32-wasip1 -p challenge-pow-core --no-default-features --features std,compare-64bit
+        run: cargo test --locked --target wasm32-wasip1 -p challenge-solvers --no-default-features --features std,compare-64bit
 
       - name: Benchmark WASM SIMD128 backend
         env:
@@ -89,5 +89,5 @@ jobs:
         env:
           RUSTFLAGS: -C target-feature=+simd128 -D warnings
         run: |
-          cargo clippy --locked --target wasm32-wasip1 -p challenge-pow-core --no-default-features --features std,compare-64bit -- -D warnings
+          cargo clippy --locked --target wasm32-wasip1 -p challenge-solvers --no-default-features --features std,compare-64bit -- -D warnings
           cargo clippy --locked --target wasm32-wasip1 -p challenge-disasterer-wasm-simd128-bench -- -D warnings

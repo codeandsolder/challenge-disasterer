@@ -1239,9 +1239,9 @@ fn solve_cerberus_binary_impl<const LANES: usize, B: CerberusCompression<LANES>>
     None
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[inline(always)]
-pub fn solve_cerberus_decimal_avx2<
+pub(crate) fn solve_cerberus_decimal_wide<
+    const LANES: usize,
     const CENTER_WORD_IDX: usize,
     const LANE_ID_WORD_IDX: usize,
     const CONSTANT_WORD_COUNT: usize,
@@ -1254,7 +1254,7 @@ pub fn solve_cerberus_decimal_avx2<
     mask: u64,
 ) -> Option<(u64, u64)> {
     solve_cerberus_decimal_impl::<
-        8,
+        LANES,
         CENTER_WORD_IDX,
         LANE_ID_WORD_IDX,
         CONSTANT_WORD_COUNT,
@@ -1263,97 +1263,14 @@ pub fn solve_cerberus_decimal_avx2<
 }
 
 #[inline(always)]
-#[cfg(target_arch = "x86_64")]
-pub fn solve_cerberus_decimal_wide16<
-    const CENTER_WORD_IDX: usize,
-    const LANE_ID_WORD_IDX: usize,
-    const CONSTANT_WORD_COUNT: usize,
->(
-    message: &crate::message::CerberusMessage,
-    msg_tpl: [u32; 16],
-    attempted_nonces: &mut u64,
-    limit: u64,
-    target: u64,
-    mask: u64,
-) -> Option<(u64, u64)> {
-    solve_cerberus_decimal_impl::<
-        16,
-        CENTER_WORD_IDX,
-        LANE_ID_WORD_IDX,
-        CONSTANT_WORD_COUNT,
-        PortableCerberusCompression,
-    >(message, msg_tpl, attempted_nonces, limit, target, mask)
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[inline(always)]
-pub fn solve_cerberus_binary_avx2(
+pub(crate) fn solve_cerberus_binary_wide<const LANES: usize>(
     message: &crate::message::CerberusMessage,
     attempted_nonces: &mut u64,
     limit: u64,
     target: u64,
     mask: u64,
 ) -> Option<u64> {
-    solve_cerberus_binary_impl::<8, PortableCerberusCompression>(
-        message,
-        attempted_nonces,
-        limit,
-        target,
-        mask,
-    )
-}
-
-#[inline(always)]
-#[cfg(target_arch = "x86_64")]
-pub fn solve_cerberus_binary_wide16(
-    message: &crate::message::CerberusMessage,
-    attempted_nonces: &mut u64,
-    limit: u64,
-    target: u64,
-    mask: u64,
-) -> Option<u64> {
-    solve_cerberus_binary_impl::<16, PortableCerberusCompression>(
-        message,
-        attempted_nonces,
-        limit,
-        target,
-        mask,
-    )
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline(always)]
-pub fn solve_cerberus_decimal_wide4<
-    const CENTER_WORD_IDX: usize,
-    const LANE_ID_WORD_IDX: usize,
-    const CONSTANT_WORD_COUNT: usize,
->(
-    message: &crate::message::CerberusMessage,
-    msg_tpl: [u32; 16],
-    attempted_nonces: &mut u64,
-    limit: u64,
-    target: u64,
-    mask: u64,
-) -> Option<(u64, u64)> {
-    solve_cerberus_decimal_impl::<
-        4,
-        CENTER_WORD_IDX,
-        LANE_ID_WORD_IDX,
-        CONSTANT_WORD_COUNT,
-        PortableCerberusCompression,
-    >(message, msg_tpl, attempted_nonces, limit, target, mask)
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline(always)]
-pub fn solve_cerberus_binary_wide4(
-    message: &crate::message::CerberusMessage,
-    attempted_nonces: &mut u64,
-    limit: u64,
-    target: u64,
-    mask: u64,
-) -> Option<u64> {
-    solve_cerberus_binary_impl::<4, PortableCerberusCompression>(
+    solve_cerberus_binary_impl::<LANES, PortableCerberusCompression>(
         message,
         attempted_nonces,
         limit,

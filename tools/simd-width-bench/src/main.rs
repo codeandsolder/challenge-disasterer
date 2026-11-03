@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use pow_core::{
+use challenge_solvers::{
     message::{GoAwayMessage, SingleBlockMessage},
     solver::{SOLVE_TYPE_MASK, Solver, width_bench},
 };
@@ -103,7 +103,7 @@ fn avx2_single(sample: u32, limit: u64) {
         return;
     }
     let salt = [b'a'; 64];
-    let mut solver = pow_core::solver::avx2::SingleBlockSolver::from(
+    let mut solver = challenge_solvers::solver::x86::Avx2SingleBlockSolver::from(
         SingleBlockMessage::new(&salt, 0).expect("single-block benchmark shape"),
     );
     solver.set_limit(limit);
@@ -121,7 +121,7 @@ fn avx512_single(sample: u32, limit: u64) {
         return;
     }
     let salt = [b'a'; 64];
-    let mut solver = pow_core::solver::avx512::SingleBlockSolver::from(
+    let mut solver = challenge_solvers::solver::x86::Avx512SingleBlockSolver::from(
         SingleBlockMessage::new(&salt, 0).expect("single-block benchmark shape"),
     );
     solver.set_limit(limit);

@@ -63,13 +63,19 @@ macro_rules! impl_decimal_solver {
     };
 }
 
-/// AVX-512 solver
+/// Unified x86-64 solver facade.
 #[cfg(target_arch = "x86_64")]
-pub mod avx512;
+pub mod x86;
 
-/// AVX2 solver
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-pub mod avx2;
+/// Shared stateful wrappers for portable wide-SIMD x86 backends.
+#[cfg(target_arch = "x86_64")]
+#[doc(hidden)]
+pub mod wide_backend;
+
+/// Audited x86 target-feature entry points for the portable wide-SIMD kernels.
+#[cfg(target_arch = "x86_64")]
+#[doc(hidden)]
+pub mod wide_backend_arch;
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 /// SHA-NI solver

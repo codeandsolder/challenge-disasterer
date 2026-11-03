@@ -130,7 +130,7 @@ type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
 
 #[cfg(feature = "gpu")]
 async fn solve_general_gpu(
-    gpu: &pow_buster::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     solver: &str,
     challenge: Value,
 ) -> anyhow::Result<classic_pow::Result> {
@@ -267,7 +267,7 @@ impl AppState {
 
         #[cfg(feature = "gpu")]
         let (general_gpu_tx, general_gpu_operational) = if config.gpu_enabled {
-            match pow_buster::gpu::GpuContext::create().await {
+            match challenge_solvers::gpu::GpuContext::create().await {
                 Ok(gpu) => {
                     let adapter = gpu.adapter().to_owned();
                     match gpu.warm_up().await {

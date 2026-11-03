@@ -1,7 +1,7 @@
 use std::{num::NonZeroU8, time::Instant};
 
 use anyhow::{Context, anyhow};
-use pow_buster::{
+use challenge_solvers::{
     DecimalSolver, SingleBlockSolver, compute_mask_zero_nibbles,
     message::{DecimalMessage, SingleBlockMessage},
     solver::{SOLVE_TYPE_MASK, Solver},

@@ -7,10 +7,7 @@ use std::{
 
 use anyhow::{Context as _, Result};
 use argon2::Argon2;
-use clap::{Parser, ValueEnum};
-use hashwx::HashWx;
-use num_bigint::BigUint;
-use pow_core::{
+use challenge_solvers::{
     build_mcaptcha_prefix, compute_mask_cerberus, compute_mask_goaway, compute_mask_zero_nibbles,
     compute_target_mcaptcha,
     message::{
@@ -19,6 +16,9 @@ use pow_core::{
     },
     solver::{SOLVE_TYPE_GT, SOLVE_TYPE_LT, SOLVE_TYPE_MASK, Solver, SolverDyn},
 };
+use clap::{Parser, ValueEnum};
+use hashwx::HashWx;
+use num_bigint::BigUint;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha1::Sha1;
@@ -147,9 +147,9 @@ fn cpu_model() -> String {
 fn condition_ok(ty: u8, target: u64, mask: u64, hash: [u32; 8]) -> bool {
     let value = (u64::from(hash[0]) << 32) | u64::from(hash[1]);
     match ty {
-        pow_core::solver::SOLVE_TYPE_GT => value > target,
-        pow_core::solver::SOLVE_TYPE_LT => value < target,
-        pow_core::solver::SOLVE_TYPE_MASK => value & mask == target & mask,
+        challenge_solvers::solver::SOLVE_TYPE_GT => value > target,
+        challenge_solvers::solver::SOLVE_TYPE_LT => value < target,
+        challenge_solvers::solver::SOLVE_TYPE_MASK => value & mask == target & mask,
         _ => false,
     }
 }
@@ -248,28 +248,39 @@ fn decimal_backends(
     let mut out: Vec<(&'static str, Box<dyn DynPow>)> = vec![
         (
             "safe",
-            Box::new(pow_core::solver::safe::DecimalSolver::from(message()?)),
+            Box::new(challenge_solvers::solver::safe::DecimalSolver::from(
+                message()?,
+            )),
         ),
-        ("auto", Box::new(pow_core::DecimalSolver::from(message()?))),
+        (
+            "auto",
+            Box::new(challenge_solvers::DecimalSolver::from(message()?)),
+        ),
     ];
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("avx2") {
             out.push((
                 "avx2",
-                Box::new(pow_core::solver::avx2::DecimalSolver::from(message()?)),
+                Box::new(challenge_solvers::solver::x86::Avx2DecimalSolver::from(
+                    message()?,
+                )),
             ));
         }
         if std::arch::is_x86_feature_detected!("sha") {
             out.push((
                 "sha-ni",
-                Box::new(pow_core::solver::sha_ni::DecimalSolver::from(message()?)),
+                Box::new(challenge_solvers::solver::sha_ni::DecimalSolver::from(
+                    message()?,
+                )),
             ));
         }
         if std::arch::is_x86_feature_detected!("avx512f") {
             out.push((
                 "avx512",
-                Box::new(pow_core::solver::avx512::DecimalSolver::from(message()?)),
+                Box::new(challenge_solvers::solver::x86::Avx512DecimalSolver::from(
+                    message()?,
+                )),
             ));
         }
     }
@@ -282,22 +293,31 @@ fn binary_backends(
     let mut out: Vec<(&'static str, Box<dyn DynPow>)> = vec![
         (
             "safe",
-            Box::new(pow_core::solver::safe::BinarySolver::from(message()?)),
+            Box::new(challenge_solvers::solver::safe::BinarySolver::from(
+                message()?,
+            )),
         ),
-        ("auto", Box::new(pow_core::BinarySolver::from(message()?))),
+        (
+            "auto",
+            Box::new(challenge_solvers::BinarySolver::from(message()?)),
+        ),
     ];
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("avx2") {
         out.push((
             "avx2",
-            Box::new(pow_core::solver::avx2::BinarySolver::from(message()?)),
+            Box::new(challenge_solvers::solver::x86::Avx2BinarySolver::from(
+                message()?,
+            )),
         ));
     }
     #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("avx512f") {
         out.push((
             "avx512",
-            Box::new(pow_core::solver::avx512::BinarySolver::from(message()?)),
+            Box::new(challenge_solvers::solver::x86::Avx512BinarySolver::from(
+                message()?,
+            )),
         ));
     }
     Ok(out)
@@ -391,28 +411,39 @@ fn goaway_backends(message: impl Fn() -> GoAwayMessage) -> Vec<(&'static str, Bo
     let mut out: Vec<(&'static str, Box<dyn DynPow>)> = vec![
         (
             "safe",
-            Box::new(pow_core::solver::safe::GoAwaySolver::from(message())),
+            Box::new(challenge_solvers::solver::safe::GoAwaySolver::from(
+                message(),
+            )),
         ),
-        ("auto", Box::new(pow_core::GoAwaySolver::from(message()))),
+        (
+            "auto",
+            Box::new(challenge_solvers::GoAwaySolver::from(message())),
+        ),
     ];
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("avx2") {
             out.push((
                 "avx2",
-                Box::new(pow_core::solver::avx2::GoAwaySolver::from(message())),
+                Box::new(challenge_solvers::solver::x86::Avx2GoAwaySolver::from(
+                    message(),
+                )),
             ));
         }
         if std::arch::is_x86_feature_detected!("sha") {
             out.push((
                 "sha-ni",
-                Box::new(pow_core::solver::sha_ni::GoAwaySolver::from(message())),
+                Box::new(challenge_solvers::solver::sha_ni::GoAwaySolver::from(
+                    message(),
+                )),
             ));
         }
         if std::arch::is_x86_feature_detected!("avx512f") {
             out.push((
                 "avx512",
-                Box::new(pow_core::solver::avx512::GoAwaySolver::from(message())),
+                Box::new(challenge_solvers::solver::x86::Avx512GoAwaySolver::from(
+                    message(),
+                )),
             ));
         }
     }
@@ -425,22 +456,31 @@ fn cerberus_backends(
     let mut out: Vec<(&'static str, Box<dyn DynPow>)> = vec![
         (
             "safe",
-            Box::new(pow_core::solver::safe::CerberusSolver::from(message()?)),
+            Box::new(challenge_solvers::solver::safe::CerberusSolver::from(
+                message()?,
+            )),
         ),
-        ("auto", Box::new(pow_core::CerberusSolver::from(message()?))),
+        (
+            "auto",
+            Box::new(challenge_solvers::CerberusSolver::from(message()?)),
+        ),
     ];
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("avx2") {
             out.push((
                 "avx2",
-                Box::new(pow_core::solver::avx2::CerberusSolver::from(message()?)),
+                Box::new(challenge_solvers::solver::x86::Avx2CerberusSolver::from(
+                    message()?,
+                )),
             ));
         }
         if std::arch::is_x86_feature_detected!("avx512f") {
             out.push((
                 "avx512",
-                Box::new(pow_core::solver::avx512::CerberusSolver::from(message()?)),
+                Box::new(challenge_solvers::solver::x86::Avx512CerberusSolver::from(
+                    message()?,
+                )),
             ));
         }
     }
@@ -451,25 +491,27 @@ fn altcha_backends(message: impl Fn() -> AltchaMessage) -> Vec<(&'static str, Bo
     let mut out: Vec<(&'static str, Box<dyn DynPow>)> = vec![
         (
             "safe",
-            Box::new(pow_core::solver::safe::AltchaSha256Solver::from(message())),
+            Box::new(challenge_solvers::solver::safe::AltchaSha256Solver::from(
+                message(),
+            )),
         ),
         (
             "auto",
-            Box::new(pow_core::AltchaSha256Solver::from(message())),
+            Box::new(challenge_solvers::AltchaSha256Solver::from(message())),
         ),
     ];
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("avx2") {
             out.push((
                 "avx2",
-                Box::new(pow_core::solver::avx2::AltchaSha256Solver::from(message())),
+                Box::new(challenge_solvers::solver::x86::Avx2AltchaSha256Solver::from(message())),
             ));
         }
         if std::arch::is_x86_feature_detected!("avx512f") {
             out.push((
                 "avx512",
-                Box::new(pow_core::solver::avx512::AltchaSha256Solver::from(message())),
+                Box::new(challenge_solvers::solver::x86::Avx512AltchaSha256Solver::from(message())),
             ));
         }
     }
@@ -1101,7 +1143,7 @@ fn run_gpu_matrix<'a>(
     args: &'a Args,
 ) -> core::pin::Pin<Box<dyn core::future::Future<Output = Result<()>> + 'a>> {
     Box::pin(async move {
-        let gpu = pow_core::gpu::GpuContext::create()
+        let gpu = challenge_solvers::gpu::GpuContext::create()
             .await
             .context("create generalized WGPU context")?;
         gpu.warm_up()
@@ -1125,7 +1167,7 @@ fn run_gpu_matrix<'a>(
 async fn run_gpu_anubis_haphash_cases(
     meta: &Meta,
     args: &Args,
-    gpu: &pow_core::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     adapter: &str,
     sample: u32,
 ) -> Result<()> {
@@ -1136,7 +1178,7 @@ async fn run_gpu_anubis_haphash_cases(
     let mask = compute_mask_zero_nibbles(difficulty);
     let message =
         DecimalMessage::new(&prefix, 0).context("construct GPU Anubis decimal fixture")?;
-    let mut solver = pow_core::gpu::DecimalSolver::from(message);
+    let mut solver = challenge_solvers::gpu::DecimalSolver::from(message);
     solver.set_limit(args.limit);
     let started = Instant::now();
     let (bench_target, bench_mask, _) = benchmark_condition(args.mode, 0, mask, SOLVE_TYPE_MASK);
@@ -1172,7 +1214,7 @@ async fn run_gpu_anubis_haphash_cases(
         let mask = compute_mask_zero_nibbles(difficulty);
         let message = DecimalMessage::new(prefix.as_bytes(), 0)
             .context("construct GPU haphash decimal fixture")?;
-        let mut solver = pow_core::gpu::DecimalSolver::from(message);
+        let mut solver = challenge_solvers::gpu::DecimalSolver::from(message);
         solver.set_limit(args.limit);
         let started = Instant::now();
         let (bench_target, bench_mask, _) =
@@ -1205,7 +1247,7 @@ async fn run_gpu_anubis_haphash_cases(
 async fn run_gpu_wasm_mcaptcha_cases(
     meta: &Meta,
     args: &Args,
-    gpu: &pow_core::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     adapter: &str,
     sample: u32,
 ) -> Result<()> {
@@ -1217,7 +1259,7 @@ async fn run_gpu_wasm_mcaptcha_cases(
     let nonce_bytes = NonZeroU8::new(4).context("Anubis nonce width must be non-zero")?;
     let binary_message = BinaryMessage::new(&anubis_wasm_data, nonce_bytes)
         .context("construct GPU Anubis binary fixture")?;
-    let mut solver = pow_core::gpu::BinarySolver::from(binary_message);
+    let mut solver = challenge_solvers::gpu::BinarySolver::from(binary_message);
     solver.set_limit(args.limit);
     let started = Instant::now();
     let (bench_target, bench_mask, _) =
@@ -1256,7 +1298,7 @@ async fn run_gpu_wasm_mcaptcha_cases(
     let target = compute_target_mcaptcha(difficulty);
     let message = DecimalMessage::new(&mcaptcha_prefix, 0)
         .context("construct GPU mCaptcha decimal fixture")?;
-    let mut solver = pow_core::gpu::DecimalSolver::from(message);
+    let mut solver = challenge_solvers::gpu::DecimalSolver::from(message);
     solver.set_limit(args.limit);
     let started = Instant::now();
     let (bench_target, bench_mask, bench_ty) =
@@ -1294,7 +1336,7 @@ async fn run_gpu_wasm_mcaptcha_cases(
 async fn run_gpu_capjs_cases(
     meta: &Meta,
     args: &Args,
-    gpu: &pow_core::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     adapter: &str,
     sample: u32,
 ) -> Result<()> {
@@ -1309,7 +1351,7 @@ async fn run_gpu_capjs_cases(
     let cap_message = DecimalMessage::new_f64(&cap_salt, 0)
         .map(|(message, _)| message)
         .context("construct GPU Cap.js decimal fixture")?;
-    let mut solver = pow_core::gpu::DecimalSolver::from(cap_message);
+    let mut solver = challenge_solvers::gpu::DecimalSolver::from(cap_message);
     solver.set_limit(args.limit);
     let started = Instant::now();
     let (bench_target, bench_mask, _) =
@@ -1342,7 +1384,7 @@ async fn run_gpu_capjs_cases(
     let cap_v2_message = DecimalMessage::new_f64(cap_v2_salt.as_bytes(), 0)
         .map(|(message, _)| message)
         .context("construct GPU Cap.js format-2 fixture")?;
-    let mut solver = pow_core::gpu::DecimalSolver::from(cap_v2_message);
+    let mut solver = challenge_solvers::gpu::DecimalSolver::from(cap_v2_message);
     solver.set_limit(args.limit);
     let started = Instant::now();
     let (bench_target, bench_mask, _) =
@@ -1374,7 +1416,7 @@ async fn run_gpu_capjs_cases(
 async fn run_gpu_goaway_case(
     meta: &Meta,
     args: &Args,
-    gpu: &pow_core::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     adapter: &str,
     sample: u32,
 ) -> Result<()> {
@@ -1385,7 +1427,8 @@ async fn run_gpu_goaway_case(
     }
     let d = NonZeroU8::new(20).context("GoAway difficulty must be non-zero")?;
     let mask = compute_mask_goaway(d);
-    let mut solver = pow_core::gpu::GoAwaySolver::from(GoAwayMessage::new_bytes(&go_bytes, 0));
+    let mut solver =
+        challenge_solvers::gpu::GoAwaySolver::from(GoAwayMessage::new_bytes(&go_bytes, 0));
     solver.set_limit(args.limit);
     let started = Instant::now();
     let (bench_target, bench_mask, _) = benchmark_condition(args.mode, 0, mask, SOLVE_TYPE_MASK);
@@ -1416,7 +1459,7 @@ async fn run_gpu_goaway_case(
 async fn run_gpu_cerberus_cases(
     meta: &Meta,
     args: &Args,
-    gpu: &pow_core::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     adapter: &str,
     sample: u32,
 ) -> Result<()> {
@@ -1426,7 +1469,8 @@ async fn run_gpu_cerberus_cases(
     let legacy_mask = compute_mask_cerberus(legacy_d);
     let legacy_message = CerberusDecimalMessage::new(legacy_salt.as_bytes(), 0)
         .context("construct GPU legacy Cerberus fixture")?;
-    let mut solver = pow_core::gpu::CerberusSolver::from(CerberusMessage::Decimal(legacy_message));
+    let mut solver =
+        challenge_solvers::gpu::CerberusSolver::from(CerberusMessage::Decimal(legacy_message));
     solver.set_limit(args.limit);
     let started = Instant::now();
     let (bench_target, bench_mask, _) =
@@ -1455,7 +1499,7 @@ async fn run_gpu_cerberus_cases(
     let salt = format!("matrix-{sample:08x}|3959614364|1759954402|signature|");
     let d = NonZeroU8::new(10).context("Cerberus difficulty must be non-zero")?;
     let mask = compute_mask_cerberus(d);
-    let mut solver = pow_core::gpu::CerberusSolver::from(CerberusMessage::Binary(
+    let mut solver = challenge_solvers::gpu::CerberusSolver::from(CerberusMessage::Binary(
         CerberusBinaryMessage::new(salt.as_bytes(), 0),
     ));
     solver.set_limit(args.limit);
@@ -1488,7 +1532,7 @@ async fn run_gpu_cerberus_cases(
 async fn run_gpu_altcha_cases(
     meta: &Meta,
     args: &Args,
-    gpu: &pow_core::gpu::GpuContext,
+    gpu: &challenge_solvers::gpu::GpuContext,
     adapter: &str,
     sample: u32,
 ) -> Result<()> {
@@ -1505,7 +1549,7 @@ async fn run_gpu_altcha_cases(
             pbkdf2,
             key_length,
         };
-        let mut solver = pow_core::gpu::AltchaSha256Solver::from(message);
+        let mut solver = challenge_solvers::gpu::AltchaSha256Solver::from(message);
         solver.set_limit(args.limit);
         let started = Instant::now();
         let (bench_target, bench_mask, _) =
@@ -1602,7 +1646,7 @@ async fn main() -> Result<()> {
         {
             println!(
                 "{}",
-                serde_json::to_string(&pow_core::gpu::GpuContext::adapter_names().await)?
+                serde_json::to_string(&challenge_solvers::gpu::GpuContext::adapter_names().await)?
             );
             return Ok(());
         }
