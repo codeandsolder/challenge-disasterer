@@ -16,9 +16,9 @@ permissions:
 jobs:
   rust-argon2:
     name: Vendored Argon2 Rust (shared sccache)
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
     with:
-      rust-toolchain: "nightly-2026-11-02"
+      rust-toolchain: "nightly-2026-11-03"
       rust-components: "clippy rustfmt"
       timeout-minutes: 15
       command: |
@@ -29,27 +29,27 @@ jobs:
 
   rust-solvers:
     name: Solver core Rust (shared sccache)
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
     with:
-      rust-toolchain: "nightly-2026-11-02"
+      rust-toolchain: "nightly-2026-11-03"
       timeout-minutes: 15
       command: |
         cargo test --locked -p challenge-solvers --all-features
 
   rust-app:
     name: Application Rust (shared sccache)
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
     with:
-      rust-toolchain: "nightly-2026-11-02"
+      rust-toolchain: "nightly-2026-11-03"
       timeout-minutes: 15
       command: |
         cargo test --locked -p challenge-disasterer --all-features
 
   rust-tools:
     name: Rust tools (shared sccache)
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
     with:
-      rust-toolchain: "nightly-2026-11-02"
+      rust-toolchain: "nightly-2026-11-03"
       rust-components: "rustfmt"
       timeout-minutes: 15
       command: |
@@ -62,18 +62,18 @@ jobs:
 
   rust-matrix:
     name: Solver matrix Rust (shared sccache)
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
     with:
-      rust-toolchain: "nightly-2026-11-02"
+      rust-toolchain: "nightly-2026-11-03"
       timeout-minutes: 15
       command: |
         cargo test --locked -p challenge-disasterer-solver-matrix --all-features
 
   rust-special:
     name: Scalar and AVX-512 compile gates (shared sccache)
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@9be344b41c4c7e53f451d7ab1f66d7d9e7a9a6f4 # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
     with:
-      rust-toolchain: "nightly-2026-11-02"
+      rust-toolchain: "nightly-2026-11-03"
       rust-components: "clippy"
       timeout-minutes: 15
       command: |
@@ -87,6 +87,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+
+      - name: Setup canonical sccache
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
 
       - name: Set up Rust
         run: |
@@ -143,3 +146,7 @@ jobs:
         run: |
           cargo clippy --locked --target wasm32-wasip1 -p challenge-solvers --no-default-features --features std,portable-simd,compare-64bit -- -D warnings
           cargo clippy --locked --target wasm32-wasip1 -p challenge-disasterer-wasm-simd128-bench -- -D warnings
+
+      - name: Finalize canonical sccache
+        if: always()
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main

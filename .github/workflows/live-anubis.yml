@@ -23,6 +23,9 @@ jobs:
       - name: Check out challenge-disasterer
         uses: actions/checkout@v7
 
+      - name: Setup canonical sccache
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+
       - name: Check out live Anubis main
         uses: actions/checkout@v7
         with:
@@ -73,3 +76,7 @@ jobs:
             --fuzz \
             --fuzz-repeats 2 \
             --browser-reference=false
+
+      - name: Finalize canonical sccache
+        if: always()
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
