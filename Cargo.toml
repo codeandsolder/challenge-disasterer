@@ -38,9 +38,6 @@ wgpu = { version = "30.0.1", optional = true }
 lto = "thin"
 codegen-units = 1
 
-[profile.test]
-opt-level = 3
-
 [lints]
 workspace = true
 
