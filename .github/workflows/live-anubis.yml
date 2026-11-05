@@ -65,7 +65,7 @@ jobs:
 
       - name: Build challenge-disasterer and E2E wrapper
         run: |
-          RUSTFLAGS="-C target-cpu=native" cargo build --locked --release --no-default-features
+          RUSTFLAGS="-C target-cpu=native" cargo build --locked --release --no-default-features --features portable-simd
           cargo build --locked --manifest-path tools/anubis-e2e/Cargo.toml
 
       - name: Exercise solver against live Anubis

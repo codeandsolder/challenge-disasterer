@@ -41,7 +41,7 @@ for arg in "$@"; do
 done
 solver_build=(cargo build --locked --release --manifest-path "${root}/Cargo.toml")
 if [[ "$solver_gpu" != 1 ]]; then
-  solver_build+=(--no-default-features)
+  solver_build+=(--no-default-features --features portable-simd)
 fi
 "${solver_build[@]}"
 cargo build --locked --manifest-path "${root}/tools/anubis-e2e/Cargo.toml"
