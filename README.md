@@ -306,7 +306,7 @@ On SM75/Turing the native backend emits the program directly as SASS into an emb
 
 HashX GPU solve responses retain `"backend":"gpu"` for API compatibility and add an `implementation` field identifying the actual path (`cuda-sm75-sass`, `vulkan-extmul-persistent`, `vulkan-nvidia-u32-persistent`, or `wgsl-specialized`). The verifier and benchmark can require this value explicitly, which is used for cross-architecture validation rather than inferring the backend from adapter logs.
 
-The SM75 emitter is deliberately narrow rather than a general assembler: typed Rust encoders cover only the instruction forms HashX needs, then patch a 128 KiB `.text.kern` section in a prebuilt cubin shell. The shell contains dead padding after the real `EXIT`; an 8,192-program generation fuzz reached 4,068 used instruction words versus 8,192 available. Turing instruction-encoding details are derived from the MIT-licensed TuringAs project; see `THIRD_PARTY_NOTICES.md`.
+The SM75 emitter is deliberately narrow rather than a general assembler: typed Rust encoders cover only the instruction forms HashX needs, then patch a 128 KiB `.text.kern` section in a prebuilt cubin shell. The shell contains dead padding after the real `EXIT`; an 8,192-program generation fuzz reached 4,068 used instruction words versus 8,192 available. Turing instruction-encoding details are derived from the MIT-licensed TuringAs project; see the [third-party notices in the owning `challenge-hashx` crate](https://github.com/codeandsolder/challenge-solvers/blob/main/crates/challenge-hashx/THIRD_PARTY_NOTICES.md).
 
 ### HashX CPU backend
 

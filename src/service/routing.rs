@@ -92,7 +92,7 @@ impl AppState {
                 {
                     Ok(response) => {
                         let verified =
-                            serde_json::from_value::<anubis::Answer>(response.answer.clone())
+                            serde_json::from_value::<hashx::Answer>(response.answer.clone())
                                 .context("decode external HashX answer")
                                 .and_then(|answer| hashx::verify(&challenge, &answer));
                         match verified {
