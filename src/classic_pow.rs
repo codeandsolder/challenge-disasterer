@@ -25,9 +25,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 
 #[cfg(feature = "gpu")]
-mod gpu;
-#[cfg(feature = "gpu")]
-pub use gpu::solve_gpu;
+pub(crate) mod gpu;
 
 const DEFAULT_LIMIT: u64 = 4_000_000_000;
 

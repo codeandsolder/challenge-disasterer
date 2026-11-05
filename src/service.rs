@@ -156,7 +156,7 @@ async fn solve_general_gpu(
             implementation: result.implementation,
         });
     }
-    classic_pow::solve_gpu(gpu, solver, challenge).await
+    classic_pow::gpu::solve(gpu, solver, challenge).await
 }
 
 impl AppState {
