@@ -43,7 +43,7 @@ Response:
 - The `gpu` Cargo feature is enabled by default. Build with `--no-default-features` for a CPU-only binary.
 - A normal build attempts one persistent native `wgpu` device/pipeline at startup. `--gpu=false` disables it at runtime.
 - Without a routing-calibration file, the historical SHA policy remains: a compatible operational GPU is preferred and CPU is the fallback. HashX auto similarly prefers its GPU family when available and otherwise uses the `hashwx-rs` native CPU JIT.
-- With `--routing-calibration <report.json>`, the automatic `anubis` and `anubis-hashx-auto` endpoints choose the fastest compatible **concrete** calibrated route for the requested algorithm, difficulty, and nearest calibrated batch size. Local GPU rows are usable only on the adapter they were measured on; CPU and configured external providers remain eligible.
+- With `--routing-calibration <report.json>`, the automatic `anubis` and `anubis-hashx-auto` endpoints try compatible **concrete** calibrated routes ordered by relative batch-size proximity and then measured makespan. If all routes for the closest measured batch fail, the router continues through the other calibrated batch sizes before its uncalibrated local fallback. Local GPU rows are usable only on the adapter they were measured on; CPU and configured external providers remain eligible.
 - Explicit endpoints (`anubis-cpu`, `anubis-gpu`, `anubis-sha256`, `anubis-argon2id`, `anubis-hashx`, `anubis-hashx-jit`) retain force semantics and bypass the cross-family calibrated router.
 - CPU concurrency is bounded by `--cpu-workers`. Argon2id search fanout can be overridden with `--argon2-workers`; by default it is capped at the smaller of the configured CPU budget, available logical CPUs, and detected physical cores so SMT does not oversubscribe the memory-hard search.
 - Both available backends are calibrated at startup. `/stats` bases the new-request ETA on the active backend; GPU ETA includes expected work already queued or executing.
@@ -235,10 +235,10 @@ target/release/challenge-disasterer \
 External answers are not trusted merely because calibration selected them:
 automatic routes validate them locally before returning them. HashX is checked
 with the same audited `hashwx-rs` program/verifier used by the local solver, and
-SHA answers against the local Anubis verifier. Concrete routes are kept in
-calibrated fastest-first order; if
-an external provider or local backend fails, the router tries the next calibrated
-candidate before falling back to the legacy policy.
+SHA answers against the local Anubis verifier. Concrete routes are ordered by relative batch-size proximity, then measured
+makespan; if an external provider or local backend fails, the router tries the
+next compatible calibrated candidate (including other measured batch sizes)
+before falling back to the legacy policy.
 
 ### Fuzz matrix and benchmark
 
