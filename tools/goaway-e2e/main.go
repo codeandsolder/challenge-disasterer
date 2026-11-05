@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 
 	"git.gammaspectra.live/git/go-away/lib/challenge/wasm"
 	_interface "git.gammaspectra.live/git/go-away/lib/challenge/wasm/interface"
@@ -24,6 +28,8 @@ type solveResponse struct {
 	Implementation string  `json:"implementation"`
 	Answer         struct {
 		Token string `json:"token"`
+		Nonce string `json:"nonce"`
+		ID    string `json:"id"`
 	} `json:"answer"`
 }
 
@@ -152,6 +158,29 @@ func runCase(runner *wasm.Runner, serviceURL, difficulty string) error {
 	}
 	if solved.Implementation != implementation {
 		return fmt.Errorf("requested implementation %s, got %s", implementation, solved.Implementation)
+	}
+
+	// The upstream verifier checks the token. Independently check that the
+	// response metadata carries the canonical SHA-256 digest prefix, too.
+	nonce, err := strconv.ParseUint(solved.Answer.Nonce, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid go-away decimal nonce %q: %w", solved.Answer.Nonce, err)
+	}
+	if expectedToken := fmt.Sprintf("%s%016x", config.Challenge, nonce); solved.Answer.Token != expectedToken {
+		return fmt.Errorf("go-away token does not match challenge and nonce")
+	}
+	challengeBytes, err := hex.DecodeString(config.Challenge)
+	if err != nil {
+		return fmt.Errorf("go-away challenge is not hexadecimal: %w", err)
+	}
+	if len(challengeBytes) != 32 {
+		return fmt.Errorf("go-away challenge is %d bytes, expected 32", len(challengeBytes))
+	}
+	var nonceBytes [8]byte
+	binary.BigEndian.PutUint64(nonceBytes[:], nonce)
+	digest := sha256.Sum256(append(challengeBytes, nonceBytes[:]...))
+	if expectedID := hex.EncodeToString(digest[:16]); solved.Answer.ID != expectedID {
+		return fmt.Errorf("go-away digest ID mismatch: got %q, expected %q", solved.Answer.ID, expectedID)
 	}
 
 	verify := func(result []byte) (_interface.VerifyChallengeOutput, error) {

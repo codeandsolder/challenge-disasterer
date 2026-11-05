@@ -300,7 +300,7 @@ fn finish_goaway(
     let id = hex::encode(
         hash.into_iter()
             .take(4)
-            .flat_map(u32::to_ne_bytes)
+            .flat_map(u32::to_be_bytes)
             .collect::<Vec<_>>(),
     );
     Result {
@@ -472,6 +472,37 @@ mod tests {
 
     fn require_error<T>(result: anyhow::Result<T>, message: &str) -> anyhow::Result<anyhow::Error> {
         result.err().ok_or_else(|| anyhow::anyhow!("{message}"))
+    }
+
+    #[test]
+    fn goaway_response_id_is_canonical_sha256_digest_prefix() -> anyhow::Result<()> {
+        use sha2::Digest as _;
+
+        let challenge: GoAwayConfig = serde_json::from_value(json!({
+            "challenge": "0123456789abcdef".repeat(4),
+            "difficulty": 0,
+        }))?;
+        let nonce = 0x1020_3040_5060_7080_u64;
+        let mut input = hex::decode(challenge.challenge())?;
+        input.extend_from_slice(&nonce.to_be_bytes());
+        let digest: [u8; 32] = sha2::Sha256::digest(&input).into();
+        let hash = core::array::from_fn(|index| {
+            u32::from_be_bytes([
+                digest[index * 4],
+                digest[index * 4 + 1],
+                digest[index * 4 + 2],
+                digest[index * 4 + 3],
+            ])
+        });
+
+        let result = finish_goaway(&challenge, "safe", (nonce, hash), 1, Instant::now());
+        assert_eq!(result.answer["id"], hex::encode(&digest[..16]));
+        assert_eq!(
+            result.answer["token"],
+            format!("{}{nonce:016x}", challenge.challenge())
+        );
+        assert_eq!(result.answer["nonce"], nonce.to_string());
+        Ok(())
     }
 
     #[test]
