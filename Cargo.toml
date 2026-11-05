@@ -7,23 +7,21 @@ license = "MIT OR Apache-2.0"
 
 [features]
 default = ["gpu"]
-gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "challenge-protocols/gpu", "challenge-solvers/gpu", "challenge-solvers/compare-64bit"]
+gpu = ["dep:bytemuck", "dep:wgpu", "challenge-hashx/gpu", "challenge-protocols/gpu", "challenge-solvers/gpu", "challenge-solvers/compare-64bit"]
 
 [dependencies]
 anyhow = "1"
 axum = "0.8"
 bytemuck = { version = "1", features = ["derive"], optional = true }
 clap = { version = "4", features = ["derive"] }
-cudarc = { version = "0.19.10", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-13040"], optional = true }
 hex = "0.4"
-hashwx = { workspace = true }
 num_cpus = "1.17"
-challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "85845e12a9049aa11f7e1e910864c6f4191ab7ac", default-features = true, features = ["all-challenges"] }
-challenge-protocols = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "85845e12a9049aa11f7e1e910864c6f4191ab7ac" }
+challenge-hashx = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "7ec936e6c8d15a5d82a8f5184d3dee1a7463adba", default-features = false }
+challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "7ec936e6c8d15a5d82a8f5184d3dee1a7463adba", default-features = true, features = ["all-challenges"] }
+challenge-protocols = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "7ec936e6c8d15a5d82a8f5184d3dee1a7463adba" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.11"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
