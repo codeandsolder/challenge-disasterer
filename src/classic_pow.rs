@@ -1,26 +1,23 @@
 use std::{
     num::{NonZeroU8, NonZeroU64},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use anyhow::{Context, anyhow, bail, ensure};
 use challenge_solvers::{
     DecimalSolver, build_mcaptcha_prefix,
-    capjs::ChallengeDescriptor as CapJsChallenge,
     cerberus::ChallengeDescriptor as CerberusChallenge,
     compute_mask_goaway, compute_mask_zero_nibbles, compute_target_mcaptcha, extract128_be,
     goaway::GoAwayConfig,
     mcaptcha::PoWConfig,
-    message::{CapJSEmitter, CerberusMessage, DecimalMessage, GoAwayMessage},
+    message::{CerberusMessage, DecimalMessage, GoAwayMessage},
     solver::{SOLVE_TYPE_GT, SOLVE_TYPE_LEADING_ZERO_BITS, SOLVE_TYPE_MASK, Solver, SolverDyn},
 };
-use hashwx::HashWx;
-use num_bigint::BigUint;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 mod altcha;
+mod capjs;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 
@@ -45,53 +42,12 @@ struct HaphashChallenge {
     difficulty: u8,
 }
 
-#[derive(Debug, Deserialize)]
-struct CapV2Envelope {
-    token: String,
-    format: u8,
-    challenges: Vec<CapV2Challenge>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "protocol")]
-enum CapV2Challenge {
-    #[serde(rename = "sha256-pow")]
-    Sha256Pow { payload: CapV2Sha256 },
-    #[serde(rename = "rsw")]
-    Rsw { payload: CapV2Rsw },
-    #[serde(rename = "hashwx")]
-    HashWx { payload: CapV2HashWx },
-    #[serde(rename = "instrumentation")]
-    Instrumentation { payload: Value },
-}
-
-#[derive(Debug, Deserialize)]
-struct CapV2Sha256 {
-    salt: String,
-    target: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CapV2Rsw {
-    #[serde(rename = "N")]
-    modulus: String,
-    x: String,
-    t: u32,
-}
-
-#[derive(Debug, Deserialize)]
-struct CapV2HashWx {
-    c: String,
-    d: u64,
-    n: u32,
-}
-
 pub fn solve(kind: &str, challenge: Value, implementation: Option<&str>) -> anyhow::Result<Result> {
     let implementation = Implementation::parse(implementation.unwrap_or("auto"))?;
     match kind {
         "cerberus" => solve_cerberus(challenge, implementation),
         "goaway" => solve_goaway(challenge, implementation),
-        "capjs" => solve_capjs(challenge, implementation),
+        "capjs" => capjs::solve(challenge, implementation),
         "mcaptcha" => solve_mcaptcha(challenge, implementation),
         "haphash" => solve_haphash(challenge, implementation),
         "altcha" => altcha::solve(challenge, implementation),
@@ -409,243 +365,6 @@ fn solve_goaway(challenge: Value, implementation: Implementation) -> anyhow::Res
     ))
 }
 
-fn solve_cap_decimal_cpu(
-    prefix: &[u8],
-    target: u64,
-    mask: u64,
-    implementation: Implementation,
-) -> anyhow::Result<(f64, u64)> {
-    let mut attempted = 0_u64;
-    for bank in 0..=u32::MAX {
-        let Some((message, fixup)) = DecimalMessage::new_f64(prefix, bank) else {
-            break;
-        };
-        let mut solver = decimal_solver(implementation, message)?;
-        solver.set_limit(u64::MAX);
-        let result = solver.solve(target, SOLVE_TYPE_MASK, mask);
-        attempted = attempted.saturating_add(solver.attempted());
-        if let Some((nonce, _)) = result {
-            let nonce = match fixup {
-                Some(value) => value.fixup(nonce),
-                None => js_safe_integer_as_f64(nonce)?,
-            };
-            return Ok((nonce, attempted));
-        }
-    }
-    bail!("Cap.js SHA-256 search exhausted the lossless JavaScript-number domain")
-}
-
-fn solve_capjs(challenge: Value, implementation: Implementation) -> anyhow::Result<Result> {
-    if challenge.get("format").and_then(Value::as_u64) == Some(2) {
-        return solve_capjs_v2(challenge, implementation);
-    }
-    let descriptor: CapJsChallenge =
-        serde_json::from_value(challenge).context("invalid Cap.js challenge")?;
-    let rules = *descriptor.rules();
-    let token = descriptor.token;
-    let emitter = CapJSEmitter::new(token.as_bytes());
-    let started = Instant::now();
-    let mut attempted_nonces = 0_u64;
-    let mut solutions = Vec::with_capacity(rules.count);
-    for index in 0..rules.count {
-        let mut salt = vec![0_u8; rules.salt_length];
-        let mut targets = [0_u32; 2];
-        let subchallenge = u32::try_from(index)
-            .context("Cap.js subchallenge index exceeds u32")?
-            .checked_add(1)
-            .context("Cap.js subchallenge index overflow")?;
-        emitter.emit(&mut salt, &mut targets, subchallenge);
-        let mask = rules
-            .mask()
-            .context("Cap.js difficulty exceeds the supported 64-bit target width")?;
-        let target = (u64::from(targets[0]) << 32) | u64::from(targets[1]);
-        let (nonce, attempted) = solve_cap_decimal_cpu(&salt, target, mask, implementation)?;
-        attempted_nonces = attempted_nonces.saturating_add(attempted);
-        solutions.push(nonce);
-    }
-    let elapsed = started.elapsed();
-    let solve_ms = elapsed.as_secs_f64() * 1000.0;
-    let (elapsed_us, hashrate) = elapsed_work_metadata(elapsed, attempted_nonces);
-    let answer = json!({
-        "token": token,
-        "solutions": solutions,
-        "_meta": {
-            "elapsed_us": elapsed_us,
-            "attempted_nonces": attempted_nonces,
-            "hashrate": hashrate,
-        },
-        "attempted_nonces_total": attempted_nonces,
-    });
-    Ok(Result {
-        answer,
-        solve_ms,
-        implementation: implementation.name().to_owned(),
-    })
-}
-
-fn cap_v2_prefix(target: &str) -> anyhow::Result<(u64, u64)> {
-    ensure!(
-        !target.is_empty(),
-        "Cap.js SHA-256 target must not be empty"
-    );
-    ensure!(target.len() <= 16, "Cap.js SHA-256 target exceeds 64 bits");
-    ensure!(
-        target.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        "Cap.js SHA-256 target must be hexadecimal"
-    );
-    let bits = u32::try_from(target.len())?.saturating_mul(4);
-    let value = u64::from_str_radix(target, 16).context("invalid Cap.js SHA-256 target")?;
-    let shift = 64_u32.saturating_sub(bits);
-    let mask = if bits == 64 {
-        u64::MAX
-    } else {
-        u64::MAX << shift
-    };
-    Ok((value << shift, mask))
-}
-
-fn solve_cap_v2_sha256(
-    payload: &CapV2Sha256,
-    implementation: Implementation,
-) -> anyhow::Result<(Value, u64)> {
-    let (target, mask) = cap_v2_prefix(&payload.target)?;
-    let (nonce, attempted) =
-        solve_cap_decimal_cpu(payload.salt.as_bytes(), target, mask, implementation)?;
-    Ok((json!({ "nonce": nonce }), attempted))
-}
-
-fn solve_cap_v2_rsw(payload: &CapV2Rsw) -> anyhow::Result<Value> {
-    ensure!(payload.t > 0, "Cap.js RSW iteration count must be positive");
-    let modulus = BigUint::parse_bytes(payload.modulus.as_bytes(), 16)
-        .context("invalid Cap.js RSW modulus")?;
-    let mut value =
-        BigUint::parse_bytes(payload.x.as_bytes(), 16).context("invalid Cap.js RSW input")?;
-    ensure!(modulus.bits() > 1, "Cap.js RSW modulus is too small");
-    value %= &modulus;
-    for _ in 0..payload.t {
-        value = (&value * &value) % &modulus;
-    }
-    Ok(json!({ "y": value.to_str_radix(16) }))
-}
-
-fn hashwx_seed(challenge: &[u8; 32], block: u64) -> [u8; 32] {
-    let mut digest = Sha256::new();
-    digest.update(challenge);
-    digest.update(block.to_le_bytes());
-    digest.finalize().into()
-}
-
-fn solve_cap_v2_hashwx(payload: &CapV2HashWx) -> anyhow::Result<(Value, u64)> {
-    ensure!(
-        payload.d > 0 && payload.d <= 1_000_000_000,
-        "Cap.js HashWX difficulty out of range"
-    );
-    ensure!(
-        (1..=1_048_576).contains(&payload.n),
-        "Cap.js HashWX nonces-per-hash out of range"
-    );
-    let challenge = hex::decode(&payload.c).context("invalid Cap.js HashWX challenge hex")?;
-    let challenge: [u8; 32] = challenge
-        .try_into()
-        .map_err(|_| anyhow!("Cap.js HashWX challenge must be 32 bytes"))?;
-    let target = u64::MAX / payload.d;
-    let per_seed = u64::from(payload.n);
-    let mut current_block = 0_u64;
-    let mut hashwx = HashWx::compile(&hashwx_seed(&challenge, current_block))
-        .context("compile Cap.js HashWX program")?;
-    let mut attempted = 0_u64;
-    let mut nonce = 0_u64;
-    loop {
-        let block = nonce / per_seed;
-        if block != current_block {
-            hashwx = HashWx::compile(&hashwx_seed(&challenge, block))
-                .context("compile Cap.js HashWX program")?;
-            current_block = block;
-        }
-        attempted = attempted.saturating_add(1);
-        if hashwx.hash(nonce) <= target {
-            return Ok((json!({ "nonce": nonce.to_string() }), attempted));
-        }
-        if nonce == u64::MAX {
-            break;
-        }
-        nonce += 1;
-    }
-    bail!("Cap.js HashWX search exhausted the u64 nonce space")
-}
-
-fn cap_v2_backend_name(sha_backend: Option<&str>, used_hashwx: bool, used_rsw: bool) -> String {
-    let mut backends = Vec::with_capacity(3);
-    if let Some(sha_backend) = sha_backend {
-        backends.push(sha_backend);
-    }
-    if used_hashwx {
-        backends.push("hashwx-native");
-    }
-    if used_rsw {
-        backends.push("rsw");
-    }
-    backends.join("+")
-}
-
-fn solve_capjs_v2(challenge: Value, implementation: Implementation) -> anyhow::Result<Result> {
-    let envelope: CapV2Envelope =
-        serde_json::from_value(challenge).context("invalid Cap.js format-2 challenge")?;
-    ensure!(envelope.format == 2, "invalid Cap.js format-2 marker");
-    ensure!(
-        !envelope.challenges.is_empty(),
-        "Cap.js format-2 challenge list is empty"
-    );
-    let started = Instant::now();
-    let mut attempted_nonces = 0_u64;
-    let mut solutions = Vec::with_capacity(envelope.challenges.len());
-    let mut used_sha256 = false;
-    let mut used_hashwx = false;
-    let mut used_rsw = false;
-    for challenge in &envelope.challenges {
-        let solution = match challenge {
-            CapV2Challenge::Sha256Pow { payload } => {
-                used_sha256 = true;
-                let (solution, attempted) = solve_cap_v2_sha256(payload, implementation)?;
-                attempted_nonces = attempted_nonces.saturating_add(attempted);
-                solution
-            }
-            CapV2Challenge::Rsw { payload } => {
-                used_rsw = true;
-                solve_cap_v2_rsw(payload)?
-            }
-            CapV2Challenge::HashWx { payload } => {
-                used_hashwx = true;
-                let (solution, attempted) = solve_cap_v2_hashwx(payload)?;
-                attempted_nonces = attempted_nonces.saturating_add(attempted);
-                solution
-            }
-            CapV2Challenge::Instrumentation { payload } => {
-                let _ = payload;
-                bail!(
-                    "Cap.js instrumentation is a browser-environment probe, not a proof-of-work mode"
-                )
-            }
-        };
-        solutions.push(solution);
-    }
-    let solve_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let implementation_name = cap_v2_backend_name(
-        used_sha256.then_some(implementation.name()),
-        used_hashwx,
-        used_rsw,
-    );
-    Ok(Result {
-        answer: json!({
-            "token": envelope.token,
-            "solutions": solutions,
-            "attempted_nonces_total": attempted_nonces,
-        }),
-        solve_ms,
-        implementation: implementation_name,
-    })
-}
-
 fn solve_haphash(challenge: Value, implementation: Implementation) -> anyhow::Result<Result> {
     let challenge: HaphashChallenge =
         serde_json::from_value(challenge).context("invalid haphash challenge")?;
@@ -737,30 +456,6 @@ fn solve_mcaptcha(challenge: Value, implementation: Implementation) -> anyhow::R
 }
 
 const JS_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "value is explicitly constrained to JavaScript's exactly representable integer range"
-)]
-fn js_safe_integer_as_f64(value: u64) -> anyhow::Result<f64> {
-    ensure!(
-        value <= JS_MAX_SAFE_INTEGER,
-        "Cap.js nonce exceeds JavaScript's maximum safe integer"
-    );
-    Ok(value as f64)
-}
-
-fn elapsed_work_metadata(elapsed: Duration, attempted: u64) -> (u64, u64) {
-    let elapsed_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-    let nanos = elapsed.as_nanos();
-    let hashrate = u128::from(attempted)
-        .saturating_mul(1_000_000_000)
-        .checked_div(nanos)
-        .map_or(0, |per_second| {
-            u64::try_from(per_second).unwrap_or(u64::MAX)
-        });
-    (elapsed_us, hashrate)
-}
 
 fn encode_words_le(words: [u32; 8]) -> String {
     hex::encode(
