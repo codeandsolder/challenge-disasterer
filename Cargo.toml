@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 
 [features]
 default = ["gpu"]
-gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "challenge-solvers/gpu", "challenge-solvers/compare-64bit"]
+gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "challenge-protocols/gpu", "challenge-solvers/gpu", "challenge-solvers/compare-64bit"]
 
 [dependencies]
 anyhow = "1"
