@@ -170,9 +170,12 @@ impl AppState {
         clippy::too_many_lines,
         reason = "service initialization keeps calibration and backend bring-up in one ordered transaction"
     )]
-    #[expect(
-        clippy::future_not_send,
-        reason = "general WGPU initialization intentionally awaits a local non-Send future before any service worker is spawned"
+    #[cfg_attr(
+        feature = "gpu",
+        expect(
+            clippy::future_not_send,
+            reason = "general WGPU initialization intentionally awaits a local non-Send future before any service worker is spawned"
+        )
     )]
     pub async fn initialize(config: Config) -> anyhow::Result<Self> {
         anyhow::ensure!(
