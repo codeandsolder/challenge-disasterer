@@ -1,10 +1,6 @@
 use std::{
-    collections::BTreeMap,
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, atomic::AtomicU64},
     time::{Duration, Instant},
 };
 
@@ -12,6 +8,8 @@ use anyhow::Context;
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(feature = "gpu")]
+use std::sync::atomic::Ordering;
 use tokio::sync::{RwLock, Semaphore};
 #[cfg(feature = "gpu")]
 use tokio::sync::{mpsc, oneshot};
@@ -28,6 +26,9 @@ use crate::{
     gpu::GpuSolver,
     hashx_gpu::{GpuResult as HashxGpuResult, GpuSolver as HashxGpuSolver},
 };
+
+mod telemetry;
+pub use telemetry::stats;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -127,6 +128,16 @@ struct ExternalSolveResponse {
 }
 
 type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
+
+impl SolveResponse {
+    fn record_success(&self, stats: &mut StatsStore, difficulty: u8) {
+        if self.solver.starts_with("anubis") {
+            stats.record(difficulty, &self.backend, self.solve_ms);
+        } else {
+            stats.record_generic(&self.backend);
+        }
+    }
+}
 
 #[cfg(feature = "gpu")]
 async fn solve_general_gpu(
@@ -1137,11 +1148,7 @@ pub async fn solve(
         Ok(mut response) => {
             response.solver = request.solver.clone();
             let mut stats_guard = state.stats.write().await;
-            if request.solver.starts_with("anubis") {
-                stats_guard.record(difficulty, &response.backend, response.total_ms);
-            } else {
-                stats_guard.record_generic(&response.backend);
-            }
+            response.record_success(&mut stats_guard, difficulty);
             drop(stats_guard);
             Ok(Json(response))
         }
@@ -1157,370 +1164,37 @@ pub async fn solve(
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct SolverCapability {
-    solver: &'static str,
-    algorithms: &'static [&'static str],
-    difficulty_min: u32,
-    difficulty_max: u32,
-    router: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    counter_mode: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    counter_max: Option<u64>,
-    implementations: Vec<&'static str>,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[derive(Serialize)]
-pub struct StatsResponse {
-    available_solvers: Vec<&'static str>,
-    solver_capabilities: Vec<SolverCapability>,
-    calibration: Calibration,
-    config: StatsConfig,
-    gpu_queue_depth: u64,
-    gpu_queue_expected_work: u64,
-    gpu_active_expected_work: u64,
-    cpu_workers_available: usize,
-    expected_new_solve_ms_by_difficulty: BTreeMap<u8, f64>,
-    hashx_gpu_implementations: Vec<&'static str>,
-    general: crate::stats::GeneralStats,
-}
+    #[test]
+    fn response_stats_record_solve_time_not_queue_or_request_time() {
+        let mut stats = StatsStore::default();
+        let response = SolveResponse {
+            solver: "anubis".to_owned(),
+            backend: "cpu".to_owned(),
+            implementation: None,
+            answer: serde_json::Value::Null,
+            queue_ms: 90.0,
+            solve_ms: 3.0,
+            total_ms: 100.0,
+        };
+        response.record_success(&mut stats, 7);
+        assert_eq!(stats.snapshot().median_solve_ms_by_difficulty[&7], 3.0);
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "queue ETA is approximate telemetry and does not require integer-exact f64 representation"
-)]
-const fn telemetry_work_as_f64(work: u64) -> f64 {
-    work as f64
-}
-
-#[derive(Serialize)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "serialized stats expose independent backend capability/configuration flags"
-)]
-pub struct StatsConfig {
-    cpu_workers: usize,
-    argon2_workers: usize,
-    gpu_compiled: bool,
-    gpu_enabled: bool,
-    gpu_operational: bool,
-    hashx_gpu_operational: bool,
-    routing_calibration_loaded: bool,
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "stats response construction is a flat serialization map of solver capabilities"
-)]
-pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
-    let queued_work = state.gpu_queue_work.load(Ordering::Relaxed);
-    let gpu_queue_depth = state.gpu_queue_depth.load(Ordering::Relaxed);
-    let active_work = state.gpu_active_work.load(Ordering::Relaxed);
-    let work_ahead = queued_work.saturating_add(active_work);
-    let mut expected = BTreeMap::new();
-    for difficulty in 1..=16_u8 {
-        let work = telemetry_work_as_f64(16_u64.saturating_pow(u32::from(difficulty)));
-        let eta_ms = state.calibration.gpu_hashes_per_second.map_or_else(
-            || work / state.calibration.cpu_hashes_per_second_per_worker * 1000.0,
-            |gpu| (telemetry_work_as_f64(work_ahead) + work) / gpu * 1000.0,
+        let other = SolveResponse {
+            solver: "linear".to_owned(),
+            ..response
+        };
+        other.record_success(&mut stats, 0);
+        assert_eq!(stats.solves_total, 2);
+        assert_eq!(stats.solves_cpu, 2);
+        assert!(
+            !stats
+                .snapshot()
+                .median_solve_ms_by_difficulty
+                .contains_key(&0)
         );
-        expected.insert(difficulty, eta_ms);
     }
-    let general = state.stats.read().await.snapshot();
-    let mut anubis_sha_implementations = vec!["auto", "safe"];
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if std::arch::is_x86_feature_detected!("avx2") {
-        anubis_sha_implementations.push("avx2");
-    }
-    #[cfg(target_arch = "x86_64")]
-    if std::arch::is_x86_feature_detected!("avx512f") {
-        anubis_sha_implementations.push("avx512");
-    }
-    if state.general_gpu_operational {
-        anubis_sha_implementations.push("wgpu");
-    }
-    let mut available_solvers = vec![
-        "anubis",
-        "anubis-cpu",
-        "anubis-sha256",
-        "anubis-argon2id",
-        "anubis-hashx-jit",
-        "anubis-hashx-auto",
-    ];
-    let mut solver_capabilities = vec![
-        SolverCapability {
-            solver: "anubis",
-            algorithms: &["fast", "slow"],
-            difficulty_min: 1,
-            difficulty_max: 16,
-            router: true,
-            counter_mode: None,
-            counter_max: None,
-            implementations: Vec::new(),
-        },
-        SolverCapability {
-            solver: "anubis-cpu",
-            algorithms: &["fast", "slow"],
-            difficulty_min: 1,
-            difficulty_max: 16,
-            router: false,
-            counter_mode: None,
-            counter_max: None,
-            implementations: Vec::new(),
-        },
-        SolverCapability {
-            solver: "anubis-sha256",
-            algorithms: &["sha256"],
-            difficulty_min: 1,
-            difficulty_max: 64,
-            router: false,
-            counter_mode: None,
-            counter_max: None,
-            implementations: anubis_sha_implementations,
-        },
-        SolverCapability {
-            solver: "anubis-argon2id",
-            algorithms: &["argon2id"],
-            difficulty_min: 1,
-            difficulty_max: 64,
-            router: false,
-            counter_mode: None,
-            counter_max: None,
-            implementations: vec![anubis_wasm::ARGON2_IMPLEMENTATION],
-        },
-        SolverCapability {
-            solver: "anubis-hashx-jit",
-            algorithms: &["hashx"],
-            difficulty_min: 1,
-            difficulty_max: 64,
-            router: false,
-            counter_mode: None,
-            counter_max: None,
-            implementations: Vec::new(),
-        },
-        SolverCapability {
-            solver: "anubis-hashx-auto",
-            algorithms: &["hashx"],
-            difficulty_min: 1,
-            difficulty_max: 64,
-            router: true,
-            counter_mode: None,
-            counter_max: None,
-            implementations: Vec::new(),
-        },
-    ];
-    let classic_implementations = |sha_ni: bool, wgpu: bool| {
-        let mut implementations = vec!["auto", "safe"];
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            if std::arch::is_x86_feature_detected!("avx2") {
-                implementations.push("avx2");
-            }
-            if sha_ni && std::arch::is_x86_feature_detected!("sha") {
-                implementations.push("sha-ni");
-            }
-        }
-        #[cfg(target_arch = "x86_64")]
-        if std::arch::is_x86_feature_detected!("avx512f") {
-            implementations.push("avx512");
-        }
-        if wgpu && state.general_gpu_operational {
-            implementations.push("wgpu");
-        }
-        implementations
-    };
-
-    for solver in [
-        "cerberus", "goaway", "capjs", "mcaptcha", "haphash", "altcha",
-    ] {
-        available_solvers.push(solver);
-    }
-
-    solver_capabilities.extend([
-        SolverCapability {
-            solver: "cerberus",
-            algorithms: &["blake3"],
-            difficulty_min: 1,
-            difficulty_max: 16,
-            router: false,
-            counter_mode: None,
-            counter_max: None,
-            implementations: classic_implementations(false, true),
-        },
-        SolverCapability {
-            solver: "goaway",
-            algorithms: &["sha256"],
-            difficulty_min: 0,
-            difficulty_max: 256,
-            router: false,
-            counter_mode: None,
-            counter_max: None,
-            implementations: classic_implementations(true, true),
-        },
-        SolverCapability {
-            solver: "capjs",
-            algorithms: &["sha256", "sha256-pow"],
-            difficulty_min: 1,
-            difficulty_max: 16,
-            router: false,
-            counter_mode: None,
-            counter_max: None,
-            implementations: classic_implementations(true, true),
-        },
-        SolverCapability {
-            solver: "capjs",
-            algorithms: &["rsw"],
-            difficulty_min: 1,
-            difficulty_max: u32::MAX,
-            router: false,
-            counter_mode: None,
-            counter_max: None,
-            implementations: vec!["auto"],
-        },
-        SolverCapability {
-            solver: "capjs",
-            algorithms: &["hashwx"],
-            difficulty_min: 1,
-            difficulty_max: 1_000_000_000,
-            router: false,
-            counter_mode: None,
-            counter_max: None,
-            implementations: vec!["auto"],
-        },
-        SolverCapability {
-            solver: "mcaptcha",
-            algorithms: &["sha256"],
-            difficulty_min: 1,
-            difficulty_max: u32::MAX,
-            router: false,
-            counter_mode: None,
-            counter_max: None,
-            implementations: classic_implementations(true, true),
-        },
-        SolverCapability {
-            solver: "haphash",
-            algorithms: &["sha256"],
-            difficulty_min: 0,
-            difficulty_max: 64,
-            router: false,
-            counter_mode: None,
-            counter_max: None,
-            implementations: classic_implementations(true, true),
-        },
-        SolverCapability {
-            solver: "altcha",
-            algorithms: &["sha256", "pbkdf2-sha256"],
-            difficulty_min: 1,
-            difficulty_max: 64,
-            router: false,
-            counter_mode: Some("uint32"),
-            counter_max: Some(u64::from(u32::MAX)),
-            implementations: classic_implementations(false, true),
-        },
-        SolverCapability {
-            solver: "altcha",
-            algorithms: &[
-                "sha384",
-                "sha512",
-                "pbkdf2-sha384",
-                "pbkdf2-sha512",
-                "argon2id",
-                "scrypt",
-            ],
-            difficulty_min: 1,
-            difficulty_max: 64,
-            router: false,
-            counter_mode: Some("uint32"),
-            counter_max: Some(u64::from(u32::MAX)),
-            implementations: vec!["auto", "safe"],
-        },
-        SolverCapability {
-            solver: "altcha",
-            algorithms: &[
-                "sha256",
-                "sha384",
-                "sha512",
-                "pbkdf2-sha256",
-                "pbkdf2-sha384",
-                "pbkdf2-sha512",
-                "argon2id",
-                "scrypt",
-            ],
-            difficulty_min: 1,
-            difficulty_max: 64,
-            router: false,
-            counter_mode: Some("string"),
-            counter_max: Some(9_007_199_254_740_991),
-            implementations: vec!["auto", "safe"],
-        },
-        SolverCapability {
-            solver: "altcha",
-            algorithms: &["sha1-v1", "sha256-v1", "sha512-v1"],
-            difficulty_min: 1,
-            difficulty_max: 64,
-            router: false,
-            counter_mode: None,
-            counter_max: None,
-            implementations: vec!["auto", "safe"],
-        },
-    ]);
-    available_solvers.push("linear");
-    solver_capabilities.push(SolverCapability {
-        solver: "linear",
-        algorithms: &["sha1"],
-        difficulty_min: 16,
-        difficulty_max: 16,
-        router: false,
-        counter_mode: None,
-        counter_max: None,
-        implementations: vec!["auto"],
-    });
-    if state.gpu_operational {
-        available_solvers.push("anubis-gpu");
-        solver_capabilities.push(SolverCapability {
-            solver: "anubis-gpu",
-            algorithms: &["fast", "slow"],
-            difficulty_min: 1,
-            difficulty_max: 16,
-            router: false,
-            counter_mode: None,
-            counter_max: None,
-            implementations: Vec::new(),
-        });
-    }
-    if state.hashx_gpu_operational {
-        available_solvers.push("anubis-hashx");
-        solver_capabilities.push(SolverCapability {
-            solver: "anubis-hashx",
-            algorithms: &["hashx"],
-            difficulty_min: 1,
-            difficulty_max: 64,
-            router: true,
-            counter_mode: None,
-            counter_max: None,
-            implementations: state.hashx_gpu_implementations.clone(),
-        });
-    }
-    Json(StatsResponse {
-        available_solvers,
-        solver_capabilities,
-        calibration: state.calibration.clone(),
-        config: StatsConfig {
-            cpu_workers: state.config.cpu_workers,
-            argon2_workers: state.config.argon2_workers,
-            gpu_compiled: cfg!(feature = "gpu"),
-            gpu_enabled: state.config.gpu_enabled,
-            gpu_operational: state.gpu_operational,
-            hashx_gpu_operational: state.hashx_gpu_operational,
-            routing_calibration_loaded: state.routing.is_some(),
-        },
-        gpu_queue_depth,
-        gpu_queue_expected_work: queued_work,
-        gpu_active_expected_work: active_work,
-        cpu_workers_available: state.cpu_slots.available_permits(),
-        expected_new_solve_ms_by_difficulty: expected,
-        hashx_gpu_implementations: state.hashx_gpu_implementations.clone(),
-        general,
-    })
 }
