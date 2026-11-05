@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CHALLENGE_SOLVER_BINARY="${CHALLENGE_SOLVER_BINARY:?set CHALLENGE_SOLVER_BINARY to a built challenge-disasterer executable}"
+[[ -x "$CHALLENGE_SOLVER_BINARY" ]] || { echo "solver executable is not executable: $CHALLENGE_SOLVER_BINARY" >&2; exit 2; }
 TMP="$(mktemp -d)"
 HAPHASH_PORT="${HAPHASH_E2E_PORT:-17431}"
 SOLVER_PORT="${HAPHASH_SOLVER_PORT:-17432}"
@@ -72,10 +74,7 @@ haproxy -db -f "$TMP/haproxy.cfg" >"$TMP/haproxy.log" 2>&1 &
 HAPROXY_PID=$!
 
 cd "$ROOT"
-BUILD_ARGS=(--locked --release)
-if [[ "$CHALLENGE_IMPLEMENTATION" != "wgpu" ]]; then BUILD_ARGS+=(--no-default-features); fi
-cargo build "${BUILD_ARGS[@]}"
-"$ROOT/target/release/challenge-disasterer" \
+"$CHALLENGE_SOLVER_BINARY" \
   --listen "127.0.0.1:$SOLVER_PORT" \
   --gpu="$([[ "$CHALLENGE_IMPLEMENTATION" == "wgpu" ]] && echo true || echo false)" \
   >"$TMP/solver.log" 2>&1 &

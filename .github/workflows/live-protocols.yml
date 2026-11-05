@@ -16,7 +16,32 @@ permissions:
   contents: read
 
 jobs:
+  solver-binary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup canonical sccache
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+
+      - name: Build one CPU-only release executable
+        run: cargo build --locked --release --no-default-features --bin challenge-disasterer
+
+      - name: Upload exact-revision executable
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: challenge-disasterer-cpu-${{ github.sha }}
+          path: target/release/challenge-disasterer
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Finalize canonical sccache
+        if: always()
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+
   altcha:
+    needs: solver-binary
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -26,23 +51,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+      - name: Download exact-revision solver
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: challenge-disasterer-cpu-${{ github.sha }}
+          path: ${{ runner.temp }}/challenge-disasterer
+
+      - name: Prepare solver executable
+        run: |
+          chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
+          echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
+
       - uses: actions/setup-node@v7
         with:
           node-version: 26
-      - name: Set up Rust
-        run: cargo --version
       - name: Verify against current ALTCHA (${{ matrix.implementation }})
         env:
           CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-altcha-e2e.sh
 
-      - name: Finalize canonical sccache
-        if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
-
   capjs:
+    needs: solver-binary
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -52,23 +81,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+      - name: Download exact-revision solver
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: challenge-disasterer-cpu-${{ github.sha }}
+          path: ${{ runner.temp }}/challenge-disasterer
+
+      - name: Prepare solver executable
+        run: |
+          chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
+          echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
+
       - uses: actions/setup-node@v7
         with:
           node-version: 26
-      - name: Set up Rust
-        run: cargo --version
       - name: Verify against current Cap.js (${{ matrix.implementation }})
         env:
           CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-capjs-e2e.sh
 
-      - name: Finalize canonical sccache
-        if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
-
   cerberus:
+    needs: solver-binary
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -79,27 +112,31 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+      - name: Download exact-revision solver
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: challenge-disasterer-cpu-${{ github.sha }}
+          path: ${{ runner.temp }}/challenge-disasterer
+
+      - name: Prepare solver executable
+        run: |
+          chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
+          echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
+
       - uses: actions/setup-node@v7
         with:
           node-version: 26
       - uses: actions/setup-go@v7
         with:
           go-version: "1.27.x"
-      - name: Set up Rust
-        run: cargo --version
       - name: Verify Cerberus ${{ matrix.upstream_ref }} (${{ matrix.implementation }})
         env:
           CERBERUS_REF: ${{ matrix.upstream_ref }}
           CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-cerberus-e2e.sh
 
-      - name: Finalize canonical sccache
-        if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
-
   goaway:
+    needs: solver-binary
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -109,23 +146,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+      - name: Download exact-revision solver
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: challenge-disasterer-cpu-${{ github.sha }}
+          path: ${{ runner.temp }}/challenge-disasterer
+
+      - name: Prepare solver executable
+        run: |
+          chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
+          echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
+
       - uses: actions/setup-go@v7
         with:
           go-version: "1.27.x"
-      - name: Set up Rust
-        run: cargo --version
       - name: Verify against current go-away (${{ matrix.implementation }})
         env:
           CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
         run: ./ci/live-goaway-e2e.sh
 
-      - name: Finalize canonical sccache
-        if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
-
   haphash:
+    needs: solver-binary
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -136,13 +177,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+      - name: Download exact-revision solver
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: challenge-disasterer-cpu-${{ github.sha }}
+          path: ${{ runner.temp }}/challenge-disasterer
+
+      - name: Prepare solver executable
+        run: |
+          chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
+          echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
+
       - uses: actions/setup-node@v7
         with:
           node-version: 26
-      - name: Set up Rust
-        run: cargo --version
       - name: Install HAProxy 3.2
         run: |
           sudo install -d -m 0755 /usr/share/keyrings
@@ -156,32 +204,33 @@ jobs:
           HAPHASH_DIFFICULTY: ${{ matrix.difficulty }}
         run: ./ci/live-haphash-e2e.sh
 
-      - name: Finalize canonical sccache
-        if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
-
   linear:
+    needs: solver-binary
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+      - name: Download exact-revision solver
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: challenge-disasterer-cpu-${{ github.sha }}
+          path: ${{ runner.temp }}/challenge-disasterer
+
+      - name: Prepare solver executable
+        run: |
+          chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
+          echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
+
       - name: Set up uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: false
-      - name: Set up Rust
-        run: cargo --version
       - name: Verify against live Linear.pub gate
         run: ./ci/live-linear-e2e.sh
 
-      - name: Finalize canonical sccache
-        if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
-
   mcaptcha:
+    needs: solver-binary
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -190,6 +239,17 @@ jobs:
         implementation: [auto, safe]
     steps:
       - uses: actions/checkout@v7
+
+      - name: Download exact-revision solver
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: challenge-disasterer-cpu-${{ github.sha }}
+          path: ${{ runner.temp }}/challenge-disasterer
+
+      - name: Prepare solver executable
+        run: |
+          chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
+          echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
 
       - name: Setup canonical sccache
         uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main

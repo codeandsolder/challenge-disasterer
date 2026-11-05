@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CHALLENGE_SOLVER_BINARY="${CHALLENGE_SOLVER_BINARY:?set CHALLENGE_SOLVER_BINARY to a built challenge-disasterer executable}"
+[[ -x "$CHALLENGE_SOLVER_BINARY" ]] || { echo "solver executable is not executable: $CHALLENGE_SOLVER_BINARY" >&2; exit 2; }
 TMP="$(mktemp -d)"
 PORT="${LINEAR_SOLVER_PORT:-17437}"
 
@@ -11,13 +13,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in cargo curl uv; do
+for command in curl uv; do
   command -v "$command" >/dev/null || { echo "missing Linear.pub E2E dependency: $command" >&2; exit 2; }
 done
 
 cd "$ROOT"
-cargo build --locked --release --no-default-features
-"$ROOT/target/release/challenge-disasterer" \
+"$CHALLENGE_SOLVER_BINARY" \
   --listen "127.0.0.1:$PORT" \
   --gpu=false \
   --cpu-calibration-hashes 10000 \

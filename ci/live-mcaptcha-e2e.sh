@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CHALLENGE_SOLVER_BINARY="${CHALLENGE_SOLVER_BINARY:?set CHALLENGE_SOLVER_BINARY to a built challenge-disasterer executable}"
+[[ -x "$CHALLENGE_SOLVER_BINARY" ]] || { echo "solver executable is not executable: $CHALLENGE_SOLVER_BINARY" >&2; exit 2; }
 TMP="$(mktemp -d)"
 PORT="${MCAPTCHA_E2E_PORT:-17431}"
 CHALLENGE_IMPLEMENTATION="${CHALLENGE_IMPLEMENTATION:-auto}"
@@ -19,10 +21,7 @@ if ! rg -q 'mcaptcha_pow_sha256 = "0\.5"' "$TMP/mcaptcha/Cargo.toml"; then
 fi
 
 cd "$ROOT"
-BUILD_ARGS=(--locked --release)
-if [[ "$CHALLENGE_IMPLEMENTATION" != "wgpu" ]]; then BUILD_ARGS+=(--no-default-features); fi
-cargo build "${BUILD_ARGS[@]}"
-"$ROOT/target/release/challenge-disasterer" --listen "127.0.0.1:$PORT" --gpu="$([[ "$CHALLENGE_IMPLEMENTATION" == "wgpu" ]] && echo true || echo false)" >"$TMP/solver.log" 2>&1 &
+"$CHALLENGE_SOLVER_BINARY" --listen "127.0.0.1:$PORT" --gpu="$([[ "$CHALLENGE_IMPLEMENTATION" == "wgpu" ]] && echo true || echo false)" >"$TMP/solver.log" 2>&1 &
 SOLVER_PID=$!
 
 for _ in $(seq 1 100); do
