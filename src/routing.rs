@@ -73,22 +73,12 @@ impl RoutingCalibration {
         batch_size: usize,
         selected_adapter: Option<&str>,
     ) -> Vec<RouteEntry> {
-        let compatible = |entry: &&RouteEntry| {
-            !entry.router
-                && entry.algorithm == algorithm
-                && entry.difficulty == difficulty
-                && compatible_adapter(entry, selected_adapter)
-        };
-        let Some(nearest_batch) = self
-            .entries
-            .iter()
-            .filter(compatible)
-            .map(|entry| entry.batch_size)
-            .min_by(|left, right| compare_batch_ratio(*left, *right, batch_size))
-        else {
+        if batch_size == 0 {
             return Vec::new();
-        };
+        }
 
+        // Preserve all compatible routes: once the nearest calibrated batch
+        // fails, the caller can try the next closest measured batch.
         let mut candidates = self
             .entries
             .iter()
@@ -96,12 +86,15 @@ impl RoutingCalibration {
                 !entry.router
                     && entry.algorithm == algorithm
                     && entry.difficulty == difficulty
-                    && entry.batch_size == nearest_batch
                     && compatible_adapter(entry, selected_adapter)
             })
             .cloned()
             .collect::<Vec<_>>();
-        candidates.sort_by(|left, right| left.makespan_ms.total_cmp(&right.makespan_ms));
+        candidates.sort_by(|left, right| {
+            compare_batch_ratio(left.batch_size, right.batch_size, batch_size)
+                .then_with(|| left.makespan_ms.total_cmp(&right.makespan_ms))
+                .then_with(|| left.batch_size.cmp(&right.batch_size))
+        });
         candidates
     }
 }
@@ -170,6 +163,53 @@ mod tests {
 
         let candidates = calibration.select_candidates("hashx", 20, 40, Some("reno"));
         assert_eq!(candidates[0].batch_size, 100);
+    }
+
+    #[test]
+    fn tries_other_calibrated_batch_sizes_after_the_nearest() {
+        let calibration = RoutingCalibration {
+            entries: vec![
+                entry("local", None, "small-batch", 1, 1.0),
+                entry("local", Some("reno"), "nearest-slower", 10, 20.0),
+                entry("remote", None, "next-batch", 100, 4.0),
+                entry("local", Some("reno"), "nearest-faster", 10, 3.0),
+                entry("local", Some("rtx"), "wrong-adapter", 10, 0.1),
+                RouteEntry {
+                    router: true,
+                    ..entry("local", None, "recursive-router", 10, 0.1)
+                },
+            ],
+        };
+        let candidates = calibration.select_candidates("hashx", 20, 12, Some("reno"));
+        let solvers: Vec<_> = candidates.iter().map(|entry| entry.solver.as_str()).collect();
+        assert_eq!(
+            solvers,
+            ["nearest-faster", "nearest-slower", "next-batch", "small-batch"]
+        );
+    }
+
+    #[test]
+    fn equal_relative_distance_prefers_faster_calibrated_route() {
+        let calibration = RoutingCalibration {
+            entries: vec![
+                entry("local", None, "half-batch", 5, 20.0),
+                entry("local", None, "double-batch", 20, 5.0),
+                entry("local", None, "exact-batch", 10, 50.0),
+            ],
+        };
+        let candidates = calibration.select_candidates("hashx", 20, 10, None);
+        let solvers: Vec<_> = candidates.iter().map(|entry| entry.solver.as_str()).collect();
+        assert_eq!(solvers, ["exact-batch", "double-batch", "half-batch"]);
+    }
+
+    #[test]
+    fn ignores_zero_batch_hints_and_unmatched_routes() {
+        let calibration = RoutingCalibration {
+            entries: vec![entry("local", None, "hashx-local", 10, 1.0)],
+        };
+        assert!(calibration.select_candidates("hashx", 20, 0, None).is_empty());
+        assert!(calibration.select_candidates("sha256", 20, 10, None).is_empty());
+        assert!(calibration.select_candidates("hashx", 21, 10, None).is_empty());
     }
 
     #[test]
