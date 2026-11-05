@@ -132,10 +132,9 @@ impl AppState {
             self.gpu_queue_depth.fetch_sub(1, Ordering::Relaxed);
             anyhow::bail!("SHA GPU worker unavailable");
         }
-        started_rx
+        let started = started_rx
             .await
             .map_err(|_| anyhow::anyhow!("SHA GPU worker dropped start signal"))?;
-        let started = Instant::now();
         let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
         let result = result_rx
             .await
@@ -190,14 +189,20 @@ impl AppState {
             .hashx_gpu_tx
             .as_ref()
             .context("HashX GPU backend unavailable")?;
+        let (started_tx, started_rx) = oneshot::channel();
         let (result_tx, result_rx) = oneshot::channel();
         tx.send(HashxGpuJob {
             challenge,
             implementation,
+            started: started_tx,
             result: result_tx,
         })
         .await
         .map_err(|_| anyhow::anyhow!("HashX GPU worker unavailable"))?;
+        let started = started_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("HashX GPU worker dropped start signal"))?;
+        let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
         let result = result_rx
             .await
             .map_err(|_| anyhow::anyhow!("HashX GPU worker dropped result"))??;
@@ -206,7 +211,7 @@ impl AppState {
             backend: "gpu".to_owned(),
             implementation: Some(result.implementation.to_owned()),
             answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
-            queue_ms: 0.0,
+            queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
         })
@@ -250,15 +255,20 @@ impl AppState {
             .general_gpu_tx
             .as_ref()
             .context("general WGPU backend unavailable")?;
+        let (started_tx, started_rx) = oneshot::channel();
         let (result_tx, result_rx) = oneshot::channel();
         tx.send(GeneralGpuJob {
             solver: solver.clone(),
             challenge,
+            started: started_tx,
             result: result_tx,
         })
         .await
         .map_err(|_| anyhow::anyhow!("general WGPU worker unavailable"))?;
-        let started = Instant::now();
+        let started = started_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("general WGPU worker dropped start signal"))?;
+        let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
         let result = result_rx
             .await
             .map_err(|_| anyhow::anyhow!("general WGPU worker dropped result"))??;
@@ -267,7 +277,7 @@ impl AppState {
             backend: "gpu".to_owned(),
             implementation: Some(result.implementation),
             answer: result.answer,
-            queue_ms: started.duration_since(queued_at).as_secs_f64() * 1000.0,
+            queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
         })

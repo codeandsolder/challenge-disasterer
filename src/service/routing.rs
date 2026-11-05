@@ -214,10 +214,9 @@ impl AppState {
                 return self.run_cpu(challenge, queued_at).await;
             }
 
-            started_rx
+            let started = started_rx
                 .await
                 .map_err(|_| anyhow::anyhow!("GPU worker dropped start signal"))?;
-            let started = Instant::now();
             let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
             return match result_rx
                 .await

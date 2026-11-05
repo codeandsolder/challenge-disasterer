@@ -47,7 +47,7 @@ pub struct Config {
 struct GpuJob {
     challenge: Challenge,
     expected_work: u64,
-    started: oneshot::Sender<()>,
+    started: oneshot::Sender<Instant>,
     result: oneshot::Sender<anyhow::Result<anubis::BackendResult>>,
 }
 
@@ -55,6 +55,7 @@ struct GpuJob {
 struct HashxGpuJob {
     challenge: hashx::Challenge,
     implementation: Option<String>,
+    started: oneshot::Sender<Instant>,
     result: oneshot::Sender<anyhow::Result<HashxGpuResult>>,
 }
 
@@ -62,6 +63,7 @@ struct HashxGpuJob {
 struct GeneralGpuJob {
     solver: String,
     challenge: Value,
+    started: oneshot::Sender<Instant>,
     result: oneshot::Sender<anyhow::Result<classic_pow::Result>>,
 }
 
@@ -212,7 +214,7 @@ impl AppState {
                                     worker_queue_work
                                         .fetch_sub(job.expected_work, Ordering::Relaxed);
                                     worker_active_work.store(job.expected_work, Ordering::Relaxed);
-                                    let _ = job.started.send(());
+                                    let _ = job.started.send(Instant::now());
                                     let result = gpu.solve(&job.challenge);
                                     worker_active_work.store(0, Ordering::Relaxed);
                                     let _ = job.result.send(result);
@@ -257,6 +259,7 @@ impl AppState {
                     let (tx, mut rx) = mpsc::channel::<HashxGpuJob>(128);
                     tokio::spawn(async move {
                         while let Some(job) = rx.recv().await {
+                            let _ = job.started.send(Instant::now());
                             let result = gpu.solve_with_implementation(
                                 &job.challenge,
                                 job.implementation.as_deref(),
@@ -289,6 +292,7 @@ impl AppState {
                             let (tx, mut rx) = mpsc::channel::<GeneralGpuJob>(128);
                             tokio::spawn(async move {
                                 while let Some(job) = rx.recv().await {
+                                    let _ = job.started.send(Instant::now());
                                     let result =
                                         solve_general_gpu(&gpu, &job.solver, job.challenge).await;
                                     let _ = job.result.send(result);
