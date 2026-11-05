@@ -40,7 +40,7 @@ Response:
 
 ## Backend policy
 
-- The `gpu` Cargo feature is enabled by default. Build with `--no-default-features` for a CPU-only binary.
+- The `gpu` Cargo feature is enabled by default and includes the optimized portable-SIMD CPU backends. `--no-default-features` builds a scalar, CPU-only service targeting stable Rust 1.99. For an optimized CPU-only build without GPU dependencies, use `--no-default-features --features portable-simd` on the pinned nightly toolchain.
 - A normal build attempts one persistent native `wgpu` device/pipeline at startup. `--gpu=false` disables it at runtime.
 - Without a routing-calibration file, the historical SHA policy remains: a compatible operational GPU is preferred and CPU is the fallback. HashX auto similarly prefers its GPU family when available and otherwise uses the `hashwx-rs` native CPU JIT.
 - With `--routing-calibration <report.json>`, the automatic `anubis` and `anubis-hashx-auto` endpoints try compatible **concrete** calibrated routes ordered by relative batch-size proximity and then measured makespan. If all routes for the closest measured batch fail, the router continues through the other calibrated batch sizes before its uncalibrated local fallback. Local GPU rows are usable only on the adapter they were measured on; CPU and configured external providers remain eligible.
