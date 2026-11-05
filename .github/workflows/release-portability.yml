@@ -1,0 +1,21 @@
+name: Release portability
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  stable-scalar:
+    name: Rust 1.99 CPU-only service
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@c6fcb5f8920460c109ee87152506c3d97889ed4e # main
+    with:
+      rust-toolchain: "1.99.0"
+      validation-tier: release
+      rustflags: ""
+      timeout-minutes: 25
+      command: |
+        export CARGO_PROFILE_TEST_OPT_LEVEL=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_JOBS=2
+        cargo test --locked -p challenge-disasterer --no-default-features

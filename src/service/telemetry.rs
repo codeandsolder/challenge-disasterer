@@ -62,6 +62,32 @@ pub struct StatsConfig {
     routing_calibration_loaded: bool,
 }
 
+/// Only list CPU implementations that exist in this build *and* can execute on
+/// this host. This is also the route-discovery contract for external clients.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn cpu_implementations(sha_ni: bool) -> Vec<&'static str> {
+    let mut implementations = vec!["auto", "safe"];
+    if cfg!(feature = "portable-simd") {
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            implementations.push("avx2");
+        }
+        if sha_ni && std::arch::is_x86_feature_detected!("sha") {
+            implementations.push("sha-ni");
+        }
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx512f") {
+            implementations.push("avx512");
+        }
+    }
+    implementations
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn cpu_implementations(_sha_ni: bool) -> Vec<&'static str> {
+    vec!["auto", "safe"]
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "stats response construction is a flat serialization map of solver capabilities"
@@ -81,15 +107,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         expected.insert(difficulty, eta_ms);
     }
     let general = state.stats.read().await.snapshot();
-    let mut anubis_sha_implementations = vec!["auto", "safe"];
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if std::arch::is_x86_feature_detected!("avx2") {
-        anubis_sha_implementations.push("avx2");
-    }
-    #[cfg(target_arch = "x86_64")]
-    if std::arch::is_x86_feature_detected!("avx512f") {
-        anubis_sha_implementations.push("avx512");
-    }
+    let mut anubis_sha_implementations = cpu_implementations(false);
     if state.general_gpu_operational {
         anubis_sha_implementations.push("wgpu");
     }
@@ -164,20 +182,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         },
     ];
     let classic_implementations = |sha_ni: bool, wgpu: bool| {
-        let mut implementations = vec!["auto", "safe"];
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            if std::arch::is_x86_feature_detected!("avx2") {
-                implementations.push("avx2");
-            }
-            if sha_ni && std::arch::is_x86_feature_detected!("sha") {
-                implementations.push("sha-ni");
-            }
-        }
-        #[cfg(target_arch = "x86_64")]
-        if std::arch::is_x86_feature_detected!("avx512f") {
-            implementations.push("avx512");
-        }
+        let mut implementations = cpu_implementations(sha_ni);
         if wgpu && state.general_gpu_operational {
             implementations.push("wgpu");
         }
@@ -376,4 +381,22 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         hashx_gpu_implementations: state.hashx_gpu_implementations.clone(),
         general,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cpu_implementations;
+
+    #[test]
+    fn advertised_cpu_backends_match_compiled_capabilities() {
+        let regular = cpu_implementations(false);
+        let sha = cpu_implementations(true);
+        assert!(regular.starts_with(&["auto", "safe"]));
+        assert!(sha.starts_with(&["auto", "safe"]));
+        assert!(!regular.contains(&"sha-ni"));
+        if !cfg!(feature = "portable-simd") {
+            assert_eq!(regular, ["auto", "safe"]);
+            assert_eq!(sha, ["auto", "safe"]);
+        }
+    }
 }

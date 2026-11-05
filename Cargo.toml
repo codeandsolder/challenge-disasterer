@@ -7,29 +7,22 @@ license = "MIT OR Apache-2.0"
 
 [features]
 default = ["gpu"]
-gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "challenge-solvers/gpu", "challenge-solvers/compare-64bit"]
+portable-simd = ["challenge-protocols/portable-simd", "challenge-solvers/portable-simd"]
+gpu = ["portable-simd", "dep:bytemuck", "dep:wgpu", "challenge-hashx/gpu", "challenge-protocols/gpu", "challenge-solvers/gpu", "challenge-solvers/compare-64bit"]
 
 [dependencies]
 anyhow = "1"
-argon2 = { path = "vendor/argon2-fast" }
-anubis-argon2 = { path = "crates/anubis-argon2" }
 axum = "0.8"
 bytemuck = { version = "1", features = ["derive"], optional = true }
 clap = { version = "4", features = ["derive"] }
-cudarc = { version = "0.19.10", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-13040"], optional = true }
 hex = "0.4"
-itoa = "1"
-hashwx = { workspace = true }
-num-bigint = "0.5"
 num_cpus = "1.17"
-pbkdf2 = "0.13"
-challenge-solvers = { path = "crates/challenge-solvers", default-features = true, features = ["all-challenges"] }
+challenge-hashx = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "99dd4d78898f054cb6c169e0c4ac131cccce119e", default-features = false }
+challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "99dd4d78898f054cb6c169e0c4ac131cccce119e", default-features = false, features = ["std", "runtime-dispatch", "all-challenges"] }
+challenge-protocols = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "99dd4d78898f054cb6c169e0c4ac131cccce119e", default-features = false }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha1 = { version = "0.11", default-features = false }
-sha2 = "0.11"
-scrypt = "0.12"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -39,16 +32,12 @@ wgpu = { version = "30.0.1", optional = true }
 lto = "thin"
 codegen-units = 1
 
-[profile.test]
-opt-level = 3
-
 [lints]
 workspace = true
 
 [workspace]
-members = ["crates/anubis-argon2", "crates/challenge-solvers", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench", "tools/simd-width-bench"]
+members = ["tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench", "tools/simd-width-bench"]
 resolver = "3"
-exclude = ["vendor/argon2-fast"]
 
 [workspace.metadata.rust-skills2]
 allow-test-panics = true

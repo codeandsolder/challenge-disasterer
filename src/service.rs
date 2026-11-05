@@ -1,9 +1,10 @@
 use std::{
     path::PathBuf,
     sync::{Arc, atomic::AtomicU64},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
+#[cfg(feature = "gpu")]
 use anyhow::Context;
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
@@ -17,16 +18,19 @@ use tracing::{info, warn};
 
 use crate::{
     anubis::{self, Challenge},
-    anubis_wasm, classic_pow, hashx, hashx_cpu_jit,
-    routing::{RouteEntry, RoutingCalibration},
+    anubis_wasm, hashx,
+    routing::RoutingCalibration,
     stats::{Calibration, StatsStore},
 };
 #[cfg(feature = "gpu")]
 use crate::{
+    classic_pow,
     gpu::GpuSolver,
     hashx_gpu::{GpuResult as HashxGpuResult, GpuSolver as HashxGpuSolver},
 };
 
+mod execution;
+mod routing;
 mod telemetry;
 pub use telemetry::stats;
 
@@ -45,7 +49,7 @@ pub struct Config {
 struct GpuJob {
     challenge: Challenge,
     expected_work: u64,
-    started: oneshot::Sender<()>,
+    started: oneshot::Sender<Instant>,
     result: oneshot::Sender<anyhow::Result<anubis::BackendResult>>,
 }
 
@@ -53,6 +57,7 @@ struct GpuJob {
 struct HashxGpuJob {
     challenge: hashx::Challenge,
     implementation: Option<String>,
+    started: oneshot::Sender<Instant>,
     result: oneshot::Sender<anyhow::Result<HashxGpuResult>>,
 }
 
@@ -60,6 +65,7 @@ struct HashxGpuJob {
 struct GeneralGpuJob {
     solver: String,
     challenge: Value,
+    started: oneshot::Sender<Instant>,
     result: oneshot::Sender<anyhow::Result<classic_pow::Result>>,
 }
 
@@ -164,9 +170,12 @@ impl AppState {
         clippy::too_many_lines,
         reason = "service initialization keeps calibration and backend bring-up in one ordered transaction"
     )]
-    #[expect(
-        clippy::future_not_send,
-        reason = "general WGPU initialization intentionally awaits a local non-Send future before any service worker is spawned"
+    #[cfg_attr(
+        feature = "gpu",
+        expect(
+            clippy::future_not_send,
+            reason = "general WGPU initialization intentionally awaits a local non-Send future before any service worker is spawned"
+        )
     )]
     pub async fn initialize(config: Config) -> anyhow::Result<Self> {
         anyhow::ensure!(
@@ -210,7 +219,7 @@ impl AppState {
                                     worker_queue_work
                                         .fetch_sub(job.expected_work, Ordering::Relaxed);
                                     worker_active_work.store(job.expected_work, Ordering::Relaxed);
-                                    let _ = job.started.send(());
+                                    let _ = job.started.send(Instant::now());
                                     let result = gpu.solve(&job.challenge);
                                     worker_active_work.store(0, Ordering::Relaxed);
                                     let _ = job.result.send(result);
@@ -255,6 +264,7 @@ impl AppState {
                     let (tx, mut rx) = mpsc::channel::<HashxGpuJob>(128);
                     tokio::spawn(async move {
                         while let Some(job) = rx.recv().await {
+                            let _ = job.started.send(Instant::now());
                             let result = gpu.solve_with_implementation(
                                 &job.challenge,
                                 job.implementation.as_deref(),
@@ -287,6 +297,7 @@ impl AppState {
                             let (tx, mut rx) = mpsc::channel::<GeneralGpuJob>(128);
                             tokio::spawn(async move {
                                 while let Some(job) = rx.recv().await {
+                                    let _ = job.started.send(Instant::now());
                                     let result =
                                         solve_general_gpu(&gpu, &job.solver, job.challenge).await;
                                     let _ = job.result.send(result);
@@ -346,546 +357,6 @@ impl AppState {
             routing,
             http: reqwest::Client::new(),
         })
-    }
-
-    async fn run_cpu(
-        &self,
-        challenge: Challenge,
-        queued_at: Instant,
-    ) -> anyhow::Result<SolveResponse> {
-        let permit = self.cpu_slots.clone().acquire_owned().await?;
-        let start = Instant::now();
-        let queue_ms = start.duration_since(queued_at).as_secs_f64() * 1000.0;
-        let result = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            anubis::solve_cpu(&challenge, 4_000_000_000)
-        })
-        .await??;
-        Ok(SolveResponse {
-            solver: "anubis".to_owned(),
-            backend: "cpu".to_owned(),
-            implementation: None,
-            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
-            queue_ms,
-            solve_ms: result.solve_ms,
-            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
-        })
-    }
-
-    async fn run_anubis_wasm(
-        &self,
-        solver: String,
-        challenge: anubis_wasm::Challenge,
-        implementation: Option<String>,
-        queued_at: Instant,
-    ) -> anyhow::Result<SolveResponse> {
-        let worker_count = if solver == "anubis-argon2id" {
-            self.config.argon2_workers
-        } else {
-            1
-        };
-        let permits = u32::try_from(worker_count).context("too many CPU workers")?;
-        let permit = self.cpu_slots.clone().acquire_many_owned(permits).await?;
-        let started = Instant::now();
-        let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
-        let response_solver = solver.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            match solver.as_str() {
-                "anubis-sha256" => anubis_wasm::solve_sha256(&challenge, implementation.as_deref()),
-                "anubis-argon2id" => {
-                    anubis_wasm::solve_argon2id(&challenge, implementation.as_deref(), worker_count)
-                }
-                _ => anyhow::bail!("unsupported Anubis WASM solver: {solver}"),
-            }
-        })
-        .await??;
-        Ok(SolveResponse {
-            solver: response_solver,
-            backend: "cpu".to_owned(),
-            implementation: Some(result.implementation),
-            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
-            queue_ms,
-            solve_ms: result.solve_ms,
-            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
-        })
-    }
-
-    #[cfg(feature = "gpu")]
-    async fn run_anubis_wasm_gpu(
-        &self,
-        challenge: anubis_wasm::Challenge,
-        queued_at: Instant,
-    ) -> anyhow::Result<SolveResponse> {
-        self.run_general_gpu(
-            "anubis-sha256".to_owned(),
-            serde_json::to_value(challenge).context("serialize Anubis WASM SHA-256 challenge")?,
-            queued_at,
-        )
-        .await
-    }
-
-    #[cfg(feature = "gpu")]
-    async fn run_gpu_only(
-        &self,
-        challenge: Challenge,
-        queued_at: Instant,
-    ) -> anyhow::Result<SolveResponse> {
-        challenge.validate()?;
-        anyhow::ensure!(
-            challenge.gpu_compatible(),
-            "challenge shape is not GPU-compatible"
-        );
-        let tx = self
-            .gpu_tx
-            .as_ref()
-            .context("SHA GPU backend unavailable")?;
-        let expected_work = challenge.expected_work();
-        let (started_tx, started_rx) = oneshot::channel();
-        let (result_tx, result_rx) = oneshot::channel();
-        self.gpu_queue_work
-            .fetch_add(expected_work, Ordering::Relaxed);
-        self.gpu_queue_depth.fetch_add(1, Ordering::Relaxed);
-        if tx
-            .send(GpuJob {
-                challenge,
-                expected_work,
-                started: started_tx,
-                result: result_tx,
-            })
-            .await
-            .is_err()
-        {
-            self.gpu_queue_work
-                .fetch_sub(expected_work, Ordering::Relaxed);
-            self.gpu_queue_depth.fetch_sub(1, Ordering::Relaxed);
-            anyhow::bail!("SHA GPU worker unavailable");
-        }
-        started_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("SHA GPU worker dropped start signal"))?;
-        let started = Instant::now();
-        let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
-        let result = result_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("SHA GPU worker dropped result"))??;
-        Ok(SolveResponse {
-            solver: "anubis-gpu".to_owned(),
-            backend: "gpu".to_owned(),
-            implementation: None,
-            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
-            queue_ms,
-            solve_ms: result.solve_ms,
-            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
-        })
-    }
-
-    async fn run_hashx_jit(
-        &self,
-        challenge: hashx::Challenge,
-        queued_at: Instant,
-    ) -> anyhow::Result<SolveResponse> {
-        challenge.validate()?;
-        let worker_count = self.config.cpu_workers;
-        let permits = u32::try_from(worker_count).context("too many CPU workers")?;
-        let permit = self.cpu_slots.clone().acquire_many_owned(permits).await?;
-        let start = Instant::now();
-        let queue_ms = start.duration_since(queued_at).as_secs_f64() * 1000.0;
-        let result = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            hashx_cpu_jit::solve(&challenge, worker_count)
-        })
-        .await??;
-        Ok(SolveResponse {
-            solver: "anubis-hashx-jit".to_owned(),
-            backend: "cpu-jit".to_owned(),
-            implementation: None,
-            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
-            queue_ms,
-            solve_ms: result.solve_ms,
-            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
-        })
-    }
-
-    #[cfg(feature = "gpu")]
-    async fn run_hashx_gpu(
-        &self,
-        challenge: hashx::Challenge,
-        implementation: Option<String>,
-        queued_at: Instant,
-    ) -> anyhow::Result<SolveResponse> {
-        challenge.validate()?;
-        let tx = self
-            .hashx_gpu_tx
-            .as_ref()
-            .context("HashX GPU backend unavailable")?;
-        let (result_tx, result_rx) = oneshot::channel();
-        tx.send(HashxGpuJob {
-            challenge,
-            implementation,
-            result: result_tx,
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("HashX GPU worker unavailable"))?;
-        let result = result_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("HashX GPU worker dropped result"))??;
-        Ok(SolveResponse {
-            solver: "anubis-hashx".to_owned(),
-            backend: "gpu".to_owned(),
-            implementation: Some(result.implementation.to_owned()),
-            answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
-            queue_ms: 0.0,
-            solve_ms: result.solve_ms,
-            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
-        })
-    }
-
-    async fn run_classic(
-        &self,
-        solver: String,
-        challenge: Value,
-        implementation: Option<String>,
-        queued_at: Instant,
-    ) -> anyhow::Result<SolveResponse> {
-        let permit = self.cpu_slots.clone().acquire_owned().await?;
-        let started = Instant::now();
-        let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
-        let response_solver = solver.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            classic_pow::solve(&solver, challenge, implementation.as_deref())
-        })
-        .await??;
-        Ok(SolveResponse {
-            solver: response_solver,
-            backend: "cpu".to_owned(),
-            implementation: Some(result.implementation),
-            answer: result.answer,
-            queue_ms,
-            solve_ms: result.solve_ms,
-            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
-        })
-    }
-
-    #[cfg(feature = "gpu")]
-    async fn run_general_gpu(
-        &self,
-        solver: String,
-        challenge: Value,
-        queued_at: Instant,
-    ) -> anyhow::Result<SolveResponse> {
-        let tx = self
-            .general_gpu_tx
-            .as_ref()
-            .context("general WGPU backend unavailable")?;
-        let (result_tx, result_rx) = oneshot::channel();
-        tx.send(GeneralGpuJob {
-            solver: solver.clone(),
-            challenge,
-            result: result_tx,
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("general WGPU worker unavailable"))?;
-        let started = Instant::now();
-        let result = result_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("general WGPU worker dropped result"))??;
-        Ok(SolveResponse {
-            solver,
-            backend: "gpu".to_owned(),
-            implementation: Some(result.implementation),
-            answer: result.answer,
-            queue_ms: started.duration_since(queued_at).as_secs_f64() * 1000.0,
-            solve_ms: result.solve_ms,
-            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
-        })
-    }
-
-    fn calibrated_routes(
-        &self,
-        algorithm: &str,
-        difficulty: u32,
-        batch_size_hint: usize,
-    ) -> Vec<RouteEntry> {
-        self.routing.as_ref().map_or_else(Vec::new, |routing| {
-            routing.select_candidates(
-                algorithm,
-                difficulty,
-                batch_size_hint,
-                self.calibration.gpu_adapter.as_deref(),
-            )
-        })
-    }
-
-    async fn run_external(
-        &self,
-        route: &RouteEntry,
-        public_solver: &str,
-        algorithm: &str,
-        challenge: Value,
-        batch_size_hint: usize,
-        queued_at: Instant,
-    ) -> anyhow::Result<SolveResponse> {
-        let base_url = route
-            .provider_url
-            .as_deref()
-            .context("external calibration route has no provider URL")?;
-        let mut request = serde_json::json!({
-            "solver": route.solver,
-            "algorithm": algorithm,
-            "batch_size_hint": batch_size_hint,
-            "challenge": challenge,
-        });
-        if let Some(implementation) = route.implementation.as_deref() {
-            request["implementation"] = serde_json::json!(implementation);
-        }
-        let started = Instant::now();
-        let timeout = Duration::from_secs_f64((route.makespan_ms / 1000.0 * 4.0).clamp(5.0, 300.0));
-        let response = self
-            .http
-            .post(format!("{base_url}/solve"))
-            .timeout(timeout)
-            .json(&request)
-            .send()
-            .await
-            .with_context(|| format!("call external solver {}", route.provider))?;
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .context("read external solver response")?;
-        anyhow::ensure!(
-            status.is_success(),
-            "external solver {} returned {status}: {body}",
-            route.provider
-        );
-        let external: ExternalSolveResponse =
-            serde_json::from_str(&body).context("decode external solver response")?;
-        let backend = if external.backend.is_empty() {
-            format!("external:{}", route.provider)
-        } else {
-            format!("external:{}:{}", route.provider, external.backend)
-        };
-        Ok(SolveResponse {
-            solver: public_solver.to_owned(),
-            backend,
-            implementation: external
-                .implementation
-                .or_else(|| route.implementation.clone()),
-            answer: external.answer,
-            queue_ms: started.duration_since(queued_at).as_secs_f64() * 1000.0,
-            solve_ms: external.solve_ms,
-            total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
-        })
-    }
-
-    async fn route_hashx(
-        &self,
-        challenge: hashx::Challenge,
-        batch_size_hint: usize,
-        queued_at: Instant,
-    ) -> anyhow::Result<SolveResponse> {
-        challenge.validate()?;
-        for route in self.calibrated_routes("hashx", challenge.difficulty, batch_size_hint) {
-            if route.provider == "local" {
-                match route.solver.as_str() {
-                    "anubis-hashx-jit" => {
-                        match self.run_hashx_jit(challenge.clone(), queued_at).await {
-                            Ok(response) => return Ok(response),
-                            Err(err) => {
-                                warn!(solver = %route.solver, %err, "calibrated local HashX route failed; trying next candidate");
-                            }
-                        }
-                    }
-                    "anubis-hashx" =>
-                    {
-                        #[cfg(feature = "gpu")]
-                        if self.hashx_gpu_operational {
-                            match self
-                                .run_hashx_gpu(
-                                    challenge.clone(),
-                                    route.implementation.clone(),
-                                    queued_at,
-                                )
-                                .await
-                            {
-                                Ok(response) => return Ok(response),
-                                Err(err) => {
-                                    warn!(solver = %route.solver, implementation = ?route.implementation, %err, "calibrated local HashX route failed; trying next candidate");
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            } else {
-                let challenge_value = serde_json::json!({
-                    "data": &challenge.data,
-                    "difficulty": challenge.difficulty,
-                });
-                match self
-                    .run_external(
-                        &route,
-                        "anubis-hashx-auto",
-                        "hashx",
-                        challenge_value,
-                        batch_size_hint,
-                        queued_at,
-                    )
-                    .await
-                {
-                    Ok(response) => {
-                        let verified =
-                            serde_json::from_value::<anubis::Answer>(response.answer.clone())
-                                .context("decode external HashX answer")
-                                .and_then(|answer| hashx::verify(&challenge, &answer));
-                        match verified {
-                            Ok(true) => return Ok(response),
-                            Ok(false) => {
-                                warn!(provider = %route.provider, "external HashX solver returned invalid answer; trying next calibrated candidate");
-                            }
-                            Err(err) => {
-                                warn!(provider = %route.provider, %err, "external HashX answer validation failed; trying next calibrated candidate");
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        warn!(provider = %route.provider, %err, "external HashX solver failed; trying next calibrated candidate");
-                    }
-                }
-            }
-        }
-
-        #[cfg(feature = "gpu")]
-        if self.hashx_gpu_operational {
-            return self.run_hashx_gpu(challenge, None, queued_at).await;
-        }
-        self.run_hashx_jit(challenge, queued_at).await
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "routing fallback order is intentionally linear and mirrors the calibrated route sequence"
-    )]
-    async fn route_anubis(
-        &self,
-        algorithm: &str,
-        challenge: Challenge,
-        batch_size_hint: usize,
-        queued_at: Instant,
-    ) -> anyhow::Result<SolveResponse> {
-        challenge.validate()?;
-        for route in
-            self.calibrated_routes(algorithm, u32::from(challenge.difficulty), batch_size_hint)
-        {
-            if route.provider == "local" {
-                match route.solver.as_str() {
-                    "anubis-cpu" => match self.run_cpu(challenge.clone(), queued_at).await {
-                        Ok(response) => return Ok(response),
-                        Err(err) => {
-                            warn!(solver = %route.solver, %err, "calibrated local Anubis route failed; trying next candidate");
-                        }
-                    },
-                    "anubis-gpu" =>
-                    {
-                        #[cfg(feature = "gpu")]
-                        if self.gpu_operational && challenge.gpu_compatible() {
-                            match self.run_gpu_only(challenge.clone(), queued_at).await {
-                                Ok(response) => return Ok(response),
-                                Err(err) => {
-                                    warn!(solver = %route.solver, %err, "calibrated local Anubis route failed; trying next candidate");
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            } else {
-                let challenge_value = serde_json::json!({
-                    "data": &challenge.data,
-                    "difficulty": challenge.difficulty,
-                });
-                match self
-                    .run_external(
-                        &route,
-                        "anubis",
-                        algorithm,
-                        challenge_value,
-                        batch_size_hint,
-                        queued_at,
-                    )
-                    .await
-                {
-                    Ok(response) => {
-                        let verified =
-                            serde_json::from_value::<anubis::Answer>(response.answer.clone())
-                                .is_ok_and(|answer| anubis::verify(&challenge, &answer));
-                        if verified {
-                            return Ok(response);
-                        }
-                        warn!(provider = %route.provider, "external Anubis solver returned invalid answer; trying next calibrated candidate");
-                    }
-                    Err(err) => {
-                        warn!(provider = %route.provider, %err, "external Anubis solver failed; trying next calibrated candidate");
-                    }
-                }
-            }
-        }
-
-        #[cfg(feature = "gpu")]
-        if let Some(tx) = self.gpu_tx.as_ref().filter(|_| challenge.gpu_compatible()) {
-            let expected_work = challenge.expected_work();
-            let (started_tx, started_rx) = oneshot::channel();
-            let (result_tx, result_rx) = oneshot::channel();
-            self.gpu_queue_work
-                .fetch_add(expected_work, Ordering::Relaxed);
-            self.gpu_queue_depth.fetch_add(1, Ordering::Relaxed);
-
-            if tx
-                .send(GpuJob {
-                    challenge: challenge.clone(),
-                    expected_work,
-                    started: started_tx,
-                    result: result_tx,
-                })
-                .await
-                .is_err()
-            {
-                self.gpu_queue_work
-                    .fetch_sub(expected_work, Ordering::Relaxed);
-                self.gpu_queue_depth.fetch_sub(1, Ordering::Relaxed);
-                warn!("GPU worker unavailable; falling back to CPU");
-                return self.run_cpu(challenge, queued_at).await;
-            }
-
-            started_rx
-                .await
-                .map_err(|_| anyhow::anyhow!("GPU worker dropped start signal"))?;
-            let started = Instant::now();
-            let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
-            return match result_rx
-                .await
-                .map_err(|_| anyhow::anyhow!("GPU worker dropped result"))?
-            {
-                Ok(result) => Ok(SolveResponse {
-                    solver: "anubis".to_owned(),
-                    backend: "gpu".to_owned(),
-                    implementation: None,
-                    answer: serde_json::to_value(result.answer)
-                        .context("serialize solver answer")?,
-                    queue_ms,
-                    solve_ms: result.solve_ms,
-                    total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
-                }),
-                Err(err) => {
-                    warn!(%err, "GPU solve failed; falling back to CPU");
-                    self.run_cpu(challenge, queued_at).await
-                }
-            };
-        }
-
-        self.run_cpu(challenge, queued_at).await
     }
 }
 
