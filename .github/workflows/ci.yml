@@ -14,28 +14,6 @@ permissions:
   contents: read
 
 jobs:
-  rust-argon2:
-    name: Vendored Argon2 Rust (shared sccache)
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
-    with:
-      rust-toolchain: "nightly-2026-11-03"
-      rust-components: "clippy rustfmt"
-      timeout-minutes: 15
-      command: |
-        cargo test --manifest-path vendor/argon2-fast/Cargo.toml --all-features
-        cargo clippy --manifest-path vendor/argon2-fast/Cargo.toml --lib --all-features -- -D warnings
-        cargo fmt --manifest-path vendor/argon2-fast/Cargo.toml -- --check
-        CARGO_TARGET_DIR="$CARGO_TARGET_DIR/argon2-soft" RUSTFLAGS='--cfg argon2_backend="soft"' cargo test --manifest-path vendor/argon2-fast/Cargo.toml --all-features
-
-  rust-solvers:
-    name: Solver core Rust (shared sccache)
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
-    with:
-      rust-toolchain: "nightly-2026-11-03"
-      timeout-minutes: 15
-      command: |
-        cargo test --locked -p challenge-solvers --all-features
-
   rust-app:
     name: Application Rust (shared sccache)
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
@@ -54,7 +32,6 @@ jobs:
       timeout-minutes: 15
       command: |
         cargo fmt --check
-        cargo test --locked -p anubis-argon2
         cargo test --locked -p challenge-disasterer-anubis-e2e
         cargo test --locked -p challenge-disasterer-mcaptcha-e2e
         cargo test --locked -p challenge-disasterer-wasm-simd128-bench
@@ -68,85 +45,3 @@ jobs:
       timeout-minutes: 15
       command: |
         cargo test --locked -p challenge-disasterer-solver-matrix --all-features
-
-  rust-special:
-    name: Scalar and AVX-512 compile gates (shared sccache)
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
-    with:
-      rust-toolchain: "nightly-2026-11-03"
-      rust-components: "clippy"
-      timeout-minutes: 15
-      command: |
-        cargo test --locked -p challenge-disasterer-solver-matrix --no-default-features
-        cargo clippy --locked -p challenge-disasterer-solver-matrix --no-default-features -- -D warnings
-        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-feature=+avx512f -D warnings' cargo test --locked --target x86_64-unknown-linux-gnu -p challenge-solvers --no-default-features --features std,portable-simd,compare-64bit --no-run
-
-  rust-portable:
-    name: Portable/MSRV Rust
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
-
-      - name: Set up Rust
-        run: |
-          cargo --version
-          rustup toolchain install 1.85.0 --profile minimal
-          rustup toolchain install 1.99.0 --profile minimal
-          rustup target add wasm32-wasip1 aarch64-unknown-linux-gnu
-
-      - name: Set up Node for WASI SIMD128 tests
-        uses: actions/setup-node@v7
-        with:
-          node-version: 26
-
-      - name: Check vendored Argon2 MSRV
-        env:
-          CARGO_TARGET_DIR: target/argon2-msrv
-        run: |
-          rm -f vendor/argon2-fast/Cargo.lock
-          cargo +1.85.0 check --manifest-path vendor/argon2-fast/Cargo.toml --all-features
-
-      - name: Test stable scalar challenge solver on Rust 1.99
-        run: cargo +1.99.0 test --locked -p challenge-solvers --no-default-features --features std,anubis
-
-      - name: Test portable Anubis Argon2 on WASI SIMD128
-        env:
-          CARGO_TARGET_WASM32_WASIP1_RUNNER: node ../../tools/wasm-wasi-runner.mjs
-          NODE_NO_WARNINGS: 1
-          RUSTFLAGS: -C target-feature=+simd128 -D warnings
-        run: cargo test --locked --release --target wasm32-wasip1 -p anubis-argon2
-
-      - name: Check portable Anubis Argon2 on AArch64
-        env:
-          RUSTFLAGS: -D warnings
-        run: cargo check --locked --target aarch64-unknown-linux-gnu -p anubis-argon2
-
-      - name: Test WASM SIMD128 backend
-        env:
-          CARGO_TARGET_WASM32_WASIP1_RUNNER: node ../../tools/wasm-wasi-runner.mjs
-          NODE_NO_WARNINGS: 1
-          RUSTFLAGS: -C target-feature=+simd128 -D warnings
-        run: cargo test --locked --target wasm32-wasip1 -p challenge-solvers --no-default-features --features std,portable-simd,compare-64bit
-
-      - name: Benchmark WASM SIMD128 backend
-        env:
-          NODE_NO_WARNINGS: 1
-          RUSTFLAGS: -C target-feature=+simd128 -D warnings
-        run: |
-          cargo build --locked --release --target wasm32-wasip1 -p challenge-disasterer-wasm-simd128-bench
-          node tools/wasm-wasi-runner.mjs target/wasm32-wasip1/release/challenge-disasterer-wasm-simd128-bench.wasm 1120000
-
-      - name: Clippy WASM SIMD128 backend
-        env:
-          RUSTFLAGS: -C target-feature=+simd128 -D warnings
-        run: |
-          cargo clippy --locked --target wasm32-wasip1 -p challenge-solvers --no-default-features --features std,portable-simd,compare-64bit -- -D warnings
-          cargo clippy --locked --target wasm32-wasip1 -p challenge-disasterer-wasm-simd128-bench -- -D warnings
-
-      - name: Finalize canonical sccache
-        if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main

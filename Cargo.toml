@@ -11,8 +11,6 @@ gpu = ["dep:bytemuck", "dep:cudarc", "dep:wgpu", "challenge-solvers/gpu", "chall
 
 [dependencies]
 anyhow = "1"
-argon2 = { path = "vendor/argon2-fast" }
-anubis-argon2 = { path = "crates/anubis-argon2" }
 axum = "0.8"
 bytemuck = { version = "1", features = ["derive"], optional = true }
 clap = { version = "4", features = ["derive"] }
@@ -23,7 +21,8 @@ hashwx = { workspace = true }
 num-bigint = "0.5"
 num_cpus = "1.17"
 pbkdf2 = "0.13"
-challenge-solvers = { path = "crates/challenge-solvers", default-features = true, features = ["all-challenges"] }
+challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "3776d8fbce45ae4641719d9ae40f84578be7c228", default-features = true, features = ["all-challenges"] }
+challenge-protocols = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "3776d8fbce45ae4641719d9ae40f84578be7c228" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -46,9 +45,8 @@ opt-level = 3
 workspace = true
 
 [workspace]
-members = ["crates/anubis-argon2", "crates/challenge-solvers", "tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench", "tools/simd-width-bench"]
+members = ["tools/anubis-e2e", "tools/mcaptcha-e2e", "tools/solver-matrix", "tools/wasm-simd128-bench", "tools/simd-width-bench"]
 resolver = "3"
-exclude = ["vendor/argon2-fast"]
 
 [workspace.metadata.rust-skills2]
 allow-test-panics = true

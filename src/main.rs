@@ -1,8 +1,6 @@
 #![recursion_limit = "256"]
 
-mod anubis;
-mod anubis_wasm;
-mod classic_pow;
+pub(crate) use challenge_protocols::{anubis, anubis_wasm, classic_pow};
 #[cfg(feature = "gpu")]
 mod gpu;
 mod hashx;
@@ -15,7 +13,6 @@ mod hashx_gpu_native;
 mod hashx_sm75;
 #[cfg(feature = "gpu")]
 mod hashx_sm75_cuda;
-mod linear_pow;
 mod routing;
 mod service;
 mod stats;
