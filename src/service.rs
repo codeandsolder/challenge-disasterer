@@ -4,6 +4,7 @@ use std::{
     time::Instant,
 };
 
+#[cfg(feature = "gpu")]
 use anyhow::Context;
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
@@ -17,12 +18,13 @@ use tracing::{info, warn};
 
 use crate::{
     anubis::{self, Challenge},
-    anubis_wasm, classic_pow, hashx,
+    anubis_wasm, hashx,
     routing::RoutingCalibration,
     stats::{Calibration, StatsStore},
 };
 #[cfg(feature = "gpu")]
 use crate::{
+    classic_pow,
     gpu::GpuSolver,
     hashx_gpu::{GpuResult as HashxGpuResult, GpuSolver as HashxGpuSolver},
 };
