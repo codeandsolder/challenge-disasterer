@@ -181,7 +181,10 @@ mod tests {
             ],
         };
         let candidates = calibration.select_candidates("hashx", 20, 12, Some("reno"));
-        let solvers: Vec<_> = candidates.iter().map(|entry| entry.solver.as_str()).collect();
+        let solvers: Vec<_> = candidates
+            .iter()
+            .map(|entry| entry.solver.as_str())
+            .collect();
         assert_eq!(
             solvers,
             ["nearest-faster", "nearest-slower", "next-batch", "small-batch"]
@@ -198,7 +201,10 @@ mod tests {
             ],
         };
         let candidates = calibration.select_candidates("hashx", 20, 10, None);
-        let solvers: Vec<_> = candidates.iter().map(|entry| entry.solver.as_str()).collect();
+        let solvers: Vec<_> = candidates
+            .iter()
+            .map(|entry| entry.solver.as_str())
+            .collect();
         assert_eq!(solvers, ["exact-batch", "double-batch", "half-batch"]);
     }
 
@@ -207,9 +213,21 @@ mod tests {
         let calibration = RoutingCalibration {
             entries: vec![entry("local", None, "hashx-local", 10, 1.0)],
         };
-        assert!(calibration.select_candidates("hashx", 20, 0, None).is_empty());
-        assert!(calibration.select_candidates("sha256", 20, 10, None).is_empty());
-        assert!(calibration.select_candidates("hashx", 21, 10, None).is_empty());
+        assert!(
+            calibration
+                .select_candidates("hashx", 20, 0, None)
+                .is_empty()
+        );
+        assert!(
+            calibration
+                .select_candidates("sha256", 20, 10, None)
+                .is_empty()
+        );
+        assert!(
+            calibration
+                .select_candidates("hashx", 21, 10, None)
+                .is_empty()
+        );
     }
 
     #[test]
