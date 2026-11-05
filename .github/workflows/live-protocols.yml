@@ -1,16 +1,15 @@
 name: Live protocol compatibility
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
+  release:
+    types: [published]
   schedule:
     - cron: "41 3 * * *"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -23,7 +22,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@c6fcb5f8920460c109ee87152506c3d97889ed4e # main
 
       - name: Build one CPU-only release executable
         run: cargo build --locked --release --no-default-features --bin challenge-disasterer
@@ -38,7 +37,7 @@ jobs:
 
       - name: Finalize canonical sccache
         if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@c6fcb5f8920460c109ee87152506c3d97889ed4e # main
 
   altcha:
     needs: solver-binary
@@ -252,7 +251,7 @@ jobs:
           echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
 
       - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@c6fcb5f8920460c109ee87152506c3d97889ed4e # main
       - name: Set up Rust
         run: cargo --version
       - name: Install ripgrep
@@ -264,4 +263,4 @@ jobs:
 
       - name: Finalize canonical sccache
         if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@c6fcb5f8920460c109ee87152506c3d97889ed4e # main

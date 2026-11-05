@@ -106,6 +106,12 @@ Use `--no-cpu --no-live` for direct GPU-only collection on a host whose CPU is b
 
 Protocol compatibility is tested against the implementation that actually issues or verifies each proof rather than against a duplicate verifier in this repository:
 
+Full live-protocol compatibility runs daily, on published releases, or by
+manual **Live protocol compatibility** workflow dispatch against a selected
+branch. Routine pull requests do not spawn 25 upstream verifier runners.
+The selected exact revision is built once with canonical sccache and that
+release binary is distributed to all independent protocol checks.
+
 The seven non-Anubis script-driven live-protocol harnesses require `CHALLENGE_SOLVER_BINARY`
 to name an already-built challenge-disasterer executable; they do not compile it.
 Hosted CI builds one CPU-only release executable with canonical sccache and
