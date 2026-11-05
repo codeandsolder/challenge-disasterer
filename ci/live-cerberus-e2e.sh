@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CHALLENGE_SOLVER_BINARY="${CHALLENGE_SOLVER_BINARY:?set CHALLENGE_SOLVER_BINARY to a built challenge-disasterer executable}"
+[[ -f "$CHALLENGE_SOLVER_BINARY" && -x "$CHALLENGE_SOLVER_BINARY" ]] || { echo "solver executable is not an executable file: $CHALLENGE_SOLVER_BINARY" >&2; exit 2; }
+CHALLENGE_SOLVER_BINARY="$(realpath -- "$CHALLENGE_SOLVER_BINARY")"
 TMP="$(mktemp -d)"
 SOLVER_PORT="${CERBERUS_SOLVER_PORT:-17427}"
 CHALLENGE_IMPLEMENTATION="${CHALLENGE_IMPLEMENTATION:-auto}"
@@ -75,10 +78,7 @@ EOF
 CADDY_PID=$!
 
 cd "$ROOT"
-BUILD_ARGS=(--locked --release)
-if [[ "$CHALLENGE_IMPLEMENTATION" != "wgpu" ]]; then BUILD_ARGS+=(--no-default-features); fi
-cargo build "${BUILD_ARGS[@]}"
-"$ROOT/target/release/challenge-disasterer" \
+"$CHALLENGE_SOLVER_BINARY" \
   --listen "127.0.0.1:$SOLVER_PORT" --gpu="$([[ "$CHALLENGE_IMPLEMENTATION" == "wgpu" ]] && echo true || echo false)" >"$TMP/solver.log" 2>&1 &
 SOLVER_PID=$!
 

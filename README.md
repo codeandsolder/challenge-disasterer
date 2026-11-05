@@ -106,6 +106,20 @@ Use `--no-cpu --no-live` for direct GPU-only collection on a host whose CPU is b
 
 Protocol compatibility is tested against the implementation that actually issues or verifies each proof rather than against a duplicate verifier in this repository:
 
+Full live-protocol compatibility runs daily, on published releases, or by
+manual **Live protocol compatibility** workflow dispatch against a selected
+branch. Routine pull requests do not spawn 25 upstream verifier runners.
+The selected exact revision is built once with canonical sccache and that
+release binary is distributed to all independent protocol checks.
+
+The seven non-Anubis script-driven live-protocol harnesses require `CHALLENGE_SOLVER_BINARY`
+to name an already-built challenge-disasterer executable; they do not compile it.
+Hosted CI builds one CPU-only release executable with canonical sccache and
+distributes that exact-commit artifact to all 25 independent live-protocol
+matrix cases. For local runs, explicitly supply the path to an existing
+CPU/GPU build as appropriate. Relative paths are resolved before the
+harness changes its working directory.
+
 - **Anubis:** `ci/live-anubis-e2e.sh` starts the current upstream Anubis server, obtains a live challenge, submits the disasterer proof to Anubis, and requires the resulting authorization cookie to reach a protected upstream.
 - **Cerberus:** `ci/live-cerberus-e2e.sh` builds the official Cerberus Caddy plugin, obtains a real challenge page, submits the proof to its real `/answer` endpoint, and requires its approval cookie to pass the protected route. The hardware runner executes current upstream plus `v0.4.9` through `v0.4.5` for every available backend, covering the recent compatibility range and the decimal/binary-format boundary against each release's own authoritative verifier.
 - **go-away:** `ci/live-goaway-e2e.sh` runs the current upstream `js-pow-sha256` WASM runtime and uses its own `MakeChallenge` and `VerifyChallenge` ABI. The verifier's meaningful leading-zero domain is the full SHA-256 width, difficulty `0..=256`, and every CPU/SIMD/SHA-NI/WGPU backend preserves those full-digest semantics. The ordinary `1..=64` range keeps the cheaper first-64-bit compare internally; larger values use the same accelerated hashing kernels with a full-digest predicate. Difficulties above 256 are unsatisfiable and rejected.
