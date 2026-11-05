@@ -1,9 +1,6 @@
 use std::{
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, atomic::AtomicU64},
     time::{Duration, Instant},
 };
 
@@ -11,6 +8,8 @@ use anyhow::Context;
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(feature = "gpu")]
+use std::sync::atomic::Ordering;
 use tokio::sync::{RwLock, Semaphore};
 #[cfg(feature = "gpu")]
 use tokio::sync::{mpsc, oneshot};
