@@ -3,7 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHALLENGE_SOLVER_BINARY="${CHALLENGE_SOLVER_BINARY:?set CHALLENGE_SOLVER_BINARY to a built challenge-disasterer executable}"
-[[ -x "$CHALLENGE_SOLVER_BINARY" ]] || { echo "solver executable is not executable: $CHALLENGE_SOLVER_BINARY" >&2; exit 2; }
+[[ -f "$CHALLENGE_SOLVER_BINARY" && -x "$CHALLENGE_SOLVER_BINARY" ]] || { echo "solver executable is not an executable file: $CHALLENGE_SOLVER_BINARY" >&2; exit 2; }
+CHALLENGE_SOLVER_BINARY="$(realpath -- "$CHALLENGE_SOLVER_BINARY")"
 TMP="$(mktemp -d)"
 HAPHASH_PORT="${HAPHASH_E2E_PORT:-17431}"
 SOLVER_PORT="${HAPHASH_SOLVER_PORT:-17432}"

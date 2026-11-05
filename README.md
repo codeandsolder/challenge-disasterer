@@ -111,7 +111,8 @@ to name an already-built challenge-disasterer executable; they do not compile it
 Hosted CI builds one CPU-only release executable with canonical sccache and
 distributes that exact-commit artifact to all 25 independent live-protocol
 matrix cases. For local runs, explicitly supply the path to an existing
-CPU/GPU build as appropriate.
+CPU/GPU build as appropriate. Relative paths are resolved before the
+harness changes its working directory.
 
 - **Anubis:** `ci/live-anubis-e2e.sh` starts the current upstream Anubis server, obtains a live challenge, submits the disasterer proof to Anubis, and requires the resulting authorization cookie to reach a protected upstream.
 - **Cerberus:** `ci/live-cerberus-e2e.sh` builds the official Cerberus Caddy plugin, obtains a real challenge page, submits the proof to its real `/answer` endpoint, and requires its approval cookie to pass the protected route. The hardware runner executes current upstream plus `v0.4.9` through `v0.4.5` for every available backend, covering the recent compatibility range and the decimal/binary-format boundary against each release's own authoritative verifier.
