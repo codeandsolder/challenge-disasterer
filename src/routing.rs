@@ -187,7 +187,12 @@ mod tests {
             .collect();
         assert_eq!(
             solvers,
-            ["nearest-faster", "nearest-slower", "next-batch", "small-batch"]
+            [
+                "nearest-faster",
+                "nearest-slower",
+                "next-batch",
+                "small-batch"
+            ]
         );
     }
 
