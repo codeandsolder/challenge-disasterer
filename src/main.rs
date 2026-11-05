@@ -76,6 +76,7 @@ fn default_argon2_workers(
         .max(1)
 }
 
+#[cfg(feature = "gpu")]
 #[expect(
     clippy::cast_precision_loss,
     reason = "benchmark work count is converted only to derive approximate throughput timing"
