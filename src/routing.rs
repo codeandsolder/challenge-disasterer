@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{collections::HashSet, fs, path::Path};
 
 use anyhow::Context;
 use serde::Deserialize;
@@ -88,14 +88,30 @@ impl RoutingCalibration {
                     && entry.difficulty == difficulty
                     && compatible_adapter(entry, selected_adapter)
             })
-            .cloned()
             .collect::<Vec<_>>();
         candidates.sort_by(|left, right| {
             compare_batch_ratio(left.batch_size, right.batch_size, batch_size)
                 .then_with(|| left.makespan_ms.total_cmp(&right.makespan_ms))
                 .then_with(|| left.batch_size.cmp(&right.batch_size))
         });
+
+        // Calibration measures the same concrete solver at several batch sizes.
+        // Keep only its closest row, or a failed provider could be retried
+        // repeatedly with different latency estimates.
+        let mut seen = HashSet::new();
         candidates
+            .into_iter()
+            .filter(|entry| {
+                seen.insert((
+                    entry.provider.as_str(),
+                    entry.provider_url.as_deref(),
+                    entry.adapter.as_deref(),
+                    entry.solver.as_str(),
+                    entry.implementation.as_deref(),
+                ))
+            })
+            .cloned()
+            .collect()
     }
 }
 
@@ -194,6 +210,23 @@ mod tests {
                 "small-batch"
             ]
         );
+    }
+
+    #[test]
+    fn attempts_each_concrete_backend_only_once() {
+        let calibration = RoutingCalibration {
+            entries: vec![
+                entry("remote", None, "remote-jit", 1, 1.0),
+                entry("remote", None, "remote-jit", 10, 2.0),
+                entry("remote", None, "remote-jit", 100, 3.0),
+                entry("local", None, "local-jit", 100, 4.0),
+            ],
+        };
+        let candidates = calibration.select_candidates("hashx", 20, 12, None);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].solver, "remote-jit");
+        assert_eq!(candidates[0].batch_size, 10);
+        assert_eq!(candidates[1].solver, "local-jit");
     }
 
     #[test]
