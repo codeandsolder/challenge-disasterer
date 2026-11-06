@@ -72,6 +72,15 @@ The same run also executes `tools/preexisting-baseline`, pinned to the original 
 
 On multi-GPU hosts the runner enumerates every non-CPU Vulkan adapter, runs CPU rows once, and explicitly forces each GPU adapter for the generalized WGPU matrix, specialized Anubis SHA kernel, and live WGPU protocol gates. Adapter identity is part of every GPU result key, so an iGPU and dGPU can never be silently pooled into one number.
 
+For a targeted investigation, the direct Rust solver matrix accepts repeatable `--protocol` selectors instead of running every protocol. Omit them for the complete matrix; use e.g. `--protocol go-away` for only go-away, or `--protocol anubis --protocol haphash` for both families. Selection is enforced for both CPU and GPU rows; Linear.pub has CPU rows only. An isolated, exact-work go-away run can use:
+
+```sh
+cargo +nightly-2026-11-03 run --locked --release \
+  --manifest-path tools/solver-matrix/Cargo.toml -- \
+  --protocol go-away --cpu true --gpu false \
+  --mode throughput --samples 5 --limit 1120000
+```
+
 The direct matrix deliberately separates two questions that must not be conflated:
 
 - **correctness:** normal protocol targets; every returned proof is checked against the protocol condition and the live harness subsequently submits it to the authoritative implementation;
