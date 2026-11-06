@@ -137,10 +137,11 @@ impl RoutingCalibration {
 ///
 /// Calibrations are means over independently issued `PoW` work, so occasional
 /// lucky batches can violate the physical monotonicity of batch makespan.
-/// Merge repeated points with an online mean, then conservatively enforce
-/// nondecreasing completion time. Interpolate linearly within measured points,
-/// bound under-range predictions by the smallest measured batch, and beyond
-/// the last point project at least the last observed cost per request.
+/// Merge repeated points, then pool neighboring monotonicity violations
+/// using weighted least-squares isotonic regression rather than propagating a
+/// single outlier to every later batch. Interpolate between fitted points,
+/// use the smallest measured makespan below range, and beyond range project
+/// at least the last observed per-request cost.
 #[expect(
     clippy::cast_precision_loss,
     reason = "batch sizes are converted to floating point only for approximate time predictions"
@@ -153,11 +154,34 @@ fn estimate_makespan_ms(rows: &[&RouteEntry], target: usize) -> f64 {
         *mean += (entry.makespan_ms - *mean) / (*count as f64);
     }
 
+    // Weighted pool-adjacent-violators regression. Repeated rows retain their
+    // weight even though their batch sizes are represented by a single knot.
     let mut points = Vec::with_capacity(by_batch.len());
-    let mut previous_ms = 0.0_f64;
-    for (batch, (ms, _)) in by_batch {
-        previous_ms = previous_ms.max(ms);
-        points.push((batch, previous_ms));
+    let mut blocks: Vec<(usize, usize, f64, usize)> = Vec::new();
+    for (batch, (ms, count)) in by_batch {
+        let index = points.len();
+        points.push((batch, ms));
+        blocks.push((index, index, ms, count));
+        while blocks.len() > 1 {
+            let last_index = blocks.len() - 1;
+            let (earlier, latest) = blocks.split_at_mut(last_index);
+            let left = &mut earlier[last_index - 1];
+            let right = latest[0];
+            if left.2 <= right.2 {
+                break;
+            }
+            let total_weight = left.3 + right.3;
+            let right_fraction = right.3 as f64 / total_weight as f64;
+            left.2 = right_fraction.mul_add(right.2 - left.2, left.2);
+            left.1 = right.1;
+            left.3 = total_weight;
+            let _ = blocks.pop();
+        }
+    }
+    for (first, last, mean_ms, _) in blocks {
+        for (_, ms) in &mut points[first..=last] {
+            *ms = mean_ms;
+        }
     }
 
     let (mut previous_batch, mut previous_ms) = points[0];
@@ -379,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_measurements_and_lucky_batches_do_not_make_work_faster() {
+    fn weighted_isotonic_fit_averages_lucky_batches_without_large_bias() {
         let calibration = RoutingCalibration {
             entries: vec![
                 entry("remote", None, "repeat", 1, 20.0),
@@ -390,10 +414,10 @@ mod tests {
         };
         let result = calibration.select_candidates("hashx", 20, 10, None);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].makespan_ms, 30.0);
+        assert_eq!(result[0].makespan_ms, 18.75);
         assert_eq!(
             calibration.select_candidates("hashx", 20, 50, None)[0].makespan_ms,
-            30.0
+            18.75
         );
     }
 
