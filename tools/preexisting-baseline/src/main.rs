@@ -106,11 +106,11 @@ macro_rules! timed_legacy {
             $variant
         );
         anyhow::ensure!(
-            solver.attempted_nonces() == $limit,
+            solver.get_attempted_nonces() == $limit,
             "legacy {} {} attempted {} != {}",
             $protocol,
             $variant,
-            solver.attempted_nonces(),
+            solver.get_attempted_nonces(),
             $limit
         );
         emit(
