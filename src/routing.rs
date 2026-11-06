@@ -135,7 +135,7 @@ impl RoutingCalibration {
 /// Estimate concurrent-batch makespan using each concrete backend's sampled
 /// latency curve, not a batch size picked from a different backend.
 ///
-/// Calibrations are means over independently issued PoW work, so occasional
+/// Calibrations are means over independently issued `PoW` work, so occasional
 /// lucky batches can violate the physical monotonicity of batch makespan.
 /// Merge repeated points with an online mean, then conservatively enforce
 /// nondecreasing completion time. Interpolate linearly within measured points,
@@ -167,7 +167,7 @@ fn estimate_makespan_ms(rows: &[&RouteEntry], target: usize) -> f64 {
     for &(batch, ms) in points.iter().skip(1) {
         if target <= batch {
             let fraction = (target - previous_batch) as f64 / (batch - previous_batch) as f64;
-            return finite_makespan(previous_ms + fraction * (ms - previous_ms));
+            return finite_makespan(fraction.mul_add(ms - previous_ms, previous_ms));
         }
         previous_batch = batch;
         previous_ms = ms;
@@ -180,10 +180,12 @@ fn estimate_makespan_ms(rows: &[&RouteEntry], target: usize) -> f64 {
     } else {
         0.0
     };
-    finite_makespan(previous_ms + (target - previous_batch) as f64 * observed_rate.max(recent_rate))
+    finite_makespan(
+        ((target - previous_batch) as f64).mul_add(observed_rate.max(recent_rate), previous_ms),
+    )
 }
 
-fn finite_makespan(ms: f64) -> f64 {
+const fn finite_makespan(ms: f64) -> f64 {
     if ms.is_finite() { ms } else { f64::MAX }
 }
 
