@@ -65,7 +65,10 @@ jobs:
 
       - name: Build challenge-disasterer and E2E wrapper
         run: |
-          RUSTFLAGS="-C target-cpu=native" cargo build --locked --release --no-default-features --features portable-simd
+          # Public sccache artifacts are reused across heterogeneous GitHub runner CPUs.
+          # Avoid host-specific build-script executables; accelerated ISA paths remain
+          # available through the explicitly enabled portable-simd feature.
+          cargo build --locked --release --no-default-features --features portable-simd
           cargo build --locked --manifest-path tools/anubis-e2e/Cargo.toml
 
       - name: Exercise solver against live Anubis
