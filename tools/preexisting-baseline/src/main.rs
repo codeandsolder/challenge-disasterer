@@ -14,6 +14,12 @@ enum Protocol {
     Cerberus,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum Dispatch {
+    Typed,
+    Erased,
+}
+
 #[derive(Parser, Debug)]
 struct Args {
     #[arg(long, default_value_t = 5)]
@@ -23,6 +29,9 @@ struct Args {
     /// Restrict the paired comparison to selected protocol families; repeat as needed.
     #[arg(long, value_enum)]
     protocol: Vec<Protocol>,
+    /// Current solver invocation: static generic or service-style erased dynamic.
+    #[arg(long, value_enum, default_value_t = Dispatch::Typed)]
+    dispatch: Dispatch,
 }
 
 impl Args {
@@ -79,7 +88,30 @@ fn emit(
     println!("{}", serde_json::to_string(&row).unwrap());
 }
 
-macro_rules! timed_current {
+trait ErasedCurrentSolver {
+    fn set_limit_erased(&mut self, limit: u64);
+    fn attempted_erased(&self) -> u64;
+    fn solve_erased(&mut self, target: u64, ty: u8, mask: u64) -> Option<(u64, [u32; 8])>;
+}
+
+impl<T> ErasedCurrentSolver for T
+where
+    T: current::solver::Solver<Output = [u32; 8]> + current::solver::SolverDyn<Output = [u32; 8]>,
+{
+    fn set_limit_erased(&mut self, limit: u64) {
+        current::solver::Solver::set_limit(self, limit);
+    }
+
+    fn attempted_erased(&self) -> u64 {
+        current::solver::Solver::attempted_nonces(self)
+    }
+
+    fn solve_erased(&mut self, target: u64, ty: u8, mask: u64) -> Option<(u64, [u32; 8])> {
+        current::solver::SolverDyn::solve_dyn(self, target, ty, mask)
+    }
+}
+
+macro_rules! timed_current_typed {
     ($protocol:expr, $variant:expr, $sample:expr, $limit:expr, $solver:expr, $ty:expr) => {{
         use current::solver::Solver as _;
         let mut solver = $solver;
@@ -113,6 +145,63 @@ macro_rules! timed_current {
         emit("current", $protocol, $variant, "auto", $sample, $limit, ns);
     }};
 }
+macro_rules! timed_current_erased {
+    ($protocol:expr, $variant:expr, $sample:expr, $limit:expr, $solver:expr, $ty:expr) => {{
+        let mut solver: Box<dyn ErasedCurrentSolver> = Box::new($solver);
+        solver.set_limit_erased($limit);
+        let started = Instant::now();
+        let found = solver.solve_erased(
+            if $ty == current::solver::SOLVE_TYPE_GT {
+                u64::MAX - 1
+            } else if $ty == current::solver::SOLVE_TYPE_LT {
+                1
+            } else {
+                0
+            },
+            $ty,
+            u64::MAX,
+        );
+        let elapsed = started.elapsed().as_nanos();
+        anyhow::ensure!(
+            found.is_none(),
+            "erased current {} {} unexpectedly found proof",
+            $protocol,
+            $variant
+        );
+        let attempted = solver.attempted_erased();
+        anyhow::ensure!(
+            attempted == $limit,
+            "erased current {} {} attempted {} != {}",
+            $protocol,
+            $variant,
+            attempted,
+            $limit
+        );
+        emit(
+            "current",
+            $protocol,
+            $variant,
+            "auto-erased",
+            $sample,
+            attempted,
+            elapsed,
+        );
+    }};
+}
+
+macro_rules! timed_current {
+    ($dispatch:expr, $protocol:expr, $variant:expr, $sample:expr, $limit:expr, $solver:expr, $ty:expr) => {{
+        match $dispatch {
+            Dispatch::Typed => {
+                timed_current_typed!($protocol, $variant, $sample, $limit, $solver, $ty)
+            }
+            Dispatch::Erased => {
+                timed_current_erased!($protocol, $variant, $sample, $limit, $solver, $ty)
+            }
+        }
+    }};
+}
+
 macro_rules! timed_legacy {
     ($protocol:expr, $variant:expr, $sample:expr, $limit:expr, $solver:expr, $ty:expr) => {{
         use legacy::solver::Solver as _;
@@ -162,6 +251,7 @@ fn current_cases(args: &Args, sample: u32) -> anyhow::Result<()> {
         let mut prefix = vec![b'a'; 96];
         prefix[..4].copy_from_slice(&sample.to_le_bytes());
         timed_current!(
+            args.dispatch,
             "anubis",
             "decimal",
             sample,
@@ -181,6 +271,7 @@ fn current_cases(args: &Args, sample: u32) -> anyhow::Result<()> {
             ("debian-varnish", format!("102026194332.0x{sample:064x};")),
         ] {
             timed_current!(
+                args.dispatch,
                 "haphash",
                 variant,
                 sample,
@@ -197,6 +288,7 @@ fn current_cases(args: &Args, sample: u32) -> anyhow::Result<()> {
         binary[..4].copy_from_slice(&sample.to_le_bytes());
         *binary.last_mut().unwrap() = 0x80;
         timed_current!(
+            args.dispatch,
             "anubis",
             "wasm-sha256-1.28",
             sample,
@@ -216,6 +308,7 @@ fn current_cases(args: &Args, sample: u32) -> anyhow::Result<()> {
             &format!("matrix-salt-{sample:08x}"),
         );
         timed_current!(
+            args.dispatch,
             "mcaptcha",
             "sha256",
             sample,
@@ -227,6 +320,7 @@ fn current_cases(args: &Args, sample: u32) -> anyhow::Result<()> {
     if args.includes(Protocol::Capjs) {
         let cap = [b'1'; 32];
         timed_current!(
+            args.dispatch,
             "capjs",
             "single-subchallenge",
             sample,
@@ -245,6 +339,7 @@ fn current_cases(args: &Args, sample: u32) -> anyhow::Result<()> {
             *b = (i as u8).wrapping_add(sample as u8);
         }
         timed_current!(
+            args.dispatch,
             "go-away",
             "js-pow-sha256",
             sample,
@@ -256,6 +351,7 @@ fn current_cases(args: &Args, sample: u32) -> anyhow::Result<()> {
     if args.includes(Protocol::Cerberus) {
         let salt = format!("matrix-{sample:08x}|3959614364|1759954402|signature|");
         timed_current!(
+            args.dispatch,
             "cerberus",
             "binary-0.4.6+",
             sample,
@@ -266,6 +362,7 @@ fn current_cases(args: &Args, sample: u32) -> anyhow::Result<()> {
             current::solver::SOLVE_TYPE_MASK
         );
         timed_current!(
+            args.dispatch,
             "cerberus",
             "decimal-pre-0.4.6",
             sample,
@@ -445,6 +542,11 @@ mod tests {
         assert!(!selected.includes(Protocol::Anubis));
         assert!(!selected.includes(Protocol::Cerberus));
         selected.validate()?;
+        let erased =
+            Args::try_parse_from(["baseline", "--protocol", "go-away", "--dispatch", "erased"])?;
+        assert!(matches!(erased.dispatch, Dispatch::Erased));
+        assert!(matches!(defaults.dispatch, Dispatch::Typed));
+        assert!(Args::try_parse_from(["baseline", "--dispatch", "invalid"]).is_err());
         assert!(
             Args::try_parse_from(["baseline", "--protocol", "cerberus", "--limit", "17",])?
                 .validate()
