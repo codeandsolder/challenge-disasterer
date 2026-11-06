@@ -30,6 +30,18 @@ enum Mode {
     Throughput,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum Protocol {
+    Anubis,
+    Haphash,
+    Mcaptcha,
+    Capjs,
+    Linear,
+    GoAway,
+    Cerberus,
+    Altcha,
+}
+
 #[derive(Parser, Debug)]
 struct Args {
     /// Fresh deterministic challenge instances per protocol/backend.
@@ -56,6 +68,19 @@ struct Args {
     /// Git commit reported in JSONL metadata.
     #[arg(long, default_value = "unknown")]
     commit: String,
+    /// Select protocol families to execute (repeat to select multiple); default is all.
+    #[arg(long, value_enum)]
+    protocol: Vec<Protocol>,
+}
+
+impl Args {
+    fn includes(&self, candidate: Protocol) -> bool {
+        self.protocol.is_empty() || self.protocol.contains(&candidate)
+    }
+
+    fn has_gpu_work(&self) -> bool {
+        self.protocol.is_empty() || self.protocol.iter().any(|p| *p != Protocol::Linear)
+    }
 }
 
 #[derive(Serialize)]
@@ -759,58 +784,26 @@ fn run_hashwx_case(meta: &Meta, sample: u32, args: &Args) -> Result<()> {
 fn run_cpu_anubis_haphash_cases(meta: &Meta, args: &Args, sample: u32) -> Result<()> {
     let sample_bytes = sample.to_le_bytes();
 
-    // Anubis: same decimal message semantics as the live service, d5 ~= 2^20 expected candidates.
-    let mut anubis_prefix = vec![b'a'; 96];
-    anubis_prefix[..4].copy_from_slice(&sample_bytes);
-    let anubis_difficulty = NonZeroU8::new(5).context("Anubis difficulty must be non-zero")?;
-    let anubis_mask = compute_mask_zero_nibbles(anubis_difficulty);
-    for (implementation, solver) in decimal_backends(|| {
-        DecimalMessage::new(&anubis_prefix, 0).context("construct Anubis decimal fixture")
-    })? {
-        emit_cpu(
-            meta,
-            Case {
-                protocol: "anubis",
-                variant: "decimal",
-                implementation,
-                accelerator: "cpu",
-                sample,
-                parameters: json!({"difficulty":5,"prefix_len":anubis_prefix.len()}),
-                target: 0,
-                mask: anubis_mask,
-                ty: SOLVE_TYPE_MASK,
-            },
-            solver,
-            args.limit,
-            args.mode,
-        )?;
-    }
-
-    // haphash: same decimal SHA-256 work primitive, but distinct protocol prefixes.
-    // Use d5 (~2^20 expected candidates) for stable apples-to-apples throughput.
-    for (variant, prefix) in [
-        (
-            "haproxy",
-            format!("203.0.113.{};example.test;1759954402;", sample % 255),
-        ),
-        ("debian-varnish", format!("102026194332.0x{sample:064x};")),
-    ] {
-        let difficulty = NonZeroU8::new(5).context("haphash difficulty must be non-zero")?;
-        let mask = compute_mask_zero_nibbles(difficulty);
+    if args.includes(Protocol::Anubis) {
+        // Anubis: same decimal message semantics as the live service, d5 ~= 2^20 expected candidates.
+        let mut anubis_prefix = vec![b'a'; 96];
+        anubis_prefix[..4].copy_from_slice(&sample_bytes);
+        let anubis_difficulty = NonZeroU8::new(5).context("Anubis difficulty must be non-zero")?;
+        let anubis_mask = compute_mask_zero_nibbles(anubis_difficulty);
         for (implementation, solver) in decimal_backends(|| {
-            DecimalMessage::new(prefix.as_bytes(), 0).context("construct haphash decimal fixture")
+            DecimalMessage::new(&anubis_prefix, 0).context("construct Anubis decimal fixture")
         })? {
             emit_cpu(
                 meta,
                 Case {
-                    protocol: "haphash",
-                    variant,
+                    protocol: "anubis",
+                    variant: "decimal",
                     implementation,
                     accelerator: "cpu",
                     sample,
-                    parameters: json!({"difficulty":difficulty.get(),"prefix_len":prefix.len()}),
+                    parameters: json!({"difficulty":5,"prefix_len":anubis_prefix.len()}),
                     target: 0,
-                    mask,
+                    mask: anubis_mask,
                     ty: SOLVE_TYPE_MASK,
                 },
                 solver,
@@ -820,37 +813,77 @@ fn run_cpu_anubis_haphash_cases(meta: &Meta, args: &Args, sample: u32) -> Result
         }
     }
 
-    // Anubis 1.28 WASM SHA-256: raw challenge bytes plus a 32-bit nonce.
-    // End the challenge with 0x80 so upstream selects little-endian nonce bytes directly.
-    let mut anubis_wasm_data = vec![0x42_u8; 48];
-    anubis_wasm_data[..4].copy_from_slice(&sample_bytes);
-    anubis_wasm_data[47] = 0x80;
-    let anubis_sha_mask = u64::MAX << (64 - 20);
-    let nonce_bytes = NonZeroU8::new(4).context("Anubis nonce width must be non-zero")?;
-    for (implementation, solver) in binary_backends(|| {
-        BinaryMessage::new(&anubis_wasm_data, nonce_bytes)
-            .context("construct Anubis binary fixture")
-    })? {
-        emit_cpu(
-            meta,
-            Case {
-                protocol: "anubis",
-                variant: "wasm-sha256-1.28",
-                implementation,
-                accelerator: "cpu",
-                sample,
-                parameters: json!({"difficulty":20,"data_len":anubis_wasm_data.len(),"nonce_endian":"little"}),
-                target: 0,
-                mask: anubis_sha_mask,
-                ty: SOLVE_TYPE_MASK,
-            },
-            solver,
-            args.limit,
-            args.mode,
-        )?;
+    if args.includes(Protocol::Haphash) {
+        // haphash: same decimal SHA-256 work primitive, but distinct protocol prefixes.
+        // Use d5 (~2^20 expected candidates) for stable apples-to-apples throughput.
+        for (variant, prefix) in [
+            (
+                "haproxy",
+                format!("203.0.113.{};example.test;1759954402;", sample % 255),
+            ),
+            ("debian-varnish", format!("102026194332.0x{sample:064x};")),
+        ] {
+            let difficulty = NonZeroU8::new(5).context("haphash difficulty must be non-zero")?;
+            let mask = compute_mask_zero_nibbles(difficulty);
+            for (implementation, solver) in decimal_backends(|| {
+                DecimalMessage::new(prefix.as_bytes(), 0)
+                    .context("construct haphash decimal fixture")
+            })? {
+                emit_cpu(
+                    meta,
+                    Case {
+                        protocol: "haphash",
+                        variant,
+                        implementation,
+                        accelerator: "cpu",
+                        sample,
+                        parameters: json!({"difficulty":difficulty.get(),"prefix_len":prefix.len()}),
+                        target: 0,
+                        mask,
+                        ty: SOLVE_TYPE_MASK,
+                    },
+                    solver,
+                    args.limit,
+                    args.mode,
+                )?;
+            }
+        }
     }
 
-    run_argon2_case(meta, sample, &anubis_wasm_data, args)?;
+    if args.includes(Protocol::Anubis) {
+        // Anubis 1.28 WASM SHA-256: raw challenge bytes plus a 32-bit nonce.
+        // End the challenge with 0x80 so upstream selects little-endian nonce bytes directly.
+        let mut anubis_wasm_data = vec![0x42_u8; 48];
+        anubis_wasm_data[..4].copy_from_slice(&sample_bytes);
+        anubis_wasm_data[47] = 0x80;
+        let anubis_sha_mask = u64::MAX << (64 - 20);
+        let nonce_bytes = NonZeroU8::new(4).context("Anubis nonce width must be non-zero")?;
+        for (implementation, solver) in binary_backends(|| {
+            BinaryMessage::new(&anubis_wasm_data, nonce_bytes)
+                .context("construct Anubis binary fixture")
+        })? {
+            emit_cpu(
+                meta,
+                Case {
+                    protocol: "anubis",
+                    variant: "wasm-sha256-1.28",
+                    implementation,
+                    accelerator: "cpu",
+                    sample,
+                    parameters: json!({"difficulty":20,"data_len":anubis_wasm_data.len(),"nonce_endian":"little"}),
+                    target: 0,
+                    mask: anubis_sha_mask,
+                    ty: SOLVE_TYPE_MASK,
+                },
+                solver,
+                args.limit,
+                args.mode,
+            )?;
+        }
+
+        run_argon2_case(meta, sample, &anubis_wasm_data, args)?;
+    }
+
     Ok(())
 }
 
@@ -892,173 +925,183 @@ fn run_cpu_mcaptcha_case(meta: &Meta, args: &Args, sample: u32) -> Result<()> {
 }
 
 fn run_cpu_capjs_cases(meta: &Meta, args: &Args, sample: u32) -> Result<()> {
-    // Cap.js: real emitter shape, one subchallenge at d5 ~= 2^20 expected candidates.
-    let token = format!("challenge-disasterer-matrix-token-{sample:08x}");
-    let emitter = CapJSEmitter::new(token.as_bytes());
-    let mut cap_salt = vec![0_u8; 32];
-    let mut cap_target = [0_u32; 2];
-    emitter.emit(&mut cap_salt, &mut cap_target, 1);
-    let cap_difficulty = 5_u8;
-    let cap_mask = u64::MAX << (64 - u64::from(cap_difficulty) * 4);
-    let cap_target = (u64::from(cap_target[0]) << 32) | u64::from(cap_target[1]);
-    for (implementation, solver) in decimal_backends(|| {
-        DecimalMessage::new_f64(&cap_salt, 0)
-            .map(|(message, _)| message)
-            .context("construct Cap.js decimal fixture")
-    })? {
-        emit_cpu(
-            meta,
-            Case {
-                protocol: "capjs",
-                variant: "single-subchallenge",
-                implementation,
-                accelerator: "cpu",
-                sample,
-                parameters: json!({"difficulty":cap_difficulty,"salt_len":cap_salt.len()}),
-                target: cap_target,
-                mask: cap_mask,
-                ty: SOLVE_TYPE_MASK,
-            },
-            solver,
-            args.limit,
-            args.mode,
-        )?;
+    if args.includes(Protocol::Capjs) {
+        // Cap.js: real emitter shape, one subchallenge at d5 ~= 2^20 expected candidates.
+        let token = format!("challenge-disasterer-matrix-token-{sample:08x}");
+        let emitter = CapJSEmitter::new(token.as_bytes());
+        let mut cap_salt = vec![0_u8; 32];
+        let mut cap_target = [0_u32; 2];
+        emitter.emit(&mut cap_salt, &mut cap_target, 1);
+        let cap_difficulty = 5_u8;
+        let cap_mask = u64::MAX << (64 - u64::from(cap_difficulty) * 4);
+        let cap_target = (u64::from(cap_target[0]) << 32) | u64::from(cap_target[1]);
+        for (implementation, solver) in decimal_backends(|| {
+            DecimalMessage::new_f64(&cap_salt, 0)
+                .map(|(message, _)| message)
+                .context("construct Cap.js decimal fixture")
+        })? {
+            emit_cpu(
+                meta,
+                Case {
+                    protocol: "capjs",
+                    variant: "single-subchallenge",
+                    implementation,
+                    accelerator: "cpu",
+                    sample,
+                    parameters: json!({"difficulty":cap_difficulty,"salt_len":cap_salt.len()}),
+                    target: cap_target,
+                    mask: cap_mask,
+                    ty: SOLVE_TYPE_MASK,
+                },
+                solver,
+                args.limit,
+                args.mode,
+            )?;
+        }
+
+        // Cap.js format-2 SHA-256 uses a direct salt + hexadecimal prefix target.
+        // Keep a first-class row even though it shares the decimal solver engine with
+        // format 1: this prevents protocol coverage from disappearing behind a primitive alias.
+        let cap_v2_salt = format!("challenge-disasterer-cap-v2-{sample:08x}");
+        let cap_v2_target_hex = "abcde";
+        let cap_v2_target = 0xabcde_u64 << (64 - 20);
+        let cap_v2_mask = u64::MAX << (64 - 20);
+        for (implementation, solver) in decimal_backends(|| {
+            DecimalMessage::new_f64(cap_v2_salt.as_bytes(), 0)
+                .map(|(message, _)| message)
+                .context("construct Cap.js format-2 fixture")
+        })? {
+            emit_cpu(
+                meta,
+                Case {
+                    protocol: "capjs",
+                    variant: "format2-sha256-pow",
+                    implementation,
+                    accelerator: "cpu",
+                    sample,
+                    parameters: json!({
+                        "target": cap_v2_target_hex,
+                        "salt_len": cap_v2_salt.len(),
+                    }),
+                    target: cap_v2_target,
+                    mask: cap_v2_mask,
+                    ty: SOLVE_TYPE_MASK,
+                },
+                solver,
+                args.limit,
+                args.mode,
+            )?;
+        }
+
+        // Cap.js format-2 HashWX at the production default reuse window. Include
+        // per-seed program generation/JIT cost rather than benchmarking only exec().
+        run_hashwx_case(meta, sample, args)?;
+
+        // Cap.js RSW default production shape: a fixed 2048-bit modulus and 75,000
+        // sequential modular squarings. The external matrix runs the same input through
+        // the pinned official Cap worker and GMP.
+        run_cap_rsw_case(meta, sample, args)?;
     }
-
-    // Cap.js format-2 SHA-256 uses a direct salt + hexadecimal prefix target.
-    // Keep a first-class row even though it shares the decimal solver engine with
-    // format 1: this prevents protocol coverage from disappearing behind a primitive alias.
-    let cap_v2_salt = format!("challenge-disasterer-cap-v2-{sample:08x}");
-    let cap_v2_target_hex = "abcde";
-    let cap_v2_target = 0xabcde_u64 << (64 - 20);
-    let cap_v2_mask = u64::MAX << (64 - 20);
-    for (implementation, solver) in decimal_backends(|| {
-        DecimalMessage::new_f64(cap_v2_salt.as_bytes(), 0)
-            .map(|(message, _)| message)
-            .context("construct Cap.js format-2 fixture")
-    })? {
-        emit_cpu(
-            meta,
-            Case {
-                protocol: "capjs",
-                variant: "format2-sha256-pow",
-                implementation,
-                accelerator: "cpu",
-                sample,
-                parameters: json!({
-                    "target": cap_v2_target_hex,
-                    "salt_len": cap_v2_salt.len(),
-                }),
-                target: cap_v2_target,
-                mask: cap_v2_mask,
-                ty: SOLVE_TYPE_MASK,
-            },
-            solver,
-            args.limit,
-            args.mode,
-        )?;
-    }
-
-    // Cap.js format-2 HashWX at the production default reuse window. Include
-    // per-seed program generation/JIT cost rather than benchmarking only exec().
-    run_hashwx_case(meta, sample, args)?;
-
-    // Cap.js RSW default production shape: a fixed 2048-bit modulus and 75,000
-    // sequential modular squarings. The external matrix runs the same input through
-    // the pinned official Cap worker and GMP.
-    run_cap_rsw_case(meta, sample, args)?;
 
     // Linear.pub: current deployed SHA-1 gate, exact seed + decimal nonce shape.
-    run_linear_case(meta, sample, args)?;
+    if args.includes(Protocol::Linear) {
+        run_linear_case(meta, sample, args)?;
+    }
     Ok(())
 }
 
 fn run_cpu_goaway_cerberus_cases(meta: &Meta, args: &Args, sample: u32) -> Result<()> {
-    // go-away: actual 32-byte challenge message, d20 ~= 2^20 expected candidates.
-    let mut go_bytes = [0_u8; 32];
-    let sample_low = sample.to_le_bytes()[0];
-    for (i, byte) in go_bytes.iter_mut().enumerate() {
-        *byte = i.to_le_bytes()[0].wrapping_add(sample_low);
-    }
-    let go_difficulty = NonZeroU8::new(20).context("GoAway difficulty must be non-zero")?;
-    let go_mask = compute_mask_goaway(go_difficulty);
-    for (implementation, solver) in goaway_backends(|| GoAwayMessage::new_bytes(&go_bytes, 0)) {
-        emit_cpu(
-            meta,
-            Case {
-                protocol: "go-away",
-                variant: "js-pow-sha256",
-                implementation,
-                accelerator: "cpu",
-                sample,
-                parameters: json!({"difficulty":go_difficulty.get()}),
-                target: 0,
-                mask: go_mask,
-                ty: SOLVE_TYPE_MASK,
-            },
-            solver,
-            args.limit,
-            args.mode,
-        )?;
+    if args.includes(Protocol::GoAway) {
+        // go-away: actual 32-byte challenge message, d20 ~= 2^20 expected candidates.
+        let mut go_bytes = [0_u8; 32];
+        let sample_low = sample.to_le_bytes()[0];
+        for (i, byte) in go_bytes.iter_mut().enumerate() {
+            *byte = i.to_le_bytes()[0].wrapping_add(sample_low);
+        }
+        let go_difficulty = NonZeroU8::new(20).context("GoAway difficulty must be non-zero")?;
+        let go_mask = compute_mask_goaway(go_difficulty);
+        for (implementation, solver) in goaway_backends(|| GoAwayMessage::new_bytes(&go_bytes, 0)) {
+            emit_cpu(
+                meta,
+                Case {
+                    protocol: "go-away",
+                    variant: "js-pow-sha256",
+                    implementation,
+                    accelerator: "cpu",
+                    sample,
+                    parameters: json!({"difficulty":go_difficulty.get()}),
+                    target: 0,
+                    mask: go_mask,
+                    ty: SOLVE_TYPE_MASK,
+                },
+                solver,
+                args.limit,
+                args.mode,
+            )?;
+        }
     }
 
     // Legacy Cerberus (<0.4.6) decimal nonce format, retained because the service supports it.
-    let cerberus_legacy_salt = format!("matrix-{sample:08x}|3959614364|1759954402|signature|");
-    let cerberus_legacy_difficulty =
-        NonZeroU8::new(10).context("legacy Cerberus difficulty must be non-zero")?;
-    let cerberus_legacy_mask = compute_mask_cerberus(cerberus_legacy_difficulty);
-    for (implementation, solver) in cerberus_backends(|| {
-        CerberusDecimalMessage::new(cerberus_legacy_salt.as_bytes(), 0)
-            .map(CerberusMessage::Decimal)
-            .context("construct legacy Cerberus fixture")
-    })? {
-        emit_cpu(
-            meta,
-            Case {
-                protocol: "cerberus",
-                variant: "decimal-pre-0.4.6",
-                implementation,
-                accelerator: "cpu",
-                sample,
-                parameters: json!({"difficulty":cerberus_legacy_difficulty.get(),"format":"decimal"}),
-                target: 0,
-                mask: cerberus_legacy_mask,
-                ty: SOLVE_TYPE_MASK,
-            },
-            solver,
-            args.limit,
-            args.mode,
-        )?;
+    if args.includes(Protocol::Cerberus) {
+        let cerberus_legacy_salt = format!("matrix-{sample:08x}|3959614364|1759954402|signature|");
+        let cerberus_legacy_difficulty =
+            NonZeroU8::new(10).context("legacy Cerberus difficulty must be non-zero")?;
+        let cerberus_legacy_mask = compute_mask_cerberus(cerberus_legacy_difficulty);
+        for (implementation, solver) in cerberus_backends(|| {
+            CerberusDecimalMessage::new(cerberus_legacy_salt.as_bytes(), 0)
+                .map(CerberusMessage::Decimal)
+                .context("construct legacy Cerberus fixture")
+        })? {
+            emit_cpu(
+                meta,
+                Case {
+                    protocol: "cerberus",
+                    variant: "decimal-pre-0.4.6",
+                    implementation,
+                    accelerator: "cpu",
+                    sample,
+                    parameters: json!({"difficulty":cerberus_legacy_difficulty.get(),"format":"decimal"}),
+                    target: 0,
+                    mask: cerberus_legacy_mask,
+                    ty: SOLVE_TYPE_MASK,
+                },
+                solver,
+                args.limit,
+                args.mode,
+            )?;
+        }
+
+        // Current Cerberus (0.4.6+) binary format, d10 ~= 2^20 expected candidates.
+        let cerberus_salt = format!("matrix-{sample:08x}|3959614364|1759954402|signature|");
+        let cerberus_difficulty =
+            NonZeroU8::new(10).context("Cerberus difficulty must be non-zero")?;
+        let cerberus_mask = compute_mask_cerberus(cerberus_difficulty);
+        for (implementation, solver) in cerberus_backends(|| {
+            Ok(CerberusMessage::Binary(CerberusBinaryMessage::new(
+                cerberus_salt.as_bytes(),
+                0,
+            )))
+        })? {
+            emit_cpu(
+                meta,
+                Case {
+                    protocol: "cerberus",
+                    variant: "binary-0.4.6+",
+                    implementation,
+                    accelerator: "cpu",
+                    sample,
+                    parameters: json!({"difficulty":cerberus_difficulty.get()}),
+                    target: 0,
+                    mask: cerberus_mask,
+                    ty: SOLVE_TYPE_MASK,
+                },
+                solver,
+                args.limit,
+                args.mode,
+            )?;
+        }
     }
 
-    // Current Cerberus (0.4.6+) binary format, d10 ~= 2^20 expected candidates.
-    let cerberus_salt = format!("matrix-{sample:08x}|3959614364|1759954402|signature|");
-    let cerberus_difficulty = NonZeroU8::new(10).context("Cerberus difficulty must be non-zero")?;
-    let cerberus_mask = compute_mask_cerberus(cerberus_difficulty);
-    for (implementation, solver) in cerberus_backends(|| {
-        Ok(CerberusMessage::Binary(CerberusBinaryMessage::new(
-            cerberus_salt.as_bytes(),
-            0,
-        )))
-    })? {
-        emit_cpu(
-            meta,
-            Case {
-                protocol: "cerberus",
-                variant: "binary-0.4.6+",
-                implementation,
-                accelerator: "cpu",
-                sample,
-                parameters: json!({"difficulty":cerberus_difficulty.get()}),
-                target: 0,
-                mask: cerberus_mask,
-                ty: SOLVE_TYPE_MASK,
-            },
-            solver,
-            args.limit,
-            args.mode,
-        )?;
-    }
     Ok(())
 }
 
@@ -1128,11 +1171,21 @@ fn run_cpu_altcha_cases(meta: &Meta, args: &Args, sample: u32) -> Result<()> {
 
 fn run_cpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
     for sample in 0..args.samples {
-        run_cpu_anubis_haphash_cases(meta, args, sample)?;
-        run_cpu_mcaptcha_case(meta, args, sample)?;
-        run_cpu_capjs_cases(meta, args, sample)?;
-        run_cpu_goaway_cerberus_cases(meta, args, sample)?;
-        run_cpu_altcha_cases(meta, args, sample)?;
+        if args.includes(Protocol::Anubis) || args.includes(Protocol::Haphash) {
+            run_cpu_anubis_haphash_cases(meta, args, sample)?;
+        }
+        if args.includes(Protocol::Mcaptcha) {
+            run_cpu_mcaptcha_case(meta, args, sample)?;
+        }
+        if args.includes(Protocol::Capjs) || args.includes(Protocol::Linear) {
+            run_cpu_capjs_cases(meta, args, sample)?;
+        }
+        if args.includes(Protocol::GoAway) || args.includes(Protocol::Cerberus) {
+            run_cpu_goaway_cerberus_cases(meta, args, sample)?;
+        }
+        if args.includes(Protocol::Altcha) {
+            run_cpu_altcha_cases(meta, args, sample)?;
+        }
     }
     Ok(())
 }
@@ -1152,12 +1205,24 @@ fn run_gpu_matrix<'a>(
         let adapter = gpu.adapter().to_owned();
 
         for sample in 0..args.samples {
-            run_gpu_anubis_haphash_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
-            run_gpu_wasm_mcaptcha_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
-            run_gpu_capjs_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
-            run_gpu_goaway_case(meta, args, &gpu, adapter.as_str(), sample).await?;
-            run_gpu_cerberus_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
-            run_gpu_altcha_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
+            if args.includes(Protocol::Anubis) || args.includes(Protocol::Haphash) {
+                run_gpu_anubis_haphash_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
+            }
+            if args.includes(Protocol::Anubis) || args.includes(Protocol::Mcaptcha) {
+                run_gpu_wasm_mcaptcha_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
+            }
+            if args.includes(Protocol::Capjs) {
+                run_gpu_capjs_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
+            }
+            if args.includes(Protocol::GoAway) {
+                run_gpu_goaway_case(meta, args, &gpu, adapter.as_str(), sample).await?;
+            }
+            if args.includes(Protocol::Cerberus) {
+                run_gpu_cerberus_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
+            }
+            if args.includes(Protocol::Altcha) {
+                run_gpu_altcha_cases(meta, args, &gpu, adapter.as_str(), sample).await?;
+            }
         }
         Ok(())
     })
@@ -1171,49 +1236,14 @@ async fn run_gpu_anubis_haphash_cases(
     adapter: &str,
     sample: u32,
 ) -> Result<()> {
-    let sample_bytes = sample.to_le_bytes();
-    let mut prefix = vec![b'a'; 96];
-    prefix[..4].copy_from_slice(&sample_bytes);
-    let difficulty = NonZeroU8::new(5).context("Anubis difficulty must be non-zero")?;
-    let mask = compute_mask_zero_nibbles(difficulty);
-    let message =
-        DecimalMessage::new(&prefix, 0).context("construct GPU Anubis decimal fixture")?;
-    let mut solver = challenge_solvers::gpu::DecimalSolver::from(message);
-    solver.set_limit(args.limit);
-    let started = Instant::now();
-    let (bench_target, bench_mask, _) = benchmark_condition(args.mode, 0, mask, SOLVE_TYPE_MASK);
-    let solution = solver
-        .solve::<SOLVE_TYPE_MASK>(gpu, bench_target, bench_mask)
-        .await?;
-    let elapsed = started.elapsed().as_nanos();
-    emit_gpu(
-        meta,
-        "anubis",
-        "decimal",
-        sample,
-        json!({"difficulty":5,"prefix_len":prefix.len()}),
-        0,
-        mask,
-        SOLVE_TYPE_MASK,
-        solver.attempted_nonces(),
-        elapsed,
-        solution.map(|x| (x.nonce, x.hash)),
-        adapter,
-        args.mode,
-        args.limit,
-    )?;
-
-    for (variant, prefix) in [
-        (
-            "haproxy",
-            format!("203.0.113.{};example.test;1759954402;", sample % 255),
-        ),
-        ("debian-varnish", format!("102026194332.0x{sample:064x};")),
-    ] {
-        let difficulty = NonZeroU8::new(5).context("haphash difficulty must be non-zero")?;
+    if args.includes(Protocol::Anubis) {
+        let sample_bytes = sample.to_le_bytes();
+        let mut prefix = vec![b'a'; 96];
+        prefix[..4].copy_from_slice(&sample_bytes);
+        let difficulty = NonZeroU8::new(5).context("Anubis difficulty must be non-zero")?;
         let mask = compute_mask_zero_nibbles(difficulty);
-        let message = DecimalMessage::new(prefix.as_bytes(), 0)
-            .context("construct GPU haphash decimal fixture")?;
+        let message =
+            DecimalMessage::new(&prefix, 0).context("construct GPU Anubis decimal fixture")?;
         let mut solver = challenge_solvers::gpu::DecimalSolver::from(message);
         solver.set_limit(args.limit);
         let started = Instant::now();
@@ -1225,10 +1255,10 @@ async fn run_gpu_anubis_haphash_cases(
         let elapsed = started.elapsed().as_nanos();
         emit_gpu(
             meta,
-            "haphash",
-            variant,
+            "anubis",
+            "decimal",
             sample,
-            json!({"difficulty":difficulty.get(),"prefix_len":prefix.len()}),
+            json!({"difficulty":5,"prefix_len":prefix.len()}),
             0,
             mask,
             SOLVE_TYPE_MASK,
@@ -1240,6 +1270,47 @@ async fn run_gpu_anubis_haphash_cases(
             args.limit,
         )?;
     }
+
+    if args.includes(Protocol::Haphash) {
+        for (variant, prefix) in [
+            (
+                "haproxy",
+                format!("203.0.113.{};example.test;1759954402;", sample % 255),
+            ),
+            ("debian-varnish", format!("102026194332.0x{sample:064x};")),
+        ] {
+            let difficulty = NonZeroU8::new(5).context("haphash difficulty must be non-zero")?;
+            let mask = compute_mask_zero_nibbles(difficulty);
+            let message = DecimalMessage::new(prefix.as_bytes(), 0)
+                .context("construct GPU haphash decimal fixture")?;
+            let mut solver = challenge_solvers::gpu::DecimalSolver::from(message);
+            solver.set_limit(args.limit);
+            let started = Instant::now();
+            let (bench_target, bench_mask, _) =
+                benchmark_condition(args.mode, 0, mask, SOLVE_TYPE_MASK);
+            let solution = solver
+                .solve::<SOLVE_TYPE_MASK>(gpu, bench_target, bench_mask)
+                .await?;
+            let elapsed = started.elapsed().as_nanos();
+            emit_gpu(
+                meta,
+                "haphash",
+                variant,
+                sample,
+                json!({"difficulty":difficulty.get(),"prefix_len":prefix.len()}),
+                0,
+                mask,
+                SOLVE_TYPE_MASK,
+                solver.attempted_nonces(),
+                elapsed,
+                solution.map(|x| (x.nonce, x.hash)),
+                adapter,
+                args.mode,
+                args.limit,
+            )?;
+        }
+    }
+
     Ok(())
 }
 
@@ -1251,84 +1322,89 @@ async fn run_gpu_wasm_mcaptcha_cases(
     adapter: &str,
     sample: u32,
 ) -> Result<()> {
-    let sample_bytes = sample.to_le_bytes();
-    let mut anubis_wasm_data = vec![0x42_u8; 48];
-    anubis_wasm_data[..4].copy_from_slice(&sample_bytes);
-    anubis_wasm_data[47] = 0x80;
-    let anubis_sha_mask = u64::MAX << (64 - 20);
-    let nonce_bytes = NonZeroU8::new(4).context("Anubis nonce width must be non-zero")?;
-    let binary_message = BinaryMessage::new(&anubis_wasm_data, nonce_bytes)
-        .context("construct GPU Anubis binary fixture")?;
-    let mut solver = challenge_solvers::gpu::BinarySolver::from(binary_message);
-    solver.set_limit(args.limit);
-    let started = Instant::now();
-    let (bench_target, bench_mask, _) =
-        benchmark_condition(args.mode, 0, anubis_sha_mask, SOLVE_TYPE_MASK);
-    let solution = solver
-        .solve::<SOLVE_TYPE_MASK>(gpu, bench_target, bench_mask)
-        .await?;
-    let elapsed = started.elapsed().as_nanos();
-    emit_gpu(
-        meta,
-        "anubis",
-        "wasm-sha256-1.28",
-        sample,
-        json!({"difficulty":20,"data_len":anubis_wasm_data.len(),"nonce_endian":"little"}),
-        0,
-        anubis_sha_mask,
-        SOLVE_TYPE_MASK,
-        solver.attempted_nonces(),
-        elapsed,
-        solution.map(|x| (x.nonce, x.hash)),
-        adapter,
-        args.mode,
-        args.limit,
-    )?;
-
-    let mut mcaptcha_prefix = Vec::new();
-    build_mcaptcha_prefix(
-        &mut mcaptcha_prefix,
-        "challenge-disasterer-matrix",
-        &format!("matrix-salt-{sample:08x}"),
-    )
-    .context("mCaptcha matrix prefix exceeds the wire format")?;
-    let factor = 1_000_000_u64;
-    let difficulty =
-        NonZeroU64::new(factor).context("mCaptcha difficulty factor must be non-zero")?;
-    let target = compute_target_mcaptcha(difficulty);
-    let message = DecimalMessage::new(&mcaptcha_prefix, 0)
-        .context("construct GPU mCaptcha decimal fixture")?;
-    let mut solver = challenge_solvers::gpu::DecimalSolver::from(message);
-    solver.set_limit(args.limit);
-    let started = Instant::now();
-    let (bench_target, bench_mask, bench_ty) =
-        benchmark_condition(args.mode, target, u64::MAX, SOLVE_TYPE_GT);
-    let solution = if bench_ty == SOLVE_TYPE_MASK {
-        solver
+    if args.includes(Protocol::Anubis) {
+        let sample_bytes = sample.to_le_bytes();
+        let mut anubis_wasm_data = vec![0x42_u8; 48];
+        anubis_wasm_data[..4].copy_from_slice(&sample_bytes);
+        anubis_wasm_data[47] = 0x80;
+        let anubis_sha_mask = u64::MAX << (64 - 20);
+        let nonce_bytes = NonZeroU8::new(4).context("Anubis nonce width must be non-zero")?;
+        let binary_message = BinaryMessage::new(&anubis_wasm_data, nonce_bytes)
+            .context("construct GPU Anubis binary fixture")?;
+        let mut solver = challenge_solvers::gpu::BinarySolver::from(binary_message);
+        solver.set_limit(args.limit);
+        let started = Instant::now();
+        let (bench_target, bench_mask, _) =
+            benchmark_condition(args.mode, 0, anubis_sha_mask, SOLVE_TYPE_MASK);
+        let solution = solver
             .solve::<SOLVE_TYPE_MASK>(gpu, bench_target, bench_mask)
-            .await?
-    } else {
-        solver
-            .solve::<SOLVE_TYPE_GT>(gpu, bench_target, bench_mask)
-            .await?
-    };
-    let elapsed = started.elapsed().as_nanos();
-    emit_gpu(
-        meta,
-        "mcaptcha",
-        "sha256",
-        sample,
-        json!({"difficulty_factor":factor}),
-        target,
-        u64::MAX,
-        SOLVE_TYPE_GT,
-        solver.attempted_nonces(),
-        elapsed,
-        solution.map(|x| (x.nonce, x.hash)),
-        adapter,
-        args.mode,
-        args.limit,
-    )?;
+            .await?;
+        let elapsed = started.elapsed().as_nanos();
+        emit_gpu(
+            meta,
+            "anubis",
+            "wasm-sha256-1.28",
+            sample,
+            json!({"difficulty":20,"data_len":anubis_wasm_data.len(),"nonce_endian":"little"}),
+            0,
+            anubis_sha_mask,
+            SOLVE_TYPE_MASK,
+            solver.attempted_nonces(),
+            elapsed,
+            solution.map(|x| (x.nonce, x.hash)),
+            adapter,
+            args.mode,
+            args.limit,
+        )?;
+    }
+
+    if args.includes(Protocol::Mcaptcha) {
+        let mut mcaptcha_prefix = Vec::new();
+        build_mcaptcha_prefix(
+            &mut mcaptcha_prefix,
+            "challenge-disasterer-matrix",
+            &format!("matrix-salt-{sample:08x}"),
+        )
+        .context("mCaptcha matrix prefix exceeds the wire format")?;
+        let factor = 1_000_000_u64;
+        let difficulty =
+            NonZeroU64::new(factor).context("mCaptcha difficulty factor must be non-zero")?;
+        let target = compute_target_mcaptcha(difficulty);
+        let message = DecimalMessage::new(&mcaptcha_prefix, 0)
+            .context("construct GPU mCaptcha decimal fixture")?;
+        let mut solver = challenge_solvers::gpu::DecimalSolver::from(message);
+        solver.set_limit(args.limit);
+        let started = Instant::now();
+        let (bench_target, bench_mask, bench_ty) =
+            benchmark_condition(args.mode, target, u64::MAX, SOLVE_TYPE_GT);
+        let solution = if bench_ty == SOLVE_TYPE_MASK {
+            solver
+                .solve::<SOLVE_TYPE_MASK>(gpu, bench_target, bench_mask)
+                .await?
+        } else {
+            solver
+                .solve::<SOLVE_TYPE_GT>(gpu, bench_target, bench_mask)
+                .await?
+        };
+        let elapsed = started.elapsed().as_nanos();
+        emit_gpu(
+            meta,
+            "mcaptcha",
+            "sha256",
+            sample,
+            json!({"difficulty_factor":factor}),
+            target,
+            u64::MAX,
+            SOLVE_TYPE_GT,
+            solver.attempted_nonces(),
+            elapsed,
+            solution.map(|x| (x.nonce, x.hash)),
+            adapter,
+            args.mode,
+            args.limit,
+        )?;
+    }
+
     Ok(())
 }
 
@@ -1661,11 +1737,15 @@ async fn main() -> Result<()> {
     if args.cpu {
         run_cpu_matrix(&meta, &args)?;
     }
-    if args.gpu {
+    if args.gpu && args.has_gpu_work() {
         #[cfg(feature = "gpu")]
         run_gpu_matrix(&meta, &args).await?;
         #[cfg(not(feature = "gpu"))]
         anyhow::bail!("--gpu true requires the solver-matrix gpu feature");
+    } else if args.gpu && !args.cpu {
+        anyhow::bail!(
+            "selected protocols have no GPU benchmarks; enable CPU or select another protocol"
+        );
     }
     Ok(())
 }
@@ -1673,6 +1753,33 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protocol_selection_defaults_to_all_and_supports_multiple_families() -> Result<()> {
+        let all = Args::try_parse_from(["matrix"])?;
+        for protocol in [
+            Protocol::Anubis,
+            Protocol::Haphash,
+            Protocol::Mcaptcha,
+            Protocol::Capjs,
+            Protocol::Linear,
+            Protocol::GoAway,
+            Protocol::Cerberus,
+            Protocol::Altcha,
+        ] {
+            assert!(all.includes(protocol));
+        }
+        let selected =
+            Args::try_parse_from(["matrix", "--protocol", "go-away", "--protocol", "capjs"])?;
+        assert!(selected.includes(Protocol::GoAway));
+        assert!(selected.includes(Protocol::Capjs));
+        assert!(!selected.includes(Protocol::Anubis));
+        assert!(!selected.includes(Protocol::Cerberus));
+        let linear = Args::try_parse_from(["matrix", "--protocol", "linear"])?;
+        assert!(linear.includes(Protocol::Linear));
+        assert!(!linear.has_gpu_work());
+        Ok(())
+    }
 
     #[test]
     fn cap_rsw_fixed_vector_matches_external_reference() -> Result<()> {
