@@ -85,7 +85,7 @@ dependencies = [
 [[package]]
 name = "anubis-argon2"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=99dd4d78898f054cb6c169e0c4ac131cccce119e#99dd4d78898f054cb6c169e0c4ac131cccce119e"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=186fccb737e838dacb6871cbfb7178d50f6ba61e#186fccb737e838dacb6871cbfb7178d50f6ba61e"
 dependencies = [
  "blake2 0.11.0",
 ]
@@ -99,7 +99,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "argon2"
 version = "0.6.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=99dd4d78898f054cb6c169e0c4ac131cccce119e#99dd4d78898f054cb6c169e0c4ac131cccce119e"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=186fccb737e838dacb6871cbfb7178d50f6ba61e#186fccb737e838dacb6871cbfb7178d50f6ba61e"
 dependencies = [
  "base64ct",
  "blake2 0.11.0",
@@ -477,7 +477,7 @@ dependencies = [
 [[package]]
 name = "challenge-hashx"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=99dd4d78898f054cb6c169e0c4ac131cccce119e#99dd4d78898f054cb6c169e0c4ac131cccce119e"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=186fccb737e838dacb6871cbfb7178d50f6ba61e#186fccb737e838dacb6871cbfb7178d50f6ba61e"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -492,7 +492,7 @@ dependencies = [
 [[package]]
 name = "challenge-protocols"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=99dd4d78898f054cb6c169e0c4ac131cccce119e#99dd4d78898f054cb6c169e0c4ac131cccce119e"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=186fccb737e838dacb6871cbfb7178d50f6ba61e#186fccb737e838dacb6871cbfb7178d50f6ba61e"
 dependencies = [
  "anubis-argon2",
  "anyhow",
@@ -513,7 +513,7 @@ dependencies = [
 [[package]]
 name = "challenge-solvers"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=99dd4d78898f054cb6c169e0c4ac131cccce119e#99dd4d78898f054cb6c169e0c4ac131cccce119e"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=186fccb737e838dacb6871cbfb7178d50f6ba61e#186fccb737e838dacb6871cbfb7178d50f6ba61e"
 dependencies = [
  "blake3",
  "bytemuck",
