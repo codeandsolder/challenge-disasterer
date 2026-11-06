@@ -19,3 +19,15 @@ jobs:
       command: |
         export CARGO_PROFILE_TEST_OPT_LEVEL=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_JOBS=2
         cargo test --locked -p challenge-disasterer --no-default-features
+
+  historical-baseline:
+    name: Historical solver baseline (standalone)
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
+    with:
+      rust-toolchain: "nightly-2026-11-03"
+      validation-tier: release
+      rustflags: ""
+      timeout-minutes: 15
+      command: |
+        export CARGO_BUILD_JOBS=2
+        cargo test --locked --manifest-path tools/preexisting-baseline/Cargo.toml --all-targets
