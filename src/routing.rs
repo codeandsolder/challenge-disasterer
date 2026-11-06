@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::Context;
 use serde::Deserialize;
@@ -77,42 +77,140 @@ impl RoutingCalibration {
             return Vec::new();
         }
 
-        // Preserve all compatible routes: once the nearest calibrated batch
-        // fails, the caller can try the next closest measured batch.
-        let mut candidates = self
-            .entries
-            .iter()
-            .filter(|entry| {
-                !entry.router
-                    && entry.algorithm == algorithm
-                    && entry.difficulty == difficulty
-                    && compatible_adapter(entry, selected_adapter)
-            })
-            .collect::<Vec<_>>();
-        candidates.sort_by(|left, right| {
-            compare_batch_ratio(left.batch_size, right.batch_size, batch_size)
-                .then_with(|| left.makespan_ms.total_cmp(&right.makespan_ms))
-                .then_with(|| left.batch_size.cmp(&right.batch_size))
-        });
-
-        // Calibration measures the same concrete solver at several batch sizes.
-        // Keep only its closest row, or a failed provider could be retried
-        // repeatedly with different latency estimates.
-        let mut seen = HashSet::new();
-        candidates
-            .into_iter()
-            .filter(|entry| {
-                seen.insert((
+        // A batch hint is the number of concurrent independent requests, not
+        // a selector for the nearest calibration row. Estimate completion time
+        // for each *concrete* backend across its measured concurrency points
+        // before comparing routes; otherwise a slow nearby calibration can
+        // incorrectly outrank a much faster backend measured at another batch.
+        let mut profiles = BTreeMap::new();
+        for entry in self.entries.iter().filter(|entry| {
+            !entry.router
+                && entry.algorithm == algorithm
+                && entry.difficulty == difficulty
+                && compatible_adapter(entry, selected_adapter)
+        }) {
+            profiles
+                .entry((
                     entry.provider.as_str(),
                     entry.provider_url.as_deref(),
                     entry.adapter.as_deref(),
                     entry.solver.as_str(),
                     entry.implementation.as_deref(),
                 ))
-            })
-            .cloned()
-            .collect()
+                .or_insert_with(Vec::new)
+                .push(entry);
+        }
+
+        let mut candidates = Vec::with_capacity(profiles.len());
+        for rows in profiles.into_values() {
+            // The closest row remains the representative for provider/solver
+            // identity; its makespan is replaced with the estimate at the
+            // requested batch so external timeouts scale with actual work.
+            let mut nearest = rows[0];
+            for &entry in rows.iter().skip(1) {
+                if compare_batch_ratio(entry.batch_size, nearest.batch_size, batch_size)
+                    .then_with(|| entry.makespan_ms.total_cmp(&nearest.makespan_ms))
+                    .is_lt()
+                {
+                    nearest = entry;
+                }
+            }
+            let mut candidate = nearest.clone();
+            candidate.makespan_ms = estimate_makespan_ms(&rows, batch_size);
+            candidates.push(candidate);
+        }
+        candidates.sort_by(|left, right| {
+            left.makespan_ms
+                .total_cmp(&right.makespan_ms)
+                .then_with(|| left.provider.cmp(&right.provider))
+                .then_with(|| left.provider_url.cmp(&right.provider_url))
+                .then_with(|| left.adapter.cmp(&right.adapter))
+                .then_with(|| left.solver.cmp(&right.solver))
+                .then_with(|| left.implementation.cmp(&right.implementation))
+        });
+        candidates
     }
+}
+
+/// Estimate concurrent-batch makespan using each concrete backend's sampled
+/// latency curve, not a batch size picked from a different backend.
+///
+/// Calibrations are means over independently issued `PoW` work, so occasional
+/// lucky batches can violate the physical monotonicity of batch makespan.
+/// Merge repeated points, then pool neighboring monotonicity violations
+/// using weighted least-squares isotonic regression rather than propagating a
+/// single outlier to every later batch. Interpolate between fitted points,
+/// use the smallest measured makespan below range, and beyond range project
+/// at least the last observed per-request cost.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "batch sizes are converted to floating point only for approximate time predictions"
+)]
+fn estimate_makespan_ms(rows: &[&RouteEntry], target: usize) -> f64 {
+    let mut by_batch = BTreeMap::<usize, (f64, usize)>::new();
+    for entry in rows {
+        let (mean, count) = by_batch.entry(entry.batch_size).or_insert((0.0, 0));
+        *count += 1;
+        *mean += (entry.makespan_ms - *mean) / (*count as f64);
+    }
+
+    // Weighted pool-adjacent-violators regression. Repeated rows retain their
+    // weight even though their batch sizes are represented by a single knot.
+    let mut points = Vec::with_capacity(by_batch.len());
+    let mut blocks: Vec<(usize, usize, f64, usize)> = Vec::new();
+    for (batch, (ms, count)) in by_batch {
+        let index = points.len();
+        points.push((batch, ms));
+        blocks.push((index, index, ms, count));
+        while blocks.len() > 1 {
+            let last_index = blocks.len() - 1;
+            let (earlier, latest) = blocks.split_at_mut(last_index);
+            let left = &mut earlier[last_index - 1];
+            let right = latest[0];
+            if left.2 <= right.2 {
+                break;
+            }
+            let total_weight = left.3 + right.3;
+            let right_fraction = right.3 as f64 / total_weight as f64;
+            left.2 = right_fraction.mul_add(right.2 - left.2, left.2);
+            left.1 = right.1;
+            left.3 = total_weight;
+            let _ = blocks.pop();
+        }
+    }
+    for (first, last, mean_ms, _) in blocks {
+        for (_, ms) in &mut points[first..=last] {
+            *ms = mean_ms;
+        }
+    }
+
+    let (mut previous_batch, mut previous_ms) = points[0];
+    if target <= previous_batch {
+        return previous_ms;
+    }
+    for &(batch, ms) in points.iter().skip(1) {
+        if target <= batch {
+            let fraction = (target - previous_batch) as f64 / (batch - previous_batch) as f64;
+            return finite_makespan(fraction.mul_add(ms - previous_ms, previous_ms));
+        }
+        previous_batch = batch;
+        previous_ms = ms;
+    }
+
+    let observed_rate = previous_ms / previous_batch as f64;
+    let recent_rate = if points.len() >= 2 {
+        let (earlier_batch, earlier_ms) = points[points.len() - 2];
+        (previous_ms - earlier_ms) / (previous_batch - earlier_batch) as f64
+    } else {
+        0.0
+    };
+    finite_makespan(
+        ((target - previous_batch) as f64).mul_add(observed_rate.max(recent_rate), previous_ms),
+    )
+}
+
+const fn finite_makespan(ms: f64) -> f64 {
+    if ms.is_finite() { ms } else { f64::MAX }
 }
 
 fn compare_batch_ratio(left: usize, right: usize, target: usize) -> std::cmp::Ordering {
@@ -205,9 +303,9 @@ mod tests {
             solvers,
             [
                 "nearest-faster",
-                "nearest-slower",
                 "next-batch",
-                "small-batch"
+                "small-batch",
+                "nearest-slower"
             ]
         );
     }
@@ -230,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_relative_distance_prefers_faster_calibrated_route() {
+    fn estimated_latency_overrides_relative_batch_proximity() {
         let calibration = RoutingCalibration {
             entries: vec![
                 entry("local", None, "half-batch", 5, 20.0),
@@ -243,7 +341,7 @@ mod tests {
             .iter()
             .map(|entry| entry.solver.as_str())
             .collect();
-        assert_eq!(solvers, ["exact-batch", "double-batch", "half-batch"]);
+        assert_eq!(solvers, ["double-batch", "half-batch", "exact-batch"]);
     }
 
     #[test]
@@ -266,6 +364,70 @@ mod tests {
                 .select_candidates("hashx", 21, 10, None)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn predicted_makespan_beats_nearest_batch() {
+        let calibration = RoutingCalibration {
+            entries: vec![
+                entry("local", None, "near-slow", 10, 50.0),
+                entry("remote", None, "distant-fast", 1, 3.0),
+                entry("remote", None, "distant-fast", 100, 8.0),
+            ],
+        };
+        let candidates = calibration.select_candidates("hashx", 20, 12, None);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].solver, "distant-fast");
+        assert_eq!(candidates[0].batch_size, 100);
+        assert!((candidates[0].makespan_ms - (3.0 + 11.0 * 5.0 / 99.0)).abs() < 1e-10);
+        assert_eq!(candidates[1].solver, "near-slow");
+        assert_eq!(candidates[1].makespan_ms, 60.0);
+    }
+
+    #[test]
+    fn extrapolates_for_unmeasured_concurrency_without_optimistic_plateaus() {
+        let calibration = RoutingCalibration {
+            entries: vec![
+                entry("remote", None, "fixed", 10, 5.0),
+                entry("remote", None, "fixed", 100, 20.0),
+                entry("local", None, "linear", 1, 2.0),
+            ],
+        };
+        let under = calibration.select_candidates("hashx", 20, 1, None);
+        assert_eq!(under[0].solver, "linear");
+        assert_eq!(under[1].makespan_ms, 5.0);
+        let over = calibration.select_candidates("hashx", 20, 200, None);
+        assert_eq!(over[0].solver, "fixed");
+        assert_eq!(over[0].makespan_ms, 40.0);
+        assert_eq!(over[1].makespan_ms, 400.0);
+    }
+
+    #[test]
+    fn weighted_isotonic_fit_averages_lucky_batches_without_large_bias() {
+        let calibration = RoutingCalibration {
+            entries: vec![
+                entry("remote", None, "repeat", 1, 20.0),
+                entry("remote", None, "repeat", 1, 40.0),
+                entry("remote", None, "repeat", 10, 5.0),
+                entry("remote", None, "repeat", 100, 10.0),
+            ],
+        };
+        let result = calibration.select_candidates("hashx", 20, 10, None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].makespan_ms, 18.75);
+        assert_eq!(
+            calibration.select_candidates("hashx", 20, 50, None)[0].makespan_ms,
+            18.75
+        );
+    }
+
+    #[test]
+    fn handles_large_batches_and_durations_without_arithmetic_overflow() {
+        let calibration = RoutingCalibration {
+            entries: vec![entry("local", None, "large", 1, f64::MAX)],
+        };
+        let candidates = calibration.select_candidates("hashx", 20, usize::MAX, None);
+        assert_eq!(candidates[0].makespan_ms, f64::MAX);
     }
 
     #[test]
