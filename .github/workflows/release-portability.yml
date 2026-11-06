@@ -21,7 +21,7 @@ jobs:
         cargo test --locked -p challenge-disasterer --no-default-features
 
   historical-baseline:
-    name: Historical solver baseline (standalone)
+    name: Standalone benchmark tools (release-only)
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@18397eb8f0bd8a76f90010a66a8519011f7992ca # main
     with:
       rust-toolchain: "nightly-2026-11-03"
@@ -31,3 +31,7 @@ jobs:
       command: |
         export CARGO_BUILD_JOBS=2
         cargo test --locked --manifest-path tools/preexisting-baseline/Cargo.toml --all-targets
+        # Compile each dispatch shape independently to catch conditional-codegen bugs.
+        for dispatch_features in typed erased typed,erased; do
+          cargo test --locked --manifest-path tools/dispatch-bench/Cargo.toml --no-default-features --features "$dispatch_features" --all-targets
+        done
