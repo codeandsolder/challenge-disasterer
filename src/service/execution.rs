@@ -26,7 +26,7 @@ use crate::{
 // initial cross-shape cost score to avoid GPU dispatch on tiny proofs;
 // unsupported shapes are filtered by challenge-protocols' own parser.
 #[cfg(feature = "gpu")]
-const ALTCHA_AUTO_GPU_MIN_WORK: u128 = 1_024;
+pub(super) const ALTCHA_AUTO_GPU_MIN_WORK: u128 = 1_024;
 
 #[cfg(feature = "gpu")]
 fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str>) -> bool {
