@@ -113,8 +113,12 @@ async function callService(challenge, counterMode) {
   return body;
 }
 
+const activeConfigs = process.env.ALTCHA_BENCH_ONLY_ARGON2 === "1"
+  ? configs.filter((config) => config.algorithm === "ARGON2ID")
+  : configs;
+
 for (let sample = 0; sample < samples; sample++) {
-  for (const config of configs) {
+  for (const config of activeConfigs) {
     const counterMode = config.counterMode ?? "uint32";
     const challenge = await makeChallenge(config, sample);
     const expectedWork = config.counter + 1;
@@ -199,6 +203,7 @@ for (let sample = 0; sample < samples; sample++) {
   }
 }
 
+if (process.env.ALTCHA_BENCH_ONLY_ARGON2 !== "1") {
 const v1Secret = "challenge-disasterer-altcha-bench-v1";
 for (let sample = 0; sample < samples; sample++) {
   for (const algorithm of ["SHA-1", "SHA-256", "SHA-512"]) {
@@ -275,4 +280,5 @@ for (let sample = 0; sample < samples; sample++) {
       comparison_scope: "protocol-reference",
     });
   }
+}
 }
