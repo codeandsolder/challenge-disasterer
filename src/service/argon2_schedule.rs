@@ -6,7 +6,7 @@ use std::{fs, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
-pub(super) enum WorkerPolicy {
+pub(crate) enum WorkerPolicy {
     #[default]
     Adaptive,
     Fixed,
