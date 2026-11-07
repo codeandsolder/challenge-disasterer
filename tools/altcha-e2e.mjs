@@ -159,6 +159,17 @@ if (implementation === "wgpu") {
     ["PBKDF2/SHA-256", 16, derivePbkdf2],
   ]) {
     await runV2({ algorithm, cost, deriveKey, counterMode: "string", expectedImplementation: "wgpu" });
+    // Odd-nibble hex prefixes are the common ALTCHA v2 shape. Exercise
+    // truncated outputs and >64-bit prefix matching on real GPU hardware;
+    // a long exact-prefix negative is tested directly in the solver matrix.
+    for (const counterMode of ["uint32", "string"]) {
+      for (const [keyPrefix, keyLength] of [["0", 32], ["abc", 12]]) {
+        await runV2({
+          algorithm, cost, deriveKey, counterMode, keyPrefix, keyLength,
+          expectedImplementation: "wgpu",
+        });
+      }
+    }
   }
 }
 
