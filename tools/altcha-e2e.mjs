@@ -21,13 +21,20 @@ async function assertCapabilities() {
   if (!response.ok) throw new Error(`stats failed: ${JSON.stringify(stats)}`);
   const rows = stats.solver_capabilities.filter((row) => row.solver === "altcha");
   const uint32 = rows.filter((row) => row.counter_mode === "uint32");
-  const string = rows.find((row) => row.counter_mode === "string");
-  if (uint32.length < 2 || !string) throw new Error(`ALTCHA counter-mode capabilities incomplete: ${JSON.stringify(rows)}`);
-  if (string.counter_max !== Number.MAX_SAFE_INTEGER) {
-    throw new Error(`ALTCHA string counter ceiling mismatch: ${JSON.stringify(string)}`);
+  const string = rows.filter((row) => row.counter_mode === "string");
+  const stringSha = string.find((row) => row.algorithms.includes("sha256"));
+  const stringKdf = string.find((row) => row.algorithms.includes("argon2id"));
+  if (uint32.length < 2 || !stringSha || !stringKdf) {
+    throw new Error("ALTCHA string-mode capabilities incomplete: " + JSON.stringify(rows));
   }
-  if (string.implementations.join(",") !== "auto,safe") {
-    throw new Error(`ALTCHA string mode must advertise only auto/safe: ${JSON.stringify(string)}`);
+  if (string.some((row) => row.counter_max !== Number.MAX_SAFE_INTEGER)) {
+    throw new Error("ALTCHA string counter ceiling mismatch: " + JSON.stringify(string));
+  }
+  if (implementation === "wgpu" && stringSha.implementations.join(",") !== "auto,safe,wgpu") {
+    throw new Error("ALTCHA string SHA GPU capability missing: " + JSON.stringify(stringSha));
+  }
+  if (stringKdf.implementations.join(",") !== "auto,safe") {
+    throw new Error("ALTCHA generic string KDF incorrectly advertises GPU: " + JSON.stringify(stringKdf));
   }
   if (uint32.some((row) => row.implementations.includes("reference"))) {
     throw new Error(`ALTCHA production capabilities must not expose the external reference solver: ${JSON.stringify(uint32)}`);
@@ -144,6 +151,15 @@ if (!optimizedOnly) {
   await runV2({ algorithm: "ARGON2ID", cost: 1, deriveKey: deriveArgon2id, keyPrefix: "0", memoryCost: 64, parallelism: 1, expectedImplementation: genericImplementation });
   await runV2({ algorithm: "ARGON2ID", cost: 2, deriveKey: deriveArgon2id, keyLength: 96, keyPrefix: "0", memoryCost: 129, parallelism: 2, expectedImplementation: genericImplementation });
   await runV2({ algorithm: "SCRYPT", cost: 16, deriveKey: deriveScrypt, keyPrefix: "0", memoryCost: 1, parallelism: 1, expectedImplementation: genericImplementation });
+}
+
+if (implementation === "wgpu") {
+  for (const [algorithm, cost, deriveKey] of [
+    ["SHA-256", 2, deriveSha],
+    ["PBKDF2/SHA-256", 16, derivePbkdf2],
+  ]) {
+    await runV2({ algorithm, cost, deriveKey, counterMode: "string", expectedImplementation: "wgpu" });
+  }
 }
 
 if (implementation === "auto" || implementation === "safe") {
