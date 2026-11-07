@@ -1841,6 +1841,93 @@ mod tests {
         Ok(())
     }
 
+    /// Full 256-bit digest-prefix matching, including half-byte comparisons.
+    /// A deliberately wrong final nibble must fail even when the first
+    /// 64 digest bits match. Uses real WGPU on an explicitly selected device.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a Vulkan-capable GPU"]
+    async fn altcha_gpu_full_digest_nibble_prefixes() -> Result<()> {
+        use std::num::NonZeroU32;
+
+        use challenge_solvers::{
+            gpu::{AltchaSha256Solver, GpuContext},
+            message::AltchaMessage,
+        };
+
+        let gpu = GpuContext::create().await?;
+        gpu.warm_up().await?;
+
+        for pbkdf2 in [false, true] {
+            for string_counter in [false, true] {
+                let counter = if string_counter {
+                    u64::from(u32::MAX) + 1
+                } else {
+                    17_u64
+                };
+                let message = AltchaMessage {
+                    nonce: [0x9a; 16],
+                    salt: [0x27; 16],
+                    cost: NonZeroU32::new(if pbkdf2 { 16 } else { 2 })
+                        .context("positive iterations")?,
+                    pbkdf2,
+                    key_length: NonZeroU32::new(32).context("positive key length")?,
+                };
+                let mut reference = AltchaSha256Solver::from(message.clone());
+                if string_counter {
+                    reference.set_string_counter();
+                }
+                reference.set_start_nonce(counter);
+                reference.set_limit(counter + 1);
+                let digest = reference
+                    .solve::<SOLVE_TYPE_MASK>(&gpu, 0, 0)
+                    .await?
+                    .context("reference GPU search did not find unconstrained counter")?
+                    .hash;
+                let nibbles = (0..64)
+                    .map(|index| {
+                        u8::try_from((digest[index / 8] >> ((7 - index % 8) * 4)) & 0x0f)
+                            .context("SHA256 digest nibble fits in u8")
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                for nibble_len in [0, 1, 3, 7, 8, 9, 15, 16, 17, 31, 47, 63, 64] {
+                    let mut matching = AltchaSha256Solver::from(message.clone());
+                    if string_counter {
+                        matching.set_string_counter();
+                    }
+                    matching.set_start_nonce(counter);
+                    matching.set_limit(counter + 1);
+                    matching.set_prefix_nibbles(&nibbles[..nibble_len])?;
+                    let result = matching
+                        .solve::<SOLVE_TYPE_MASK>(&gpu, 0, 0)
+                        .await?
+                        .context("matching digest prefix rejected by GPU")?;
+                    assert_eq!(result.nonce, counter);
+                    assert_eq!(result.hash, digest);
+                    assert_eq!(matching.attempted_nonces(), 1);
+                    if nibble_len > 0 {
+                        let mut wrong = nibbles[..nibble_len].to_vec();
+                        if let Some(last) = wrong.last_mut() {
+                            *last ^= 1;
+                        }
+                        matching.set_prefix_nibbles(&wrong)?;
+                        assert!(
+                            matching
+                                .solve::<SOLVE_TYPE_MASK>(&gpu, 0, 0)
+                                .await?
+                                .is_none(),
+                            "GPU accepted a wrong hex prefix length {nibble_len}"
+                        );
+                    }
+                }
+                let mut malformed = AltchaSha256Solver::from(message);
+                assert!(malformed.set_prefix_nibbles(&[16]).is_err());
+                assert!(malformed.set_prefix_nibbles(&[0; 65]).is_err());
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn throughput_condition_preserves_comparison_type() {
         assert_eq!(
