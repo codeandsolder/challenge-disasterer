@@ -77,30 +77,39 @@ impl Work {
         if policy == WorkerPolicy::Fixed {
             return configured;
         }
-        // If the prefix is longer than the counter domain's entropy, the
-        // challenge cannot be modeled as a geometric random-prefix search:
-        // its solvability depends on an unknown precomputed nonce. Use a
-        // one-hash lower bound, not a fictitious astronomic work estimate.
+        // A prefix longer than the counter domain cannot be interpreted as
+        // random-prefix difficulty. Upstream may have precomputed a matching
+        // nonce anywhere in the domain; its position is not inferable here.
         let prefix_bits = self.prefix_nibbles.saturating_mul(4);
-        let expected_tries = if prefix_bits > self.counter_bits {
-            1
-        } else {
-            1_u64 << prefix_bits
-        };
-        // Approximate 300ns/block-pass from observed Zen 2 Argon2 workloads.
-        // Require roughly 10ms of serial candidate work per extra worker to
-        // amortize thread startup. Saturate for arbitrary ALTCHA prefix lengths.
 
+        // The cache-sized Argon2 workload benefits from full nonce fanout.
+        // Larger per-worker arenas saturate shared memory bandwidth earlier.
+        // The split is a measured initial policy, not a correctness limit.
+        const CACHE_FRIENDLY_ARENA_KIB: u64 = 1024;
+        let bandwidth_cap = configured
+            .div_ceil(2)
+            .max(2)
+            .min((total_cpu_slots / 2).max(2))
+            .min(configured);
+        let worker_cap = if self.memory_kib <= CACHE_FRIENDLY_ARENA_KIB {
+            configured.min(total_cpu_slots)
+        } else {
+            bandwidth_cap
+        };
+
+        if prefix_bits > self.counter_bits {
+            // Unknown precomputed solution position: choose a fanout based
+            // on per-worker memory cost instead of fabricating one attempt.
+            return worker_cap;
+        }
+        let expected_tries = 1_u64 << prefix_bits;
+        // Ordinary random-prefix searches admit an estimated work budget.
         let estimated_ns = u128::from(self.memory_kib)
             .saturating_mul(u128::from(self.passes))
             .saturating_mul(u128::from(expected_tries))
             .saturating_mul(NS_PER_BLOCK_PASS);
         let useful_workers = estimated_ns / NS_PER_EXTRA_WORKER + 1;
-        // Half of the CPU budget avoids saturating memory bandwidth on the
-        // observed dual-channel architecture and leaves CPU headroom.
-        let bandwidth_cap = (total_cpu_slots / 2).max(1);
-        configured
-            .min(bandwidth_cap)
+        worker_cap
             .min(usize::try_from(useful_workers).unwrap_or(usize::MAX))
             .max(1)
     }
@@ -219,9 +228,11 @@ mod tests {
         let trivial = Work::from_challenge("altcha", &challenge(65_536, 3, ""))
             .context("expected Argon2 profile")?;
         assert_eq!(tiny.target_workers(8, 8, WorkerPolicy::Adaptive), 1);
-        assert_eq!(precomputed.target_workers(8, 8, WorkerPolicy::Adaptive), 1);
+        assert_eq!(precomputed.target_workers(8, 8, WorkerPolicy::Adaptive), 8);
         assert_eq!(large.target_workers(8, 8, WorkerPolicy::Adaptive), 4);
-        assert_eq!(large.target_workers(8, 16, WorkerPolicy::Adaptive), 8);
+        assert_eq!(large.target_workers(8, 16, WorkerPolicy::Adaptive), 4);
+        assert_eq!(large.target_workers(2, 8, WorkerPolicy::Adaptive), 2);
+        assert_eq!(large.target_workers(4, 8, WorkerPolicy::Adaptive), 2);
         assert_eq!(trivial.target_workers(8, 8, WorkerPolicy::Fixed), 1);
         assert_eq!(large.target_workers(8, 8, WorkerPolicy::Fixed), 8);
         Ok(())
