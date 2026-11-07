@@ -2003,6 +2003,110 @@ mod tests {
         Ok(())
     }
 
+    /// Independent PBKDF2-HMAC-SHA256 oracle for arbitrary salt and password
+    /// lengths, HMAC key-prehash boundaries, U1 multi-block salt padding and
+    /// both counter encodings (including exact JS-safe upper bound).
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a real GPU"]
+    async fn altcha_gpu_general_pbkdf2_crosses_hmac_and_sha_boundaries() -> Result<()> {
+        use challenge_solvers::gpu::{AltchaSha256Solver, GpuContext};
+
+        let gpu = GpuContext::create().await?;
+        gpu.warm_up().await?;
+        for (salt_len, nonce_len) in [
+            (0_usize, 0_usize),
+            (1, 1),
+            (51, 16),
+            (52, 16),
+            (55, 16),
+            (56, 16),
+            (59, 16),
+            (60, 16),
+            (63, 16),
+            (64, 16),
+            (115, 16),
+            (116, 16),
+            (119, 16),
+            (120, 16),
+            (127, 16),
+            (128, 16),
+            (1024, 16),
+            (1, 48),
+            (1, 49),
+            (1, 59),
+            (1, 60),
+            (1, 61),
+            (1, 63),
+            (1, 64),
+            (1, 65),
+            (1, 127),
+            (1, 128),
+            (127, 1),
+            (64, 64),
+            (4097, 65),
+        ] {
+            let salt: Vec<u8> = (0..salt_len).map(|i| (i as u8).wrapping_mul(47)).collect();
+            let nonce: Vec<u8> = (0..nonce_len).map(|i| (i as u8).wrapping_mul(31)).collect();
+            for (string_counter, counter) in [
+                (false, 0_u64),
+                (false, u64::from(u32::MAX)),
+                (true, 0_u64),
+                (true, u64::from(u32::MAX) + 1),
+                (true, (1_u64 << 53) - 1),
+            ] {
+                let iterations = if salt_len == 4097 { 1 } else { 3 };
+                let cost = NonZeroU32::new(iterations).context("positive iterations")?;
+                let mut solver = AltchaSha256Solver::for_pbkdf2(&salt, &nonce, cost)?;
+                if string_counter {
+                    solver.set_string_counter();
+                }
+                let suffix = if string_counter {
+                    counter.to_string().into_bytes()
+                } else {
+                    u32::try_from(counter)?.to_be_bytes().to_vec()
+                };
+                let mut password = nonce.clone();
+                password.extend_from_slice(&suffix);
+                let mut digest = [0_u8; 32];
+                pbkdf2::pbkdf2_hmac::<Sha256>(&password, &salt, iterations, &mut digest);
+                let expected: [u32; 8] = core::array::from_fn(|i| {
+                    u32::from_be_bytes([
+                        digest[i * 4],
+                        digest[i * 4 + 1],
+                        digest[i * 4 + 2],
+                        digest[i * 4 + 3],
+                    ])
+                });
+                let nibbles: Vec<u8> = digest.iter().flat_map(|b| [b >> 4, b & 0xf]).collect();
+                solver.set_start_nonce(counter);
+                solver.set_limit(counter + 1);
+                solver.set_prefix_nibbles(&nibbles)?;
+                let answer = solver
+                    .solve::<SOLVE_TYPE_MASK>(&gpu, 0, 0)
+                    .await?
+                    .context("GPU rejected exact independent PBKDF2 digest")?;
+                assert_eq!(
+                    answer.nonce, counter,
+                    "salt={salt_len} nonce={nonce_len} string={string_counter}"
+                );
+                assert_eq!(
+                    answer.hash, expected,
+                    "salt={salt_len} nonce={nonce_len} string={string_counter}"
+                );
+                assert_eq!(solver.attempted_nonces(), 1);
+                let mut wrong = nibbles;
+                wrong[63] ^= 1;
+                solver.set_prefix_nibbles(&wrong)?;
+                assert!(
+                    solver.solve::<SOLVE_TYPE_MASK>(&gpu, 0, 0).await?.is_none(),
+                    "GPU accepted incorrect final digest nibble: salt={salt_len} nonce={nonce_len} string={string_counter}"
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn throughput_condition_preserves_comparison_type() {
         assert_eq!(
