@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "186fccb737e838dacb6871cbfb7178d50f6ba61e", default-features = false, features = ["std", "portable-simd", "compare-64bit", "internals"] }
+challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "c1ea03e3b4512f5d42b680d729a088e046a2aee8", default-features = false, features = ["std", "compare-64bit", "internals"] }
 serde_json = "1"
 
 [lints]

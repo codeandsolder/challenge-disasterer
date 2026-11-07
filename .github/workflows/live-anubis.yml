@@ -67,8 +67,8 @@ jobs:
         run: |
           # Public sccache artifacts are reused across heterogeneous GitHub runner CPUs.
           # Avoid host-specific build-script executables; accelerated ISA paths remain
-          # available through the explicitly enabled portable-simd feature.
-          cargo build --locked --release --no-default-features --features portable-simd
+          # always available on pinned nightly, even in CPU-only builds.
+          cargo build --locked --release --no-default-features
           cargo build --locked --manifest-path tools/anubis-e2e/Cargo.toml
 
       - name: Exercise solver against live Anubis

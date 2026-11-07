@@ -8,11 +8,11 @@ permissions:
   contents: read
 
 jobs:
-  stable-scalar:
-    name: Rust 1.99 CPU-only service
+  cpu-only:
+    name: Pinned-nightly CPU-only service
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@c6fcb5f8920460c109ee87152506c3d97889ed4e # main
     with:
-      rust-toolchain: "1.99.0"
+      rust-toolchain: "nightly-2026-11-03"
       validation-tier: release
       rustflags: ""
       timeout-minutes: 25
