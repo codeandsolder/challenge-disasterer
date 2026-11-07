@@ -1794,6 +1794,53 @@ mod tests {
         Ok(())
     }
 
+    /// Requires an actual native GPU. Exact u32 rollover and the maximum
+    /// JavaScript-safe integer are both covered without traversing the
+    /// intervening billions of candidate hashes.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a Vulkan-capable GPU"]
+    async fn altcha_gpu_decimal_counters_cover_full_safe_integer_domain() -> Result<()> {
+        use std::num::NonZeroU32;
+
+        use challenge_solvers::{
+            gpu::{AltchaSha256Solver, GpuContext},
+            message::AltchaMessage,
+        };
+
+        let gpu = GpuContext::create().await?;
+        gpu.warm_up().await?;
+        for counter in [
+            0_u64,
+            u64::from(u32::MAX) - 1,
+            u64::from(u32::MAX),
+            u64::from(u32::MAX) + 1,
+            (1_u64 << 53) - 1,
+        ] {
+            for pbkdf2 in [false, true] {
+                let message = AltchaMessage {
+                    nonce: [0x9a; 16],
+                    salt: [0x27; 16],
+                    cost: NonZeroU32::new(if pbkdf2 { 16 } else { 2 })
+                        .context("positive iterations")?,
+                    pbkdf2,
+                    key_length: NonZeroU32::new(32).context("positive key length")?,
+                };
+                let mut solver = AltchaSha256Solver::from(message);
+                solver.set_string_counter();
+                solver.set_start_nonce(counter);
+                solver.set_limit(counter + 1);
+                let result = solver
+                    .solve::<SOLVE_TYPE_MASK>(&gpu, 0, 0)
+                    .await?
+                    .context("GPU failed to find a one-candidate full-mask solution")?;
+                assert_eq!(result.nonce, counter, "pbkdf2={pbkdf2}");
+                assert_eq!(solver.attempted_nonces(), 1);
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn throughput_condition_preserves_comparison_type() {
         assert_eq!(
