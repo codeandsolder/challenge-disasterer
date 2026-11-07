@@ -2107,6 +2107,86 @@ mod tests {
         Ok(())
     }
 
+    /// Check arbitrary PBKDF2 output block counts, including exact full-key
+    /// hex prefixes spanning the first SHA256 output block, a second block,
+    /// and a third/fourth block. Compare against the standard independent
+    /// PBKDF2 implementation and the complete returned derived key.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a real GPU"]
+    async fn altcha_gpu_pbkdf2_multiblock_derived_key_and_full_prefix() -> Result<()> {
+        use challenge_solvers::gpu::{AltchaSha256Solver, GpuContext};
+
+        let gpu = GpuContext::create().await?;
+        gpu.warm_up().await?;
+        for (salt_len, nonce_len, key_len) in [
+            (0_usize, 0_usize, 32_usize),
+            (0, 0, 33),
+            (1, 60, 33),
+            (59, 64, 33),
+            (60, 65, 48),
+            (63, 16, 64),
+            (64, 16, 65),
+            (127, 1, 80),
+            (128, 128, 96),
+            (1024, 65, 128),
+        ] {
+            let salt: Vec<u8> = (0..salt_len).map(|i| (i as u8).wrapping_mul(23)).collect();
+            let nonce: Vec<u8> = (0..nonce_len).map(|i| (i as u8).wrapping_mul(43)).collect();
+            for (string_counter, counter) in [
+                (false, 0_u64),
+                (false, u64::from(u32::MAX)),
+                (true, u64::from(u32::MAX) + 1),
+                (true, (1_u64 << 53) - 1),
+            ] {
+                let cost = NonZeroU32::new(3).context("valid iterations")?;
+                let mut solver = AltchaSha256Solver::for_pbkdf2(&salt, &nonce, cost)?;
+                solver.set_pbkdf2_key_length(key_len)?;
+                if string_counter {
+                    solver.set_string_counter();
+                }
+                let suffix = if string_counter {
+                    counter.to_string().into_bytes()
+                } else {
+                    u32::try_from(counter)?.to_be_bytes().to_vec()
+                };
+                let mut password = nonce.clone();
+                password.extend_from_slice(&suffix);
+                let mut digest = vec![0_u8; key_len];
+                pbkdf2::pbkdf2_hmac::<Sha256>(&password, &salt, cost.get(), &mut digest);
+                let first: [u32; 8] = core::array::from_fn(|i| {
+                    u32::from_be_bytes([
+                        digest[i * 4],
+                        digest[i * 4 + 1],
+                        digest[i * 4 + 2],
+                        digest[i * 4 + 3],
+                    ])
+                });
+                let nibbles: Vec<u8> = digest.iter().flat_map(|b| [b >> 4, b & 0xf]).collect();
+                solver.set_start_nonce(counter);
+                solver.set_limit(counter + 1);
+                solver.set_prefix_nibbles(&nibbles)?;
+                let solved = solver
+                    .solve::<SOLVE_TYPE_MASK>(&gpu, 0, 0)
+                    .await?
+                    .context("GPU rejected matching full PBKDF2 multi-block prefix")?;
+                assert_eq!(solved.nonce, counter);
+                assert_eq!(solved.hash, first);
+                assert_eq!(solver.verified_key(), Some(digest.as_slice()));
+                assert_eq!(solver.attempted_nonces(), 1);
+                let mut wrong = nibbles;
+                *wrong.last_mut().context("non-empty derived key")? ^= 1;
+                solver.set_prefix_nibbles(&wrong)?;
+                assert!(
+                    solver.solve::<SOLVE_TYPE_MASK>(&gpu, 0, 0).await?.is_none(),
+                    "GPU accepted incorrect final nibble: salt={salt_len} nonce={nonce_len} key={key_len} string={string_counter}"
+                );
+                assert!(solver.verified_key().is_none());
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn throughput_condition_preserves_comparison_type() {
         assert_eq!(
