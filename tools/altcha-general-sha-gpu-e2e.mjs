@@ -41,30 +41,36 @@ for (const [index, sample] of cases.entries()) {
   params.keyPrefix = Buffer.from(derived.derivedKey).toString("hex").slice(0,17);
   const challenge = await signChallenge("SHA-256",params,derived.derivedKey,secret);
   const wire = sample.mode === "string" ? {...challenge,counterMode:"string"} : challenge;
-  const req = { solver:"altcha",implementation:"wgpu",challenge:wire };
-  const res = await fetch(serviceUrl + "/solve",{
-    method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(req),
-  });
-  const body = await res.json();
-  if(!res.ok || body.backend !== "gpu" || body.implementation !== "wgpu") {
-    throw Error("case=" + index + " GPU failed " + res.status + ": " + JSON.stringify(body));
+  // Validate both forced WGPU and automatic GPU routing for representative
+  // empty, block-aligned and multi-block fixed message shapes.
+  const implementations = index === 0 || index === 6 || index === 13
+    ? ["wgpu", "auto"] : ["wgpu"];
+  for (const implementation of implementations) {
+    const req = { solver:"altcha",implementation,challenge:wire };
+    const res = await fetch(serviceUrl + "/solve",{
+      method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(req),
+    });
+    const body = await res.json();
+    if(!res.ok || body.backend !== "gpu" || body.implementation !== "wgpu") {
+      throw Error("case=" + index + " GPU failed " + res.status + ": " + JSON.stringify(body));
+    }
+    const solution = {
+      counter:body.answer.counter,
+      derivedKey:body.answer.derivedKey,
+      time:body.answer.time,
+    };
+    const verified = await v2.verifySolution({
+      challenge,solution,counterMode:sample.mode,deriveKey:deriveSha,hmacSignatureSecret:secret,
+    });
+    if(!verified.verified || solution.counter !== sample.target) {
+      throw Error("case=" + index + " verification failed " + JSON.stringify(verified) + " " + JSON.stringify(solution));
+    }
+    console.log(JSON.stringify({
+      case:index,...sample,requested:implementation,solved_counter:solution.counter,
+      implementation:body.implementation,
+      solve_ms:body.solve_ms,
+      attempted_nonces:body.answer.attempted_nonces,
+      official_verified:true,
+    }));
   }
-  const solution = {
-    counter:body.answer.counter,
-    derivedKey:body.answer.derivedKey,
-    time:body.answer.time,
-  };
-  const verified = await v2.verifySolution({
-    challenge,solution,counterMode:sample.mode,deriveKey:deriveSha,hmacSignatureSecret:secret,
-  });
-  if(!verified.verified || solution.counter !== sample.target) {
-    throw Error("case=" + index + " verification failed " + JSON.stringify(verified) + " " + JSON.stringify(solution));
-  }
-  console.log(JSON.stringify({
-    case:index,...sample,solved_counter:solution.counter,
-    implementation:body.implementation,
-    solve_ms:body.solve_ms,
-    attempted_nonces:body.answer.attempted_nonces,
-    official_verified:true,
-  }));
 }
