@@ -248,16 +248,19 @@ impl AppState {
             desired,
         )
         .await?;
-        let workers = reservation.workers();
-        tracing::debug!(solver, workers, desired, "classic CPU resources reserved");
         let started = Instant::now();
         let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
         let response_solver = solver.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let _reservation = reservation;
-            classic_pow::solve(&solver, challenge, implementation.as_deref(), workers)
+        let (result, workers) = tokio::task::spawn_blocking(move || {
+            let workers = reservation.workers();
+            let result = classic_pow::solve(&solver, challenge, implementation.as_deref(), workers);
+            // Explicitly release CPU and memory only after the search completes.
+            drop(reservation);
+            (result, workers)
         })
-        .await??;
+        .await?;
+        tracing::debug!(workers, desired, "classic CPU resources reserved");
+        let result = result?;
         Ok(SolveResponse {
             solver: response_solver,
             backend: "cpu".to_owned(),

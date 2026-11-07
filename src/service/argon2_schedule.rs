@@ -6,11 +6,14 @@ use std::{fs, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
-pub(crate) enum WorkerPolicy {
+pub enum WorkerPolicy {
     #[default]
     Adaptive,
     Fixed,
 }
+
+const NS_PER_BLOCK_PASS: u128 = 300;
+const NS_PER_EXTRA_WORKER: u128 = 10_000_000;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Work {
@@ -74,8 +77,7 @@ impl Work {
         // Approximate 300ns/block-pass from observed Zen 2 Argon2 workloads.
         // Require roughly 10ms of serial candidate work per extra worker to
         // amortize thread startup. Saturate for arbitrary ALTCHA prefix lengths.
-        const NS_PER_BLOCK_PASS: u128 = 300;
-        const NS_PER_EXTRA_WORKER: u128 = 10_000_000;
+
         let estimated_ns = u128::from(self.memory_kib)
             .saturating_mul(u128::from(self.passes))
             .saturating_mul(u128::from(expected_tries))
@@ -98,7 +100,7 @@ pub(super) struct Reservation {
 }
 
 impl Reservation {
-    pub(super) fn workers(&self) -> usize {
+    pub(super) const fn workers(&self) -> usize {
         self.cpu.len()
     }
 

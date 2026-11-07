@@ -31,7 +31,7 @@ use crate::{
 
 mod argon2_schedule;
 mod execution;
-pub(crate) use argon2_schedule::WorkerPolicy;
+pub use argon2_schedule::WorkerPolicy;
 mod routing;
 mod telemetry;
 pub use telemetry::stats;
