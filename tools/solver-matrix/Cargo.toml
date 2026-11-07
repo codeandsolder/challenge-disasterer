@@ -9,12 +9,12 @@ default = ["gpu"]
 gpu = ["challenge-solvers/gpu"]
 
 [dependencies]
-argon2 = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "1282ee0251f02c58f09d207b02b0ac1f16b34c42" }
+argon2 = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "b246ce238e52179c4dbd10ac288ffe39d6b9e6fa" }
 hashwx = { workspace = true }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 num-bigint = "0.5"
-challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "1282ee0251f02c58f09d207b02b0ac1f16b34c42", features = ["all-challenges", "compare-64bit"] }
+challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "b246ce238e52179c4dbd10ac288ffe39d6b9e6fa", features = ["all-challenges", "compare-64bit"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = { version = "0.11", default-features = false }
