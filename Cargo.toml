@@ -15,9 +15,9 @@ bytemuck = { version = "1", features = ["derive"], optional = true }
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 num_cpus = "1.17"
-challenge-hashx = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "4a0b07c4dd0900134adb536e0035ce36aa9d0014", default-features = false }
-challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "4a0b07c4dd0900134adb536e0035ce36aa9d0014", default-features = false, features = ["std", "runtime-dispatch", "all-challenges"] }
-challenge-protocols = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "4a0b07c4dd0900134adb536e0035ce36aa9d0014", default-features = false }
+challenge-hashx = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "7989bb6b30198b005c75d43940da81e3162fed0b", default-features = false }
+challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "7989bb6b30198b005c75d43940da81e3162fed0b", default-features = false, features = ["std", "runtime-dispatch", "all-challenges"] }
+challenge-protocols = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "7989bb6b30198b005c75d43940da81e3162fed0b", default-features = false }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
