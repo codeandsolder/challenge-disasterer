@@ -1928,6 +1928,81 @@ mod tests {
         Ok(())
     }
 
+    /// Verifies arbitrary fixed salt/nonce sizes, SHA block/padding boundaries
+    /// and high decimal counters against an independent CPU SHA256 digest.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a real GPU"]
+    async fn altcha_gpu_general_sha256_prefixes_cross_sha_block_boundaries() -> Result<()> {
+        use challenge_solvers::gpu::{AltchaSha256Solver, GpuContext};
+
+        let gpu = GpuContext::create().await?;
+        gpu.warm_up().await?;
+        for fixed_len in [
+            0_usize, 1, 16, 31, 48, 55, 56, 59, 60, 63, 64, 65, 119, 120, 127, 128, 129, 255, 256,
+            4096,
+        ] {
+            let salt = vec![0x5b; fixed_len];
+            let nonce = vec![0xe1; fixed_len % 19];
+            for (string_counter, counter) in [
+                (false, 0_u64),
+                (false, u64::from(u32::MAX)),
+                (true, 63_u64),
+                (true, u64::from(u32::MAX) + 1),
+                (true, (1_u64 << 53) - 1),
+            ] {
+                let cost = NonZeroU32::new(3).context("valid SHA iterations")?;
+                let mut solver = AltchaSha256Solver::for_sha256_prefix(&salt, &nonce, cost)?;
+                if string_counter {
+                    solver.set_string_counter();
+                }
+                let suffix = if string_counter {
+                    counter.to_string().into_bytes()
+                } else {
+                    u32::try_from(counter)?.to_be_bytes().to_vec()
+                };
+                let mut source = Vec::with_capacity(salt.len() + nonce.len() + suffix.len());
+                source.extend_from_slice(&salt);
+                source.extend_from_slice(&nonce);
+                source.extend_from_slice(&suffix);
+                let mut digest: [u8; 32] = Sha256::digest(source).into();
+                for _ in 1..cost.get() {
+                    digest = Sha256::digest(digest).into();
+                }
+                let words: [u32; 8] = core::array::from_fn(|i| {
+                    u32::from_be_bytes([
+                        digest[i * 4],
+                        digest[i * 4 + 1],
+                        digest[i * 4 + 2],
+                        digest[i * 4 + 3],
+                    ])
+                });
+                let nibbles: Vec<u8> = digest
+                    .iter()
+                    .flat_map(|byte| [byte >> 4, byte & 0x0f])
+                    .collect();
+                solver.set_prefix_nibbles(&nibbles)?;
+                solver.set_start_nonce(counter);
+                solver.set_limit(counter + 1);
+                let solved = solver
+                    .solve::<SOLVE_TYPE_MASK>(&gpu, 0, 0)
+                    .await?
+                    .context("matching general SHA-256 digest rejected by GPU")?;
+                assert_eq!(solved.nonce, counter);
+                assert_eq!(solved.hash, words);
+                assert_eq!(solver.attempted_nonces(), 1);
+                let mut bad = nibbles;
+                bad[63] ^= 1;
+                solver.set_prefix_nibbles(&bad)?;
+                assert!(
+                    solver.solve::<SOLVE_TYPE_MASK>(&gpu, 0, 0).await?.is_none(),
+                    "GPU accepted wrong last nibble: fixed_len={fixed_len}, string={string_counter}, counter={counter}"
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn throughput_condition_preserves_comparison_type() {
         assert_eq!(
