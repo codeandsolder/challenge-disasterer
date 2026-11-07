@@ -184,6 +184,7 @@ for (let sample = 0; sample < samples; sample++) {
       cpu_model: cpuModel,
       commit,
       implementation: body.implementation,
+      nonce_workers: body.nonce_workers ?? null,
       accelerator: "cpu",
       solve_ns: serviceNs,
       work_per_second: actualWork * 1e9 / serviceNs,

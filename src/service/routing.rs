@@ -228,6 +228,7 @@ impl AppState {
                     implementation: None,
                     answer: serde_json::to_value(result.answer)
                         .context("serialize solver answer")?,
+                    nonce_workers: None,
                     queue_ms,
                     solve_ms: result.solve_ms,
                     total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,

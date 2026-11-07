@@ -18,7 +18,7 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
-use service::{AppState, Config};
+use service::{AppState, Config, WorkerPolicy};
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -34,6 +34,13 @@ struct Args {
     /// an independent Argon2 memory arena of the requested memoryCost.
     #[arg(long)]
     argon2_workers: Option<usize>,
+    /// Adaptive ALTCHA fanout or fixed worker count for benchmark comparison.
+    #[arg(long, value_enum, default_value_t = WorkerPolicy::Adaptive)]
+    altcha_worker_policy: WorkerPolicy,
+    /// Shared memory budget for all ALTCHA Argon2 arenas, in MiB.
+    /// Defaults to half the host/cgroup available RAM on Linux when readable.
+    #[arg(long)]
+    argon2_memory_budget_mib: Option<usize>,
     #[arg(long, default_value_t = 2_000_000)]
     cpu_calibration_hashes: u64,
     #[cfg(feature = "gpu")]
@@ -154,6 +161,8 @@ async fn main() -> anyhow::Result<()> {
     let config = Config {
         cpu_workers: args.cpu_workers,
         argon2_workers,
+        altcha_worker_policy: args.altcha_worker_policy,
+        argon2_memory_budget_mib: args.argon2_memory_budget_mib,
         cpu_calibration_hashes: args.cpu_calibration_hashes,
         #[cfg(feature = "gpu")]
         gpu_calibration_hashes: args.gpu_calibration_hashes,

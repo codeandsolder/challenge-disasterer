@@ -34,6 +34,7 @@ pub struct StatsResponse {
     gpu_queue_expected_work: u64,
     gpu_active_expected_work: u64,
     cpu_workers_available: usize,
+    argon2_memory_available_mib: Option<usize>,
     expected_new_solve_ms_by_difficulty: BTreeMap<u8, f64>,
     hashx_gpu_implementations: Vec<&'static str>,
     general: crate::stats::GeneralStats,
@@ -55,6 +56,8 @@ const fn telemetry_work_as_f64(work: u64) -> f64 {
 pub struct StatsConfig {
     cpu_workers: usize,
     argon2_workers: usize,
+    altcha_worker_policy: &'static str,
+    argon2_memory_budget_mib: Option<usize>,
     gpu_compiled: bool,
     gpu_enabled: bool,
     gpu_operational: bool,
@@ -365,6 +368,11 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         config: StatsConfig {
             cpu_workers: state.config.cpu_workers,
             argon2_workers: state.config.argon2_workers,
+            altcha_worker_policy: match state.config.altcha_worker_policy {
+                super::WorkerPolicy::Adaptive => "adaptive",
+                super::WorkerPolicy::Fixed => "fixed",
+            },
+            argon2_memory_budget_mib: state.argon2_memory_capacity_mib,
             gpu_compiled: cfg!(feature = "gpu"),
             gpu_enabled: state.config.gpu_enabled,
             gpu_operational: state.gpu_operational,
@@ -375,6 +383,10 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         gpu_queue_expected_work: queued_work,
         gpu_active_expected_work: active_work,
         cpu_workers_available: state.cpu_slots.available_permits(),
+        argon2_memory_available_mib: state
+            .argon2_memory_slots
+            .as_ref()
+            .map(|slots| slots.available_permits()),
         expected_new_solve_ms_by_difficulty: expected,
         hashx_gpu_implementations: state.hashx_gpu_implementations.clone(),
         general,
