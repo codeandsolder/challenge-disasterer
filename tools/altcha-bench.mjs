@@ -44,9 +44,32 @@ const configs = [
   { algorithm: "SCRYPT", cost: 16, deriveKey: deriveScrypt, counter: 255, prefixBytes: 16, memoryCost: 1, parallelism: 1, counterMode: "string" },
 ];
 
-function variant(config) {
-  return `v2-${config.algorithm.toLowerCase().replaceAll("/", "-")}-${config.counterMode ?? "uint32"}`;
+// Production-shape memory-hard rows are opt-in: 64-128 MiB x 3 passes are
+// expensive enough to distort the ordinary quick compatibility matrix.
+if (process.env.ALTCHA_BENCH_PRODUCTION_ARGON2 === "1") {
+  for (const memoryCost of [65_536, 131_072]) {
+    for (const counterMode of ["uint32", "string"]) {
+      configs.push({
+        algorithm: "ARGON2ID", cost: 3, deriveKey: deriveArgon2id,
+        counter: 7, prefixBytes: 16, memoryCost, parallelism: 1, counterMode,
+      });
+    }
+  }
+  configs.push({
+    algorithm: "ARGON2ID", cost: 3, deriveKey: deriveArgon2id,
+    counter: 7, prefixBytes: 16, memoryCost: 65_536, parallelism: 2,
+  });
 }
+
+function variant(config) {
+  const base = "v2-" + config.algorithm.toLowerCase().replaceAll("/", "-")
+    + "-" + (config.counterMode ?? "uint32");
+  if (config.algorithm === "ARGON2ID" && config.memoryCost >= 65_536) {
+    return base + "-m" + config.memoryCost + "-t" + config.cost + "-p" + config.parallelism;
+  }
+  return base;
+}
+
 function emit(row) {
   process.stdout.write(`${JSON.stringify(row)}\n`);
 }
