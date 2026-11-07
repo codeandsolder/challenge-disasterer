@@ -18,6 +18,30 @@ use crate::{
     routing::RouteEntry,
 };
 
+/// ALTCHA's memory-hard Argon2id work can use independent, CPU-budgeted
+/// counter search workers. The trivial empty-prefix case stays single-worker.
+fn classic_worker_count(solver: &str, challenge: &Value, argon2_workers: usize) -> usize {
+    if solver != "altcha" {
+        return 1;
+    }
+    let Some(parameters) = challenge.get("parameters") else {
+        return 1;
+    };
+    let is_argon2id = parameters
+        .get("algorithm")
+        .and_then(Value::as_str)
+        .is_some_and(|algorithm| algorithm.eq_ignore_ascii_case("ARGON2ID"));
+    let nonempty_prefix = parameters
+        .get("keyPrefix")
+        .and_then(Value::as_str)
+        .is_some_and(|prefix| !prefix.is_empty());
+    if is_argon2id && nonempty_prefix {
+        argon2_workers
+    } else {
+        1
+    }
+}
+
 impl AppState {
     pub(super) async fn run_cpu(
         &self,
@@ -224,13 +248,15 @@ impl AppState {
         implementation: Option<String>,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
-        let permit = self.cpu_slots.clone().acquire_owned().await?;
+        let workers = classic_worker_count(&solver, &challenge, self.config.argon2_workers);
+        let permits = u32::try_from(workers).context("too many classic CPU workers")?;
+        let permit = self.cpu_slots.clone().acquire_many_owned(permits).await?;
         let started = Instant::now();
         let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
         let response_solver = solver.clone();
         let result = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            classic_pow::solve(&solver, challenge, implementation.as_deref())
+            classic_pow::solve(&solver, challenge, implementation.as_deref(), workers)
         })
         .await??;
         Ok(SolveResponse {
@@ -343,5 +369,23 @@ impl AppState {
             solve_ms: external.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classic_worker_count;
+    use serde_json::json;
+
+    #[test]
+    fn classic_cpu_slots_are_reserved_only_for_nontrivial_altcha_argon2id() {
+        let argon2 = json!({"parameters": {"algorithm":"argon2id","keyPrefix":"f"}});
+        assert_eq!(classic_worker_count("altcha", &argon2, 4), 4);
+        assert_eq!(classic_worker_count("goaway", &argon2, 4), 1);
+        let trivial = json!({"parameters": {"algorithm":"ARGON2ID","keyPrefix":""}});
+        assert_eq!(classic_worker_count("altcha", &trivial, 4), 1);
+        let hash = json!({"parameters": {"algorithm":"SHA-256","keyPrefix":"f"}});
+        assert_eq!(classic_worker_count("altcha", &hash, 4), 1);
+        assert_eq!(classic_worker_count("altcha", &json!({}), 4), 1);
     }
 }
