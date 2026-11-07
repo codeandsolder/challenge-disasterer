@@ -20,6 +20,7 @@ pub(super) struct Work {
     memory_kib: u64,
     passes: u64,
     prefix_nibbles: usize,
+    counter_bits: usize,
 }
 
 impl Work {
@@ -45,10 +46,17 @@ impl Work {
         {
             return None;
         }
+        let counter_bits = if challenge.get("counterMode").and_then(Value::as_str) == Some("string")
+        {
+            53
+        } else {
+            32
+        };
         Some(Self {
             memory_kib,
             passes,
             prefix_nibbles: prefix.len(),
+            counter_bits,
         })
     }
 
@@ -69,10 +77,15 @@ impl Work {
         if policy == WorkerPolicy::Fixed {
             return configured;
         }
-        let expected_tries = if self.prefix_nibbles >= 16 {
-            u64::MAX
+        // If the prefix is longer than the counter domain's entropy, the
+        // challenge cannot be modeled as a geometric random-prefix search:
+        // its solvability depends on an unknown precomputed nonce. Use a
+        // one-hash lower bound, not a fictitious astronomic work estimate.
+        let prefix_bits = self.prefix_nibbles.saturating_mul(4);
+        let expected_tries = if prefix_bits > self.counter_bits {
+            1
         } else {
-            1_u64 << (self.prefix_nibbles * 4)
+            1_u64 << prefix_bits
         };
         // Approximate 300ns/block-pass from observed Zen 2 Argon2 workloads.
         // Require roughly 10ms of serial candidate work per extra worker to
@@ -197,13 +210,16 @@ mod tests {
         assert!(Work::from_challenge("goaway", &challenge(65_536, 3, "ab")).is_none());
         assert!(Work::from_challenge("altcha", &json!({})).is_none());
         assert!(Work::from_challenge("altcha", &challenge(65_536, 3, "not-hex")).is_none());
-        let tiny = Work::from_challenge("altcha", &challenge(64, 1, "abc"))
+        let tiny = Work::from_challenge("altcha", &challenge(64, 1, "a"))
             .context("expected Argon2 profile")?;
+        let precomputed = Work::from_challenge("altcha", &challenge(64, 1, &"ab".repeat(16)))
+            .context("precomputed long-prefix challenge")?;
         let large = Work::from_challenge("altcha", &challenge(65_536, 3, "abc"))
             .context("expected Argon2 profile")?;
         let trivial = Work::from_challenge("altcha", &challenge(65_536, 3, ""))
             .context("expected Argon2 profile")?;
         assert_eq!(tiny.target_workers(8, 8, WorkerPolicy::Adaptive), 1);
+        assert_eq!(precomputed.target_workers(8, 8, WorkerPolicy::Adaptive), 1);
         assert_eq!(large.target_workers(8, 8, WorkerPolicy::Adaptive), 4);
         assert_eq!(large.target_workers(8, 16, WorkerPolicy::Adaptive), 8);
         assert_eq!(trivial.target_workers(8, 8, WorkerPolicy::Fixed), 1);
