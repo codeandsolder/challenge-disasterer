@@ -9,7 +9,10 @@ use serde_json::Value;
 #[cfg(feature = "gpu")]
 use tokio::sync::oneshot;
 
-use super::{AppState, ExternalSolveResponse, SolveResponse};
+use super::{
+    AppState, ExternalSolveResponse, SolveResponse,
+    argon2_schedule::{Reservation, Work},
+};
 #[cfg(feature = "gpu")]
 use super::{GeneralGpuJob, GpuJob, HashxGpuJob};
 use crate::{
@@ -17,30 +20,6 @@ use crate::{
     anubis_wasm, classic_pow, hashx, hashx_cpu_jit,
     routing::RouteEntry,
 };
-
-/// ALTCHA's memory-hard Argon2id work can use independent, CPU-budgeted
-/// counter search workers. The trivial empty-prefix case stays single-worker.
-fn classic_worker_count(solver: &str, challenge: &Value, argon2_workers: usize) -> usize {
-    if solver != "altcha" {
-        return 1;
-    }
-    let Some(parameters) = challenge.get("parameters") else {
-        return 1;
-    };
-    let is_argon2id = parameters
-        .get("algorithm")
-        .and_then(Value::as_str)
-        .is_some_and(|algorithm| algorithm.eq_ignore_ascii_case("ARGON2ID"));
-    let nonempty_prefix = parameters
-        .get("keyPrefix")
-        .and_then(Value::as_str)
-        .is_some_and(|prefix| !prefix.is_empty());
-    if is_argon2id && nonempty_prefix {
-        argon2_workers
-    } else {
-        1
-    }
-}
 
 impl AppState {
     pub(super) async fn run_cpu(
@@ -61,6 +40,7 @@ impl AppState {
             backend: "cpu".to_owned(),
             implementation: None,
             answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
+            nonce_workers: None,
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -100,6 +80,7 @@ impl AppState {
             backend: "cpu".to_owned(),
             implementation: Some(result.implementation),
             answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
+            nonce_workers: None,
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -168,6 +149,7 @@ impl AppState {
             backend: "gpu".to_owned(),
             implementation: None,
             answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
+            nonce_workers: None,
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -195,6 +177,7 @@ impl AppState {
             backend: "cpu-jit".to_owned(),
             implementation: None,
             answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
+            nonce_workers: None,
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -235,6 +218,7 @@ impl AppState {
             backend: "gpu".to_owned(),
             implementation: Some(result.implementation.to_owned()),
             answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
+            nonce_workers: None,
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -248,14 +232,29 @@ impl AppState {
         implementation: Option<String>,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
-        let workers = classic_worker_count(&solver, &challenge, self.config.argon2_workers);
-        let permits = u32::try_from(workers).context("too many classic CPU workers")?;
-        let permit = self.cpu_slots.clone().acquire_many_owned(permits).await?;
+        let work = Work::from_challenge(&solver, &challenge);
+        let desired = work.map_or(1, |profile| {
+            profile.target_workers(
+                self.config.argon2_workers,
+                self.config.cpu_workers,
+                self.config.altcha_worker_policy,
+            )
+        });
+        let reservation = Reservation::acquire(
+            &self.cpu_slots,
+            self.argon2_memory_slots.as_ref(),
+            self.argon2_memory_capacity_mib,
+            work,
+            desired,
+        )
+        .await?;
+        let workers = reservation.workers();
+        tracing::debug!(solver, workers, desired, "classic CPU resources reserved");
         let started = Instant::now();
         let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
         let response_solver = solver.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
+            let _reservation = reservation;
             classic_pow::solve(&solver, challenge, implementation.as_deref(), workers)
         })
         .await??;
@@ -264,6 +263,7 @@ impl AppState {
             backend: "cpu".to_owned(),
             implementation: Some(result.implementation),
             answer: result.answer,
+            nonce_workers: work.map(|_| workers),
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -303,6 +303,7 @@ impl AppState {
             backend: "gpu".to_owned(),
             implementation: Some(result.implementation),
             answer: result.answer,
+            nonce_workers: None,
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -365,27 +366,10 @@ impl AppState {
                 .implementation
                 .or_else(|| route.implementation.clone()),
             answer: external.answer,
+            nonce_workers: None,
             queue_ms: started.duration_since(queued_at).as_secs_f64() * 1000.0,
             solve_ms: external.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::classic_worker_count;
-    use serde_json::json;
-
-    #[test]
-    fn classic_cpu_slots_are_reserved_only_for_nontrivial_altcha_argon2id() {
-        let argon2 = json!({"parameters": {"algorithm":"argon2id","keyPrefix":"f"}});
-        assert_eq!(classic_worker_count("altcha", &argon2, 4), 4);
-        assert_eq!(classic_worker_count("goaway", &argon2, 4), 1);
-        let trivial = json!({"parameters": {"algorithm":"ARGON2ID","keyPrefix":""}});
-        assert_eq!(classic_worker_count("altcha", &trivial, 4), 1);
-        let hash = json!({"parameters": {"algorithm":"SHA-256","keyPrefix":"f"}});
-        assert_eq!(classic_worker_count("altcha", &hash, 4), 1);
-        assert_eq!(classic_worker_count("altcha", &json!({}), 4), 1);
     }
 }
