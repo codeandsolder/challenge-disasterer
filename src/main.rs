@@ -28,8 +28,10 @@ struct Args {
     listen: SocketAddr,
     #[arg(long, default_value_t = 4)]
     cpu_workers: usize,
-    /// Workers used by one Argon2id search. Defaults to the smaller of the
-    /// configured CPU worker budget and the machine's available physical cores.
+    /// Workers used by one Anubis or ALTCHA Argon2id nonce search.
+    /// Defaults to the smaller of the configured CPU worker budget and
+    /// the machine's available physical cores. Each ALTCHA worker owns
+    /// an independent Argon2 memory arena of the requested memoryCost.
     #[arg(long)]
     argon2_workers: Option<usize>,
     #[arg(long, default_value_t = 2_000_000)]

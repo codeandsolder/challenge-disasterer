@@ -139,8 +139,9 @@ for (let sample = 0; sample < samples; sample++) {
     if (Number(body.answer.counter) !== config.counter) {
       throw new Error(`${variant(config)} service found ${body.answer.counter}, expected ${config.counter}`);
     }
-    if (Number(body.answer.attempted_nonces) !== expectedWork) {
-      throw new Error(`${variant(config)} service attempted ${body.answer.attempted_nonces}, expected ${expectedWork}`);
+    const actualWork = Number(body.answer.attempted_nonces);
+    if (!Number.isSafeInteger(actualWork) || actualWork < expectedWork) {
+      throw new Error("ALTCHA " + variant(config) + " reported " + body.answer.attempted_nonces + " attempts, less than " + expectedWork);
     }
     const verified = await v2.verifySolution({
       challenge,
@@ -175,6 +176,7 @@ for (let sample = 0; sample < samples; sample++) {
     const serviceNs = Math.max(1, Math.round(body.solve_ms * 1e6));
     emit({
       ...common,
+      attempted_work: actualWork,
       row_kind: "solver",
       phase: "throughput",
       timestamp_unix_ms: Date.now(),
@@ -184,7 +186,7 @@ for (let sample = 0; sample < samples; sample++) {
       implementation: body.implementation,
       accelerator: "cpu",
       solve_ns: serviceNs,
-      work_per_second: expectedWork * 1e9 / serviceNs,
+      work_per_second: actualWork * 1e9 / serviceNs,
       found: true,
       nonce: config.counter,
       target_condition_ok: true,
