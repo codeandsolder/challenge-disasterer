@@ -21,6 +21,20 @@ use crate::{
     routing::RouteEntry,
 };
 
+// The Asus RTX 2060 matched-binary measurements put the SHA/PBKDF2
+// break-even near a few hundred effective iterations. Use 1024 as the
+// initial cross-shape cost score to avoid GPU dispatch on tiny proofs;
+// unsupported shapes are filtered by challenge-protocols' own parser.
+#[cfg(feature = "gpu")]
+pub(super) const ALTCHA_AUTO_GPU_MIN_WORK: u128 = 1_024;
+
+#[cfg(feature = "gpu")]
+fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str>) -> bool {
+    (implementation.is_none() || implementation == Some("auto"))
+        && classic_pow::auto_gpu_expected_work(solver, challenge)
+            .is_some_and(|work| work >= ALTCHA_AUTO_GPU_MIN_WORK)
+}
+
 impl AppState {
     pub(super) async fn run_cpu(
         &self,
@@ -232,6 +246,23 @@ impl AppState {
         implementation: Option<String>,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
+        #[cfg(feature = "gpu")]
+        if self.general_gpu_operational
+            && prefers_auto_gpu(&solver, &challenge, implementation.as_deref())
+        {
+            match self
+                .dispatch_general_gpu(solver.clone(), challenge.clone(), queued_at, true)
+                .await
+            {
+                Ok(Some(result)) => return Ok(result),
+                Ok(None) => {
+                    tracing::debug!(solver, "GPU queue at capacity, routing ALTCHA to CPU");
+                }
+                Err(err) => {
+                    tracing::warn!(solver, %err, "automatic ALTCHA WGPU failed; routing to CPU");
+                }
+            }
+        }
         let work = Work::from_challenge(&solver, &challenge);
         let desired = work.map_or(1, |profile| {
             profile.target_workers(
@@ -273,6 +304,7 @@ impl AppState {
         })
     }
 
+    /// Mandatory WGPU route selected explicitly by the client.
     #[cfg(feature = "gpu")]
     pub(super) async fn run_general_gpu(
         &self,
@@ -280,20 +312,44 @@ impl AppState {
         challenge: Value,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
+        self.dispatch_general_gpu(solver, challenge, queued_at, false)
+            .await?
+            .context("mandatory WGPU dispatch was not enqueued")
+    }
+
+    /// Send a general WGPU job without duplicating protocol execution.
+    /// Opportunistic ALTCHA auto routing does not wait for *channel* capacity:
+    /// when all 128 queued positions are occupied, use CPU instead. Explicit
+    /// WGPU requests retain FIFO backpressure and do not silently switch.
+    #[cfg(feature = "gpu")]
+    async fn dispatch_general_gpu(
+        &self,
+        solver: String,
+        challenge: Value,
+        queued_at: Instant,
+        opportunistic: bool,
+    ) -> anyhow::Result<Option<SolveResponse>> {
         let tx = self
             .general_gpu_tx
             .as_ref()
             .context("general WGPU backend unavailable")?;
         let (started_tx, started_rx) = oneshot::channel();
         let (result_tx, result_rx) = oneshot::channel();
-        tx.send(GeneralGpuJob {
+        let job = GeneralGpuJob {
             solver: solver.clone(),
             challenge,
             started: started_tx,
             result: result_tx,
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("general WGPU worker unavailable"))?;
+        };
+        if opportunistic {
+            if tx.try_send(job).is_err() {
+                return Ok(None);
+            }
+        } else {
+            tx.send(job)
+                .await
+                .map_err(|_| anyhow::anyhow!("general WGPU worker unavailable"))?;
+        }
         let started = started_rx
             .await
             .map_err(|_| anyhow::anyhow!("general WGPU worker dropped start signal"))?;
@@ -301,7 +357,7 @@ impl AppState {
         let result = result_rx
             .await
             .map_err(|_| anyhow::anyhow!("general WGPU worker dropped result"))??;
-        Ok(SolveResponse {
+        Ok(Some(SolveResponse {
             solver,
             backend: "gpu".to_owned(),
             implementation: Some(result.implementation),
@@ -310,7 +366,7 @@ impl AppState {
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
-        })
+        }))
     }
 
     pub(super) async fn run_external(
@@ -374,5 +430,42 @@ impl AppState {
             solve_ms: external.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
         })
+    }
+}
+
+#[cfg(all(test, feature = "gpu"))]
+mod auto_gpu_tests {
+    use super::*;
+
+    fn altcha(prefix: &str, algorithm: &str, cost: u32) -> Value {
+        serde_json::json!({
+            "counterMode": "string",
+            "parameters": {
+                "algorithm": algorithm,
+                "cost": cost,
+                "keyLength": 12,
+                "keyPrefix": prefix,
+                "nonce": "01".repeat(16),
+                "salt": "02".repeat(16)
+            }
+        })
+    }
+
+    #[test]
+    fn auto_gpu_prefers_substantial_supported_work_but_not_tiny_or_forced_cpu() {
+        let cheap = altcha("0", "SHA-256", 2);
+        let borderline = altcha("00", "SHA-256", 2);
+        let substantial = altcha("000", "SHA-256", 2);
+        let expensive_pbkdf2 = altcha("00", "PBKDF2/SHA-256", 16);
+        let unsupported = altcha("000000000", "SHA-512", 2);
+
+        assert!(!prefers_auto_gpu("altcha", &cheap, None));
+        assert!(!prefers_auto_gpu("altcha", &borderline, Some("auto")));
+        assert!(prefers_auto_gpu("altcha", &substantial, None));
+        assert!(prefers_auto_gpu("altcha", &expensive_pbkdf2, Some("auto")));
+        assert!(!prefers_auto_gpu("altcha", &expensive_pbkdf2, Some("safe")));
+        assert!(!prefers_auto_gpu("altcha", &substantial, Some("sha-ni")));
+        assert!(!prefers_auto_gpu("altcha", &unsupported, None));
+        assert!(!prefers_auto_gpu("capjs", &substantial, None));
     }
 }
