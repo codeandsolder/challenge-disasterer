@@ -67,18 +67,16 @@ pub struct StatsConfig {
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn cpu_implementations(sha_ni: bool) -> Vec<&'static str> {
     let mut implementations = vec!["auto", "safe"];
-    if cfg!(feature = "portable-simd") {
-        #[cfg(target_arch = "x86_64")]
-        if std::arch::is_x86_feature_detected!("avx2") {
-            implementations.push("avx2");
-        }
-        if sha_ni && std::arch::is_x86_feature_detected!("sha") {
-            implementations.push("sha-ni");
-        }
-        #[cfg(target_arch = "x86_64")]
-        if std::arch::is_x86_feature_detected!("avx512f") {
-            implementations.push("avx512");
-        }
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        implementations.push("avx2");
+    }
+    if sha_ni && std::arch::is_x86_feature_detected!("sha") {
+        implementations.push("sha-ni");
+    }
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx512f") {
+        implementations.push("avx512");
     }
     implementations
 }
@@ -394,9 +392,5 @@ mod tests {
         assert!(regular.starts_with(&["auto", "safe"]));
         assert!(sha.starts_with(&["auto", "safe"]));
         assert!(!regular.contains(&"sha-ni"));
-        if !cfg!(feature = "portable-simd") {
-            assert_eq!(regular, ["auto", "safe"]);
-            assert_eq!(sha, ["auto", "safe"]);
-        }
     }
 }

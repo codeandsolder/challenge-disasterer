@@ -52,13 +52,13 @@ async function callSolver(challenge, requestedImplementation = implementation, c
   return body;
 }
 
-async function runV2({ algorithm, cost, deriveKey, counterMode = "uint32", keyPrefix = "00", memoryCost, parallelism, requestedImplementation = implementation, expectedImplementation }) {
+async function runV2({ algorithm, cost, deriveKey, counterMode = "uint32", keyPrefix = "00", keyLength = 32, memoryCost, parallelism, requestedImplementation = implementation, expectedImplementation }) {
   const challenge = await v2.createChallenge({
     algorithm,
     cost,
     deriveKey,
     hmacSignatureSecret: secret,
-    keyLength: 32,
+    keyLength,
     keyPrefix,
     memoryCost,
     parallelism,
@@ -142,6 +142,7 @@ if (!optimizedOnly) {
     await runV2({ algorithm, cost: 16, deriveKey: derivePbkdf2, expectedImplementation: genericImplementation });
   }
   await runV2({ algorithm: "ARGON2ID", cost: 1, deriveKey: deriveArgon2id, keyPrefix: "0", memoryCost: 64, parallelism: 1, expectedImplementation: genericImplementation });
+  await runV2({ algorithm: "ARGON2ID", cost: 2, deriveKey: deriveArgon2id, keyLength: 96, keyPrefix: "0", memoryCost: 129, parallelism: 2, expectedImplementation: genericImplementation });
   await runV2({ algorithm: "SCRYPT", cost: 16, deriveKey: deriveScrypt, keyPrefix: "0", memoryCost: 1, parallelism: 1, expectedImplementation: genericImplementation });
 }
 
@@ -154,6 +155,7 @@ if (implementation === "auto" || implementation === "safe") {
     await runV2({ algorithm, cost: 16, deriveKey: derivePbkdf2, counterMode: "string", expectedImplementation: "altcha-string" });
   }
   await runV2({ algorithm: "ARGON2ID", cost: 1, deriveKey: deriveArgon2id, counterMode: "string", keyPrefix: "0", memoryCost: 64, parallelism: 1, expectedImplementation: "altcha-string" });
+  await runV2({ algorithm: "ARGON2ID", cost: 2, deriveKey: deriveArgon2id, counterMode: "string", keyLength: 96, keyPrefix: "0", memoryCost: 129, parallelism: 2, expectedImplementation: "altcha-string" });
   await runV2({ algorithm: "SCRYPT", cost: 16, deriveKey: deriveScrypt, counterMode: "string", keyPrefix: "0", memoryCost: 1, parallelism: 1, expectedImplementation: "altcha-string" });
 }
 

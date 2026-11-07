@@ -2,6 +2,21 @@ name: Live protocol compatibility
 
 on:
   workflow_dispatch:
+    inputs:
+      provider:
+        description: "Run only one provider's official compatibility cases (all by default)"
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - altcha
+          - capjs
+          - cerberus
+          - goaway
+          - haphash
+          - linear
+          - mcaptcha
   release:
     types: [published]
   schedule:
@@ -41,6 +56,7 @@ jobs:
 
   altcha:
     needs: solver-binary
+    if: github.event_name != 'workflow_dispatch' || inputs.provider == 'all' || inputs.provider == 'altcha'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -71,6 +87,7 @@ jobs:
 
   capjs:
     needs: solver-binary
+    if: github.event_name != 'workflow_dispatch' || inputs.provider == 'all' || inputs.provider == 'capjs'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -101,6 +118,7 @@ jobs:
 
   cerberus:
     needs: solver-binary
+    if: github.event_name != 'workflow_dispatch' || inputs.provider == 'all' || inputs.provider == 'cerberus'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -136,6 +154,7 @@ jobs:
 
   goaway:
     needs: solver-binary
+    if: github.event_name != 'workflow_dispatch' || inputs.provider == 'all' || inputs.provider == 'goaway'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -166,6 +185,7 @@ jobs:
 
   haphash:
     needs: solver-binary
+    if: github.event_name != 'workflow_dispatch' || inputs.provider == 'all' || inputs.provider == 'haphash'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -205,6 +225,7 @@ jobs:
 
   linear:
     needs: solver-binary
+    if: github.event_name != 'workflow_dispatch' || inputs.provider == 'all' || inputs.provider == 'linear'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -230,6 +251,7 @@ jobs:
 
   mcaptcha:
     needs: solver-binary
+    if: github.event_name != 'workflow_dispatch' || inputs.provider == 'all' || inputs.provider == 'mcaptcha'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
