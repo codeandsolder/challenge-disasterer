@@ -14,6 +14,7 @@ pub enum WorkerPolicy {
 
 const NS_PER_BLOCK_PASS: u128 = 300;
 const NS_PER_EXTRA_WORKER: u128 = 10_000_000;
+const CACHE_FRIENDLY_ARENA_KIB: u64 = 1024;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Work {
@@ -85,7 +86,7 @@ impl Work {
         // The cache-sized Argon2 workload benefits from full nonce fanout.
         // Larger per-worker arenas saturate shared memory bandwidth earlier.
         // The split is a measured initial policy, not a correctness limit.
-        const CACHE_FRIENDLY_ARENA_KIB: u64 = 1024;
+
         let bandwidth_cap = configured
             .div_ceil(2)
             .max(2)
