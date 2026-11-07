@@ -9,7 +9,7 @@ default = ["gpu"]
 gpu = ["challenge-solvers/gpu"]
 
 [dependencies]
-argon2 = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "3ab807d5d32c25755e571c165b07cece28c3b61f" }
+argon2 = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "d6ea9ced865f29ac275aa9d0bbe6cb9c6bf9509d" }
 hashwx = { workspace = true }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
