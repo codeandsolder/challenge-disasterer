@@ -27,11 +27,26 @@ cd "$ROOT"
 "$CHALLENGE_SOLVER_BINARY" --listen "127.0.0.1:$PORT" --gpu="$([[ "$CHALLENGE_IMPLEMENTATION" == "wgpu" ]] && echo true || echo false)" >"$TMP/solver.log" 2>&1 &
 SOLVER_PID=$!
 
-for _ in $(seq 1 100); do
-  if curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null 2>&1; then break; fi
+# Native GPU startup can spend significant time compiling the WGPU pipelines.
+# Distinguish slow initialization from an exited service; preserve its diagnostics.
+ready=0
+for _ in $(seq 1 600); do
+  if curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  if ! kill -0 "$SOLVER_PID" 2>/dev/null; then
+    echo "ALTCHA solver exited during startup:" >&2
+    tail -120 "$TMP/solver.log" >&2
+    exit 1
+  fi
   sleep 0.1
 done
-curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null
+if (( ready == 0 )); then
+  echo "ALTCHA solver did not become ready:" >&2
+  tail -120 "$TMP/solver.log" >&2
+  exit 1
+fi
 
 node "$ROOT/tools/altcha-e2e.mjs" "$TMP/altcha-lib" "http://127.0.0.1:$PORT"
 
