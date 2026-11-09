@@ -51,6 +51,24 @@ fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str
     }
 }
 
+/// Optional native-u64 GPU requirement for the complete SHA-512 compression
+/// family, including its PBKDF2-HMAC modes. Other families can use baseline
+/// GPU features, including the existing SHA-256 path.
+#[cfg(feature = "gpu")]
+fn requires_native_u64(solver: &str, challenge: &Value) -> bool {
+    if solver != "altcha" {
+        return false;
+    }
+    challenge
+        .pointer("/parameters/algorithm")
+        .and_then(Value::as_str)
+        .is_some_and(|algorithm| {
+            let normalized = algorithm.to_ascii_uppercase();
+            let digest = normalized.strip_prefix("PBKDF2/").unwrap_or(&normalized);
+            matches!(digest, "SHA-384" | "SHA-512")
+        })
+}
+
 impl AppState {
     /// Automatic GPU placement favors available GPU capacity, not lowest
     /// isolated request latency. A single shared permit serializes this service's GPU
@@ -327,6 +345,7 @@ impl AppState {
     ) -> anyhow::Result<SolveResponse> {
         #[cfg(feature = "gpu")]
         if self.general_gpu_operational
+            && (!requires_native_u64(&solver, &challenge) || self.general_gpu_native_u64)
             && prefers_auto_gpu(&solver, &challenge, implementation.as_deref())
         {
             match self
@@ -560,6 +579,13 @@ mod auto_gpu_tests {
         assert!(prefers_auto_gpu("altcha", &sha512, None));
         assert!(prefers_auto_gpu("altcha", &hmac384, None));
         assert!(prefers_auto_gpu("altcha", &hmac512, None));
+        for challenge in [&sha384, &sha512, &hmac384, &hmac512] {
+            assert!(requires_native_u64("altcha", challenge));
+        }
+        assert!(!requires_native_u64("altcha", &substantial));
+        assert!(!requires_native_u64("altcha", &expensive_pbkdf2));
+        assert!(!requires_native_u64("altcha", &unsupported));
+        assert!(!requires_native_u64("cerberus", &sha384));
         assert!(prefers_auto_gpu("goaway", &substantial, None));
         assert!(prefers_auto_gpu("mcaptcha", &substantial, Some("auto")));
         assert!(prefers_auto_gpu("haphash", &substantial, None));

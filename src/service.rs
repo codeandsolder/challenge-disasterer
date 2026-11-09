@@ -111,6 +111,7 @@ pub struct AppState {
     gpu_operational: bool,
     hashx_gpu_operational: bool,
     general_gpu_operational: bool,
+    general_gpu_native_u64: bool,
     hashx_gpu_implementations: Vec<&'static str>,
     #[cfg(feature = "gpu")]
     gpu_slots: Arc<Semaphore>,
@@ -340,10 +341,13 @@ impl AppState {
         let (hashx_gpu_operational, hashx_gpu_implementations) = (false, Vec::new());
 
         #[cfg(feature = "gpu")]
-        let (general_gpu_tx, general_gpu_operational) = if config.gpu_enabled {
+        let (general_gpu_tx, general_gpu_operational, general_gpu_native_u64) = if config
+            .gpu_enabled
+        {
             match challenge_solvers::gpu::GpuContext::create().await {
                 Ok(gpu) => {
                     let adapter = gpu.adapter().to_owned();
+                    let native_u64 = gpu.features().contains(wgpu::Features::SHADER_INT64);
                     match gpu.warm_up().await {
                         Ok(()) => {
                             info!(adapter = %adapter, "general WGPU backend ready");
@@ -356,25 +360,25 @@ impl AppState {
                                     let _ = job.result.send(result);
                                 }
                             });
-                            (Some(tx), true)
+                            (Some(tx), true, native_u64)
                         }
                         Err(err) => {
                             warn!(%err, "general WGPU warm-up failed");
-                            (None, false)
+                            (None, false, false)
                         }
                     }
                 }
                 Err(err) => {
                     warn!(%err, "general WGPU unavailable");
-                    (None, false)
+                    (None, false, false)
                 }
             }
         } else {
-            (None, false)
+            (None, false, false)
         };
 
         #[cfg(not(feature = "gpu"))]
-        let general_gpu_operational = false;
+        let (general_gpu_operational, general_gpu_native_u64) = (false, false);
 
         let routing = config
             .routing_calibration
@@ -401,6 +405,7 @@ impl AppState {
             gpu_operational,
             hashx_gpu_operational,
             general_gpu_operational,
+            general_gpu_native_u64,
             hashx_gpu_implementations,
             #[cfg(feature = "gpu")]
             gpu_slots,
