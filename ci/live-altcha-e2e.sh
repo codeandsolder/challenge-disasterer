@@ -24,7 +24,17 @@ echo "UPSTREAM_COMMIT protocol=altcha ref=${ALTCHA_REF:-HEAD} commit=$(git -C "$
 )
 
 cd "$ROOT"
-"$CHALLENGE_SOLVER_BINARY" --listen "127.0.0.1:$PORT" --gpu="$([[ "$CHALLENGE_IMPLEMENTATION" == "wgpu" ]] && echo true || echo false)" >"$TMP/solver.log" 2>&1 &
+# Protocol E2E validates proof correctness, not millions of calibration hashes.
+# Debug defaults (2M CPU + 64M GPU hashes) can delay startup by minutes.
+solver_args=(
+  --listen "127.0.0.1:$PORT"
+  --gpu="$([[ "$CHALLENGE_IMPLEMENTATION" == "wgpu" ]] && echo true || echo false)"
+  --cpu-calibration-hashes "${ALTCHA_E2E_CPU_CALIBRATION_HASHES:-8192}"
+)
+if [[ "$CHALLENGE_IMPLEMENTATION" == "wgpu" ]]; then
+  solver_args+=(--gpu-calibration-hashes "${ALTCHA_E2E_GPU_CALIBRATION_HASHES:-8192}")
+fi
+"$CHALLENGE_SOLVER_BINARY" "${solver_args[@]}" >"$TMP/solver.log" 2>&1 &
 SOLVER_PID=$!
 
 # Native GPU startup can spend significant time compiling the WGPU pipelines.
