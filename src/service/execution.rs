@@ -22,7 +22,7 @@ use crate::{
 };
 
 /// Prefer GPU compute for supported independent-hash puzzles, including
-/// SHA-256 and Cerberus BLAKE3, irrespective of the CPU/GPU latency crossover. Unsupported
+/// SHA-256, SHA-384/512, and Cerberus BLAKE3, irrespective of latency crossover. Unsupported
 /// shapes and explicitly selected CPU implementations retain CPU routing.
 #[cfg(feature = "gpu")]
 fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str>) -> bool {
@@ -543,7 +543,11 @@ mod auto_gpu_tests {
         let borderline = altcha("00", "SHA-256", 2);
         let substantial = altcha("000", "SHA-256", 2);
         let expensive_pbkdf2 = altcha("00", "PBKDF2/SHA-256", 16);
-        let unsupported = altcha("000000000", "SHA-512", 2);
+        let unsupported = altcha("000000000", "ARGON2ID", 2);
+        let sha384 = altcha("000", "SHA-384", 2);
+        let sha512 = altcha("000", "SHA-512", 2);
+        let hmac384 = altcha("00", "PBKDF2/SHA-384", 2);
+        let hmac512 = altcha("00", "PBKDF2/SHA-512", 2);
 
         assert!(prefers_auto_gpu("altcha", &cheap, None));
         assert!(prefers_auto_gpu("altcha", &borderline, Some("auto")));
@@ -552,6 +556,10 @@ mod auto_gpu_tests {
         assert!(!prefers_auto_gpu("altcha", &expensive_pbkdf2, Some("safe")));
         assert!(!prefers_auto_gpu("altcha", &substantial, Some("sha-ni")));
         assert!(!prefers_auto_gpu("altcha", &unsupported, None));
+        assert!(prefers_auto_gpu("altcha", &sha384, None));
+        assert!(prefers_auto_gpu("altcha", &sha512, None));
+        assert!(prefers_auto_gpu("altcha", &hmac384, None));
+        assert!(prefers_auto_gpu("altcha", &hmac512, None));
         assert!(prefers_auto_gpu("goaway", &substantial, None));
         assert!(prefers_auto_gpu("mcaptcha", &substantial, Some("auto")));
         assert!(prefers_auto_gpu("haphash", &substantial, None));

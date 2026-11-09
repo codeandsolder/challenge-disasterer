@@ -834,6 +834,70 @@ mod tests {
         Ok(())
     }
 
+    /// Real service routing through the ALTCHA SHA-384/SHA-512 and PBKDF2
+    /// protocol adapter. Compares complete keys to the independent CPU path.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a physical WGPU adapter with SHADER_INT64"]
+    async fn altcha_sha64_auto_gpu_and_policy_overrides_match_cpu() -> anyhow::Result<()> {
+        let mut state = AppState::initialize(Config {
+            cpu_workers: 2,
+            argon2_workers: 1,
+            altcha_worker_policy: WorkerPolicy::Adaptive,
+            argon2_memory_budget_mib: Some(128),
+            cpu_calibration_hashes: 8_192,
+            gpu_calibration_hashes: 8_192,
+            gpu_enabled: true,
+            gpu_policy: GpuPolicy::PreferGpu,
+            routing_calibration: None,
+        })
+        .await?;
+        assert!(state.general_gpu_operational);
+        for (algorithm, key_length, decimal) in [
+            ("SHA-384", 33, false),
+            ("SHA-512", 47, true),
+            ("PBKDF2/SHA-384", 115, false),
+            ("PBKDF2/SHA-512", 149, true),
+        ] {
+            let challenge = serde_json::json!({
+                "counterMode": if decimal { "string" } else { "uint32" },
+                "parameters": {
+                    "algorithm": algorithm,
+                    "cost": 2,
+                    "keyLength": key_length,
+                    "keyPrefix": "",
+                    "nonce": "9a".repeat(135),
+                    "salt": "7b".repeat(157)
+                }
+            });
+            let reference = classic_pow::solve("altcha", challenge.clone(), Some("safe"), 1)?;
+            assert_eq!(reference.answer["counter"], 0);
+            let gpu = state
+                .run_classic("altcha".to_owned(), challenge.clone(), None, Instant::now())
+                .await?;
+            assert_eq!(gpu.backend, "gpu", "{algorithm} must prefer GPU");
+            assert_eq!(gpu.answer["counter"], 0);
+            assert_eq!(
+                gpu.answer["derivedKey"], reference.answer["derivedKey"],
+                "{algorithm} derivedKey must exactly match the CPU verifier"
+            );
+            if algorithm == "PBKDF2/SHA-512" {
+                state.config.gpu_policy = GpuPolicy::CpuOnly;
+                let cpu = state
+                    .run_classic("altcha".to_owned(), challenge.clone(), None, Instant::now())
+                    .await?;
+                assert_eq!(cpu.backend, "cpu", "cpu-only must override GPU preference");
+                assert_eq!(cpu.answer["derivedKey"], reference.answer["derivedKey"]);
+                let forced = state
+                    .run_general_gpu("altcha".to_owned(), challenge, Instant::now())
+                    .await?;
+                assert_eq!(forced.backend, "gpu", "explicit WGPU overrides cpu-only");
+                assert_eq!(forced.answer["derivedKey"], reference.answer["derivedKey"]);
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn response_stats_record_solve_time_not_queue_or_request_time() {
         let mut stats = StatsStore::default();
