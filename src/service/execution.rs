@@ -22,7 +22,7 @@ use crate::{
 };
 
 /// Prefer GPU compute for supported independent-hash puzzles, including
-/// SHA-256, SHA-384/512, and Cerberus BLAKE3, irrespective of latency crossover. Unsupported
+/// SHA-1, SHA-256, SHA-384/512 and Cerberus BLAKE3, regardless of latency crossover. Unsupported
 /// shapes and explicitly selected CPU implementations retain CPU routing.
 #[cfg(feature = "gpu")]
 fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str>) -> bool {
@@ -30,7 +30,7 @@ fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str
         return false;
     }
     match solver {
-        "altcha" => classic_pow::auto_gpu_expected_work(solver, challenge).is_some(),
+        "altcha" | "linear" => classic_pow::auto_gpu_expected_work(solver, challenge).is_some(),
         // These classic families' GPU implementations compute SHA-256 work.
         // They validate the actual challenge with their existing parsers;
         // unsupported shapes transparently fall back to CPU.

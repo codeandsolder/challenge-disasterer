@@ -646,13 +646,13 @@ pub async fn solve(
             if request.solver == "linear"
                 && matches!(
                     request.implementation.as_deref(),
-                    Some(implementation) if implementation != "auto"
+                    Some(implementation) if !matches!(implementation, "auto" | "wgpu")
                 )
             {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
-                        error: "Linear.pub exposes only the auto implementation".to_owned(),
+                        error: "Linear.pub supports only auto and wgpu implementations".to_owned(),
                     }),
                 ));
             }
@@ -931,6 +931,60 @@ mod tests {
                 assert_eq!(forced.answer["derivedKey"], reference.answer["derivedKey"]);
             }
         }
+        Ok(())
+    }
+
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a physical WGPU adapter"]
+    async fn linear_sha1_gpu_first_cpu_only_and_explicit_override() -> anyhow::Result<()> {
+        use sha1::{Digest, Sha1};
+
+        let mut state = AppState::initialize(Config {
+            cpu_workers: 2,
+            argon2_workers: 1,
+            altcha_worker_policy: WorkerPolicy::Adaptive,
+            argon2_memory_budget_mib: Some(128),
+            cpu_calibration_hashes: 8_192,
+            gpu_calibration_hashes: 8_192,
+            gpu_enabled: true,
+            gpu_policy: GpuPolicy::PreferGpu,
+            routing_calibration: None,
+        })
+        .await?;
+        assert!(state.general_gpu_operational);
+        let seed = "72BBE3B063367AB2F323D46D2ADA8A8A29BB5B58";
+        let challenge = serde_json::json!({ "seed": seed });
+        let verify = |response: &SolveResponse| -> anyhow::Result<()> {
+            let nonce = response.answer["nonce"]
+                .as_u64()
+                .context("Linear GPU nonce must be an integer")?;
+            let cookie = format!("yX3={seed}{nonce}");
+            assert_eq!(response.answer["cookie"], cookie);
+            assert_eq!(response.answer["cookie_name"], "yX3");
+            let digest = Sha1::digest(format!("{seed}{nonce}").as_bytes());
+            assert_eq!(&digest[7..9], &[0xb0, 0x0b]);
+            Ok(())
+        };
+        let gpu = state
+            .run_classic("linear".to_owned(), challenge.clone(), None, Instant::now())
+            .await?;
+        assert_eq!(gpu.backend, "gpu");
+        verify(&gpu)?;
+
+        state.config.gpu_policy = GpuPolicy::CpuOnly;
+        let cpu = state
+            .run_classic("linear".to_owned(), challenge.clone(), None, Instant::now())
+            .await?;
+        assert_eq!(cpu.backend, "cpu");
+        assert_eq!(cpu.answer["nonce"], 29_224);
+        verify(&cpu)?;
+
+        let forced = state
+            .run_general_gpu("linear".to_owned(), challenge, Instant::now())
+            .await?;
+        assert_eq!(forced.backend, "gpu");
+        verify(&forced)?;
         Ok(())
     }
 

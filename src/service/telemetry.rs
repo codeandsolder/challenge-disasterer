@@ -359,10 +359,16 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         algorithms: &["sha1"],
         difficulty_min: 16,
         difficulty_max: 16,
-        router: false,
+        router: state.general_gpu_operational,
         counter_mode: None,
         counter_max: None,
-        implementations: vec!["auto"],
+        implementations: {
+            let mut supported = vec!["auto"];
+            if state.general_gpu_operational {
+                supported.push("wgpu");
+            }
+            supported
+        },
     });
     if state.gpu_operational {
         available_solvers.push("anubis-gpu");
