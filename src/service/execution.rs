@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use serde_json::Value;
 #[cfg(feature = "gpu")]
-use tokio::sync::oneshot;
+use tokio::sync::{OwnedSemaphorePermit, oneshot};
 
 use super::{
     AppState, ExternalSolveResponse, SolveResponse,
@@ -21,21 +21,49 @@ use crate::{
     routing::RouteEntry,
 };
 
-// The Asus RTX 2060 matched-binary measurements put the SHA/PBKDF2
-// break-even near a few hundred effective iterations. Use 1024 as the
-// initial cross-shape cost score to avoid GPU dispatch on tiny proofs;
-// unsupported shapes are filtered by challenge-protocols' own parser.
-#[cfg(feature = "gpu")]
-pub(super) const ALTCHA_AUTO_GPU_MIN_WORK: u128 = 1_024;
-
+/// Prefer an idle GPU for every supported SHA-256/PBKDF2-SHA-256
+/// challenge, irrespective of the CPU/GPU latency crossover. Unsupported
+/// shapes and explicitly selected CPU implementations retain CPU routing.
 #[cfg(feature = "gpu")]
 fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str>) -> bool {
-    (implementation.is_none() || implementation == Some("auto"))
-        && classic_pow::auto_gpu_expected_work(solver, challenge)
-            .is_some_and(|work| work >= ALTCHA_AUTO_GPU_MIN_WORK)
+    if implementation.is_some_and(|value| value != "auto") {
+        return false;
+    }
+    match solver {
+        "altcha" => classic_pow::auto_gpu_expected_work(solver, challenge).is_some(),
+        // These classic families' GPU implementations compute SHA-256 work.
+        // They validate the actual challenge with their existing parsers;
+        // unsupported shapes transparently fall back to CPU.
+        "goaway" | "haphash" | "mcaptcha" => true,
+        "capjs" => {
+            challenge.get("format").and_then(Value::as_u64) != Some(2)
+                || challenge
+                    .get("challenges")
+                    .and_then(Value::as_array)
+                    .is_some_and(|challenges| {
+                        !challenges.is_empty()
+                            && challenges.iter().all(|entry| {
+                                entry.get("protocol").and_then(Value::as_str) == Some("sha256-pow")
+                            })
+                    })
+        }
+        _ => false,
+    }
 }
 
 impl AppState {
+    /// Automatic SHA-256 placement favors GPU capacity, not lowest isolated
+    /// request latency. A single shared permit serializes this service's GPU
+    /// worker families; the default waits rather than scheduling CPU work.
+    #[cfg(feature = "gpu")]
+    pub(super) async fn reserve_auto_sha_gpu(&self) -> Option<OwnedSemaphorePermit> {
+        match self.config.sha_gpu_policy {
+            super::ShaGpuPolicy::PreferGpu => self.gpu_slots.clone().acquire_owned().await.ok(),
+            super::ShaGpuPolicy::IdleOnly => self.gpu_slots.clone().try_acquire_owned().ok(),
+            super::ShaGpuPolicy::CpuOnly => None,
+        }
+    }
+
     pub(super) async fn run_cpu(
         &self,
         challenge: Challenge,
@@ -68,6 +96,24 @@ impl AppState {
         implementation: Option<String>,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
+        #[cfg(feature = "gpu")]
+        if solver == "anubis-sha256"
+            && implementation
+                .as_deref()
+                .is_none_or(|value| value == "auto")
+            && self.general_gpu_operational
+        {
+            match self
+                .try_run_anubis_wasm_gpu(challenge.clone(), queued_at)
+                .await
+            {
+                Ok(Some(response)) => return Ok(response),
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!(%err, "automatic Anubis SHA-256 GPU failed; routing to CPU");
+                }
+            }
+        }
         let worker_count = if solver == "anubis-argon2id" {
             self.config.argon2_workers
         } else {
@@ -115,6 +161,23 @@ impl AppState {
         .await
     }
 
+    /// Automatic SHA-256 GPU route. Its wait-vs-fallback behavior comes from
+    /// the configured policy; a lost GPU worker still falls back to CPU.
+    #[cfg(feature = "gpu")]
+    pub(super) async fn try_run_anubis_wasm_gpu(
+        &self,
+        challenge: anubis_wasm::Challenge,
+        queued_at: Instant,
+    ) -> anyhow::Result<Option<SolveResponse>> {
+        self.dispatch_general_gpu(
+            "anubis-sha256".to_owned(),
+            serde_json::to_value(challenge).context("serialize Anubis WASM SHA-256 challenge")?,
+            queued_at,
+            true,
+        )
+        .await
+    }
+
     #[cfg(feature = "gpu")]
     pub(super) async fn run_gpu_only(
         &self,
@@ -126,6 +189,19 @@ impl AppState {
             challenge.gpu_compatible(),
             "challenge shape is not GPU-compatible"
         );
+        let permit = self.gpu_slots.clone().acquire_owned().await?;
+        self.run_gpu_with_permit(challenge, queued_at, permit).await
+    }
+
+    /// Called by the automatic router only after atomically reserving the
+    /// idle GPU. Explicit WGPU requests wait for the shared permit instead.
+    #[cfg(feature = "gpu")]
+    pub(super) async fn run_gpu_with_permit(
+        &self,
+        challenge: Challenge,
+        queued_at: Instant,
+        gpu_permit: OwnedSemaphorePermit,
+    ) -> anyhow::Result<SolveResponse> {
         let tx = self
             .gpu_tx
             .as_ref()
@@ -138,6 +214,7 @@ impl AppState {
         self.gpu_queue_depth.fetch_add(1, Ordering::Relaxed);
         if tx
             .send(GpuJob {
+                _gpu_permit: gpu_permit,
                 challenge,
                 expected_work,
                 started: started_tx,
@@ -212,7 +289,9 @@ impl AppState {
             .context("HashX GPU backend unavailable")?;
         let (started_tx, started_rx) = oneshot::channel();
         let (result_tx, result_rx) = oneshot::channel();
+        let gpu_permit = self.gpu_slots.clone().acquire_owned().await?;
         tx.send(HashxGpuJob {
+            _gpu_permit: gpu_permit,
             challenge,
             implementation,
             started: started_tx,
@@ -256,10 +335,10 @@ impl AppState {
             {
                 Ok(Some(result)) => return Ok(result),
                 Ok(None) => {
-                    tracing::debug!(solver, "GPU queue at capacity, routing ALTCHA to CPU");
+                    tracing::debug!(solver, "GPU occupied; routing SHA work to CPU");
                 }
                 Err(err) => {
-                    tracing::warn!(solver, %err, "automatic ALTCHA WGPU failed; routing to CPU");
+                    tracing::warn!(solver, %err, "automatic SHA WGPU failed; routing to CPU");
                 }
             }
         }
@@ -317,10 +396,9 @@ impl AppState {
             .context("mandatory WGPU dispatch was not enqueued")
     }
 
-    /// Send a general WGPU job without duplicating protocol execution.
-    /// Opportunistic ALTCHA auto routing does not wait for *channel* capacity:
-    /// when all 128 queued positions are occupied, use CPU instead. Explicit
-    /// WGPU requests retain FIFO backpressure and do not silently switch.
+    /// Send GPU work using one shared execution permit across all GPU worker
+    /// families. Automatic SHA-256 follows the configured GPU preference;
+    /// explicit WGPU requests always wait for their turn.
     #[cfg(feature = "gpu")]
     async fn dispatch_general_gpu(
         &self,
@@ -336,6 +414,14 @@ impl AppState {
         let (started_tx, started_rx) = oneshot::channel();
         let (result_tx, result_rx) = oneshot::channel();
         let job = GeneralGpuJob {
+            _gpu_permit: if opportunistic {
+                let Some(permit) = self.reserve_auto_sha_gpu().await else {
+                    return Ok(None);
+                };
+                permit
+            } else {
+                self.gpu_slots.clone().acquire_owned().await?
+            },
             solver: solver.clone(),
             challenge,
             started: started_tx,
@@ -452,20 +538,38 @@ mod auto_gpu_tests {
     }
 
     #[test]
-    fn auto_gpu_prefers_substantial_supported_work_but_not_tiny_or_forced_cpu() {
+    fn auto_gpu_prefers_all_supported_sha_work_except_explicit_cpu() {
         let cheap = altcha("0", "SHA-256", 2);
         let borderline = altcha("00", "SHA-256", 2);
         let substantial = altcha("000", "SHA-256", 2);
         let expensive_pbkdf2 = altcha("00", "PBKDF2/SHA-256", 16);
         let unsupported = altcha("000000000", "SHA-512", 2);
 
-        assert!(!prefers_auto_gpu("altcha", &cheap, None));
-        assert!(!prefers_auto_gpu("altcha", &borderline, Some("auto")));
+        assert!(prefers_auto_gpu("altcha", &cheap, None));
+        assert!(prefers_auto_gpu("altcha", &borderline, Some("auto")));
         assert!(prefers_auto_gpu("altcha", &substantial, None));
         assert!(prefers_auto_gpu("altcha", &expensive_pbkdf2, Some("auto")));
         assert!(!prefers_auto_gpu("altcha", &expensive_pbkdf2, Some("safe")));
         assert!(!prefers_auto_gpu("altcha", &substantial, Some("sha-ni")));
         assert!(!prefers_auto_gpu("altcha", &unsupported, None));
-        assert!(!prefers_auto_gpu("capjs", &substantial, None));
+        assert!(prefers_auto_gpu("goaway", &substantial, None));
+        assert!(prefers_auto_gpu("mcaptcha", &substantial, Some("auto")));
+        assert!(prefers_auto_gpu("haphash", &substantial, None));
+        assert!(prefers_auto_gpu("capjs", &substantial, None));
+        assert!(!prefers_auto_gpu("cerberus", &substantial, None));
+        let sha256_only = serde_json::json!({
+            "format": 2,
+            "challenges": [{"protocol": "sha256-pow", "payload": {}}]
+        });
+        let mixed = serde_json::json!({
+            "format": 2,
+            "challenges": [
+                {"protocol": "sha256-pow", "payload": {}},
+                {"protocol": "hashwx", "payload": {}}
+            ]
+        });
+        assert!(prefers_auto_gpu("capjs", &sha256_only, None));
+        assert!(!prefers_auto_gpu("capjs", &mixed, None));
+        assert!(!prefers_auto_gpu("goaway", &substantial, Some("sha-ni")));
     }
 }
