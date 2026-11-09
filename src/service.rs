@@ -859,7 +859,7 @@ mod tests {
             ("PBKDF2/SHA-384", 115, false),
             ("PBKDF2/SHA-512", 149, true),
         ] {
-            let challenge = serde_json::json!({
+            let mut challenge = serde_json::json!({
                 "counterMode": if decimal { "string" } else { "uint32" },
                 "parameters": {
                     "algorithm": algorithm,
@@ -870,8 +870,16 @@ mod tests {
                     "salt": "7b".repeat(157)
                 }
             });
+            // An empty prefix makes every nonce valid and lets the GPU
+            // return any workgroup's winner. Derive the real key with the
+            // CPU reference, then challenge the GPU with its full prefix.
+            // This also exercises PBKDF2 matching across output blocks.
             let reference = classic_pow::solve("altcha", challenge.clone(), Some("safe"), 1)?;
             assert_eq!(reference.answer["counter"], 0);
+            let key = reference.answer["derivedKey"]
+                .as_str()
+                .context("CPU ALTCHA answer lacks derivedKey")?;
+            challenge["parameters"]["keyPrefix"] = serde_json::json!(key);
             let gpu = state
                 .run_classic("altcha".to_owned(), challenge.clone(), None, Instant::now())
                 .await?;
