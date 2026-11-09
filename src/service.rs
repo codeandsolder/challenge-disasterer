@@ -207,7 +207,7 @@ impl AppState {
     /// Whether the running general WGPU context can execute native-u64 shaders.
     /// The status reflects the negotiated device, not the adapter name or
     /// unrelated SHA-256 GPU capability.
-    fn general_gpu_has_native_u64(&self) -> bool {
+    const fn general_gpu_has_native_u64(&self) -> bool {
         if !self.general_gpu_operational {
             return false;
         }
