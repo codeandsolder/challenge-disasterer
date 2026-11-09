@@ -121,13 +121,13 @@ impl AppState {
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
         challenge.validate()?;
-        // Spend idle GPU capacity before consuming CPU resources, regardless
-        // of which backend has a lower calibrated single-request latency.
-        // Reserving the shared permit is atomic across all GPU queues.
+        // Prefer GPU compute instead of consuming CPU cores, even if a CPU
+        // calibration estimates slightly lower single-request latency. The
+        // chosen policy controls whether to queue or require an idle GPU.
         #[cfg(feature = "gpu")]
         if self.gpu_operational
             && challenge.gpu_compatible()
-            && let Ok(permit) = self.gpu_slots.clone().try_acquire_owned()
+            && let Some(permit) = self.reserve_auto_sha_gpu().await
         {
             match self
                 .run_gpu_with_permit(challenge.clone(), queued_at, permit)
@@ -135,7 +135,7 @@ impl AppState {
             {
                 Ok(response) => return Ok(response),
                 Err(err) => {
-                    warn!(%err, "idle GPU solve failed; falling back to calibrated routes");
+                    warn!(%err, "automatic GPU solve failed; falling back to calibrated routes");
                 }
             }
         }
@@ -144,16 +144,15 @@ impl AppState {
             self.calibrated_routes(algorithm, u32::from(challenge.difficulty), batch_size_hint)
         {
             if route.provider == "local" {
-                match route.solver.as_str() {
-                    "anubis-cpu" => match self.run_cpu(challenge.clone(), queued_at).await {
+                // GPU was already considered according to its resource policy.
+                // Calibration is still useful for CPU and remote fallback.
+                if route.solver == "anubis-cpu" {
+                    match self.run_cpu(challenge.clone(), queued_at).await {
                         Ok(response) => return Ok(response),
                         Err(err) => {
                             warn!(solver = %route.solver, %err, "calibrated local Anubis route failed; trying next candidate");
                         }
-                    },
-                    // The idle GPU was considered above; skip its calibration
-                    // rows rather than queueing behind busy GPU work.
-                    _ => {}
+                    }
                 }
             } else {
                 let challenge_value = serde_json::json!({

@@ -52,6 +52,18 @@ fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str
 }
 
 impl AppState {
+    /// Automatic SHA-256 placement favors GPU capacity, not lowest isolated
+    /// request latency. A single shared permit serializes this service's GPU
+    /// worker families; the default waits rather than scheduling CPU work.
+    #[cfg(feature = "gpu")]
+    pub(super) async fn reserve_auto_sha_gpu(&self) -> Option<OwnedSemaphorePermit> {
+        match self.config.sha_gpu_policy {
+            super::ShaGpuPolicy::PreferGpu => self.gpu_slots.clone().acquire_owned().await.ok(),
+            super::ShaGpuPolicy::IdleOnly => self.gpu_slots.clone().try_acquire_owned().ok(),
+            super::ShaGpuPolicy::CpuOnly => None,
+        }
+    }
+
     pub(super) async fn run_cpu(
         &self,
         challenge: Challenge,
@@ -149,8 +161,8 @@ impl AppState {
         .await
     }
 
-    /// Non-blocking GPU-first SHA-256 route. Fails over to CPU if every GPU
-    /// execution slot is occupied or the device worker has become unhealthy.
+    /// Automatic SHA-256 GPU route. Its wait-vs-fallback behavior comes from
+    /// the configured policy; a lost GPU worker still falls back to CPU.
     #[cfg(feature = "gpu")]
     pub(super) async fn try_run_anubis_wasm_gpu(
         &self,
@@ -384,9 +396,9 @@ impl AppState {
             .context("mandatory WGPU dispatch was not enqueued")
     }
 
-    /// Send GPU work with one shared execution permit across every GPU
-    /// worker family. Automatic SHA-256 only uses a genuinely idle service
-    /// GPU; explicit WGPU requests wait for their turn without CPU fallback.
+    /// Send GPU work using one shared execution permit across all GPU worker
+    /// families. Automatic SHA-256 follows the configured GPU preference;
+    /// explicit WGPU requests always wait for their turn.
     #[cfg(feature = "gpu")]
     async fn dispatch_general_gpu(
         &self,
@@ -403,10 +415,10 @@ impl AppState {
         let (result_tx, result_rx) = oneshot::channel();
         let job = GeneralGpuJob {
             _gpu_permit: if opportunistic {
-                match self.gpu_slots.clone().try_acquire_owned() {
-                    Ok(permit) => permit,
-                    Err(_) => return Ok(None),
-                }
+                let Some(permit) = self.reserve_auto_sha_gpu().await else {
+                    return Ok(None);
+                };
+                permit
             } else {
                 self.gpu_slots.clone().acquire_owned().await?
             },

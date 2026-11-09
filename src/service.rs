@@ -36,6 +36,28 @@ mod routing;
 mod telemetry;
 pub use telemetry::stats;
 
+/// Policy for automatic SHA-256 work placement, independent of measured
+/// CPU/GPU solve latency. Explicit backend requests override this policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ShaGpuPolicy {
+    /// Assign supported SHA-256 to GPU, waiting for any in-process GPU job.
+    PreferGpu,
+    /// Use GPU only when no in-process GPU job currently owns its slot.
+    IdleOnly,
+    /// Route automatic SHA-256 to CPU; explicit GPU remains available.
+    CpuOnly,
+}
+
+impl ShaGpuPolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PreferGpu => "prefer-gpu",
+            Self::IdleOnly => "idle-only",
+            Self::CpuOnly => "cpu-only",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub cpu_workers: usize,
@@ -46,6 +68,7 @@ pub struct Config {
     #[cfg(feature = "gpu")]
     pub gpu_calibration_hashes: u64,
     pub gpu_enabled: bool,
+    pub sha_gpu_policy: ShaGpuPolicy,
     pub routing_calibration: Option<PathBuf>,
 }
 
@@ -674,16 +697,15 @@ pub async fn solve(
 mod tests {
     use super::*;
 
-    /// Hardware-only router test: GPU is preferred when idle, and the same
-    /// request falls back to CPU without waiting when another GPU job owns
-    /// the shared execution slot.
+    /// Hardware-only route test: all automatic GPU policies honor the same
+    /// GPU ownership, with verified CPU and GPU challenge solutions.
     #[cfg(feature = "gpu")]
     #[tokio::test]
     #[ignore = "requires a physical WGPU adapter"]
-    async fn sha256_idle_gpu_route_and_busy_cpu_fallback() -> anyhow::Result<()> {
+    async fn sha256_gpu_policy_idle_busy_queued_and_forced() -> anyhow::Result<()> {
         use std::time::Duration;
 
-        let state = AppState::initialize(Config {
+        let mut state = AppState::initialize(Config {
             cpu_workers: 2,
             argon2_workers: 1,
             altcha_worker_policy: WorkerPolicy::Adaptive,
@@ -691,6 +713,7 @@ mod tests {
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
             gpu_enabled: true,
+            sha_gpu_policy: ShaGpuPolicy::IdleOnly,
             routing_calibration: None,
         })
         .await?;
@@ -739,10 +762,41 @@ mod tests {
             "general SHA256 GPU must also see the occupied global slot"
         );
         drop(busy);
+        // Default policy favors GPU even while occupied by another request.
+        // The semaphore is owned by the GPU job, not released when enqueued.
+        state.config.sha_gpu_policy = ShaGpuPolicy::PreferGpu;
+        let busy = state.gpu_slots.clone().acquire_owned().await?;
+        {
+            let pending = state.route_anubis("fast", classic.clone(), 1, Instant::now());
+            tokio::pin!(pending);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), pending.as_mut())
+                    .await
+                    .is_err(),
+                "prefer-gpu must wait rather than dispatching to CPU"
+            );
+            drop(busy);
+            let queued = tokio::time::timeout(Duration::from_secs(10), pending.as_mut()).await??;
+            assert_eq!(queued.backend, "gpu", "queued GPU must be preferred");
+            let answer: anubis::Answer = serde_json::from_value(queued.answer)?;
+            assert!(anubis::verify(&classic, &answer));
+        }
+
+        // CPU-only is a preference for automatic work, not a prohibition on
+        // the explicit GPU endpoint.
+        state.config.sha_gpu_policy = ShaGpuPolicy::CpuOnly;
+        let cpu = state
+            .route_anubis("fast", classic.clone(), 1, Instant::now())
+            .await?;
+        assert_eq!(cpu.backend, "cpu");
+        let forced_gpu = state.run_gpu_only(classic.clone(), Instant::now()).await?;
+        assert_eq!(forced_gpu.backend, "gpu");
+
+        state.config.sha_gpu_policy = ShaGpuPolicy::PreferGpu;
         let recovered = state
             .route_anubis("fast", classic, 1, Instant::now())
             .await?;
-        assert_eq!(recovered.backend, "gpu", "slot should release");
+        assert_eq!(recovered.backend, "gpu", "GPU should be reusable");
         Ok(())
     }
 
