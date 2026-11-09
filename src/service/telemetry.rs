@@ -197,6 +197,14 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         available_solvers.push(solver);
     }
 
+    let sha64_implementations = || {
+        let mut implementations = vec!["auto", "safe"];
+        if state.general_gpu_has_native_u64() {
+            implementations.push("wgpu");
+        }
+        implementations
+    };
+
     solver_capabilities.extend([
         SolverCapability {
             solver: "cerberus",
@@ -280,14 +288,17 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         },
         SolverCapability {
             solver: "altcha",
-            algorithms: &[
-                "sha384",
-                "sha512",
-                "pbkdf2-sha384",
-                "pbkdf2-sha512",
-                "argon2id",
-                "scrypt",
-            ],
+            algorithms: &["sha384", "sha512", "pbkdf2-sha384", "pbkdf2-sha512"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: state.general_gpu_has_native_u64(),
+            counter_mode: Some("uint32"),
+            counter_max: Some(u64::from(u32::MAX)),
+            implementations: sha64_implementations(),
+        },
+        SolverCapability {
+            solver: "altcha",
+            algorithms: &["argon2id", "scrypt"],
             difficulty_min: 1,
             difficulty_max: 64,
             router: false,
@@ -313,14 +324,17 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         },
         SolverCapability {
             solver: "altcha",
-            algorithms: &[
-                "sha384",
-                "sha512",
-                "pbkdf2-sha384",
-                "pbkdf2-sha512",
-                "argon2id",
-                "scrypt",
-            ],
+            algorithms: &["sha384", "sha512", "pbkdf2-sha384", "pbkdf2-sha512"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: state.general_gpu_has_native_u64(),
+            counter_mode: Some("string"),
+            counter_max: Some(9_007_199_254_740_991),
+            implementations: sha64_implementations(),
+        },
+        SolverCapability {
+            solver: "altcha",
+            algorithms: &["argon2id", "scrypt"],
             difficulty_min: 1,
             difficulty_max: 64,
             router: false,

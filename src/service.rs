@@ -111,6 +111,8 @@ pub struct AppState {
     gpu_operational: bool,
     hashx_gpu_operational: bool,
     general_gpu_operational: bool,
+    #[cfg(feature = "gpu")]
+    general_gpu_features: wgpu::Features,
     hashx_gpu_implementations: Vec<&'static str>,
     #[cfg(feature = "gpu")]
     gpu_slots: Arc<Semaphore>,
@@ -202,6 +204,24 @@ async fn solve_general_gpu(
 }
 
 impl AppState {
+    /// Whether the running general WGPU context can execute native-u64 shaders.
+    /// The status reflects the negotiated device, not the adapter name or
+    /// unrelated SHA-256 GPU capability.
+    const fn general_gpu_has_native_u64(&self) -> bool {
+        if !self.general_gpu_operational {
+            return false;
+        }
+        #[cfg(feature = "gpu")]
+        {
+            self.general_gpu_features
+                .contains(wgpu::Features::SHADER_INT64)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            false
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "service initialization keeps calibration and backend bring-up in one ordered transaction"
@@ -340,10 +360,12 @@ impl AppState {
         let (hashx_gpu_operational, hashx_gpu_implementations) = (false, Vec::new());
 
         #[cfg(feature = "gpu")]
-        let (general_gpu_tx, general_gpu_operational) = if config.gpu_enabled {
+        let (general_gpu_tx, general_gpu_operational, general_gpu_features) = if config.gpu_enabled
+        {
             match challenge_solvers::gpu::GpuContext::create().await {
                 Ok(gpu) => {
                     let adapter = gpu.adapter().to_owned();
+                    let enabled_features = gpu.features();
                     match gpu.warm_up().await {
                         Ok(()) => {
                             info!(adapter = %adapter, "general WGPU backend ready");
@@ -356,21 +378,21 @@ impl AppState {
                                     let _ = job.result.send(result);
                                 }
                             });
-                            (Some(tx), true)
+                            (Some(tx), true, enabled_features)
                         }
                         Err(err) => {
                             warn!(%err, "general WGPU warm-up failed");
-                            (None, false)
+                            (None, false, wgpu::Features::empty())
                         }
                     }
                 }
                 Err(err) => {
                     warn!(%err, "general WGPU unavailable");
-                    (None, false)
+                    (None, false, wgpu::Features::empty())
                 }
             }
         } else {
-            (None, false)
+            (None, false, wgpu::Features::empty())
         };
 
         #[cfg(not(feature = "gpu"))]
@@ -401,6 +423,8 @@ impl AppState {
             gpu_operational,
             hashx_gpu_operational,
             general_gpu_operational,
+            #[cfg(feature = "gpu")]
+            general_gpu_features,
             hashx_gpu_implementations,
             #[cfg(feature = "gpu")]
             gpu_slots,
@@ -831,6 +855,82 @@ mod tests {
             .run_general_gpu("cerberus".to_owned(), cerberus, Instant::now())
             .await?;
         assert_eq!(explicit_gpu.backend, "gpu");
+        Ok(())
+    }
+
+    /// Real service routing through the ALTCHA SHA-384/SHA-512 and PBKDF2
+    /// protocol adapter. Compares complete keys to the independent CPU path.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a physical WGPU adapter with SHADER_INT64"]
+    async fn altcha_sha64_auto_gpu_and_policy_overrides_match_cpu() -> anyhow::Result<()> {
+        let mut state = AppState::initialize(Config {
+            cpu_workers: 2,
+            argon2_workers: 1,
+            altcha_worker_policy: WorkerPolicy::Adaptive,
+            argon2_memory_budget_mib: Some(128),
+            cpu_calibration_hashes: 8_192,
+            gpu_calibration_hashes: 8_192,
+            gpu_enabled: true,
+            gpu_policy: GpuPolicy::PreferGpu,
+            routing_calibration: None,
+        })
+        .await?;
+        assert!(state.general_gpu_operational);
+        assert!(
+            state.general_gpu_has_native_u64(),
+            "selected GPU must have SHADER_INT64"
+        );
+        for (algorithm, key_length, decimal) in [
+            ("SHA-384", 33, false),
+            ("SHA-512", 47, true),
+            ("PBKDF2/SHA-384", 115, false),
+            ("PBKDF2/SHA-512", 149, true),
+        ] {
+            let mut challenge = serde_json::json!({
+                "counterMode": if decimal { "string" } else { "uint32" },
+                "parameters": {
+                    "algorithm": algorithm,
+                    "cost": 2,
+                    "keyLength": key_length,
+                    "keyPrefix": "",
+                    "nonce": "9a".repeat(135),
+                    "salt": "7b".repeat(157)
+                }
+            });
+            // An empty prefix makes every nonce valid and lets the GPU
+            // return any workgroup's winner. Derive the real key with the
+            // CPU reference, then challenge the GPU with its full prefix.
+            // This also exercises PBKDF2 matching across output blocks.
+            let reference = classic_pow::solve("altcha", challenge.clone(), Some("safe"), 1)?;
+            assert_eq!(reference.answer["counter"], 0);
+            let key = reference.answer["derivedKey"]
+                .as_str()
+                .context("CPU ALTCHA answer lacks derivedKey")?;
+            challenge["parameters"]["keyPrefix"] = serde_json::json!(key);
+            let gpu = state
+                .run_classic("altcha".to_owned(), challenge.clone(), None, Instant::now())
+                .await?;
+            assert_eq!(gpu.backend, "gpu", "{algorithm} must prefer GPU");
+            assert_eq!(gpu.answer["counter"], 0);
+            assert_eq!(
+                gpu.answer["derivedKey"], reference.answer["derivedKey"],
+                "{algorithm} derivedKey must exactly match the CPU verifier"
+            );
+            if algorithm == "PBKDF2/SHA-512" {
+                state.config.gpu_policy = GpuPolicy::CpuOnly;
+                let cpu = state
+                    .run_classic("altcha".to_owned(), challenge.clone(), None, Instant::now())
+                    .await?;
+                assert_eq!(cpu.backend, "cpu", "cpu-only must override GPU preference");
+                assert_eq!(cpu.answer["derivedKey"], reference.answer["derivedKey"]);
+                let forced = state
+                    .run_general_gpu("altcha".to_owned(), challenge, Instant::now())
+                    .await?;
+                assert_eq!(forced.backend, "gpu", "explicit WGPU overrides cpu-only");
+                assert_eq!(forced.answer["derivedKey"], reference.answer["derivedKey"]);
+            }
+        }
         Ok(())
     }
 

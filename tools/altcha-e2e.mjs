@@ -14,6 +14,7 @@ const { deriveKey: deriveArgon2id } = await load("dist/esm/v2/algorithms/argon2i
 const { deriveKey: deriveScrypt } = await load("dist/esm/v2/algorithms/scrypt.js");
 
 const secret = "challenge-disasterer-altcha-e2e-secret";
+let nativeSha64Gpu = false;
 
 async function assertCapabilities() {
   const response = await fetch(`${serviceUrl}/stats`);
@@ -24,6 +25,13 @@ async function assertCapabilities() {
   const string = rows.filter((row) => row.counter_mode === "string");
   const stringSha = string.find((row) => row.algorithms.includes("sha256"));
   const stringKdf = string.find((row) => row.algorithms.includes("argon2id"));
+  const stringSha64 = string.find((row) =>
+    ["sha384", "sha512", "pbkdf2-sha384", "pbkdf2-sha512"].every((name) => row.algorithms.includes(name))
+  );
+  if (!stringSha64) {
+    throw new Error("ALTCHA SHA64 capabilities not advertised: " + JSON.stringify(string));
+  }
+  nativeSha64Gpu = stringSha64.implementations.includes("wgpu");
   if (uint32.length < 2 || !stringSha || !stringKdf) {
     throw new Error("ALTCHA string-mode capabilities incomplete: " + JSON.stringify(rows));
   }
@@ -34,7 +42,10 @@ async function assertCapabilities() {
     throw new Error("ALTCHA string SHA GPU capability missing: " + JSON.stringify(stringSha));
   }
   if (stringKdf.implementations.join(",") !== "auto,safe") {
-    throw new Error("ALTCHA generic string KDF incorrectly advertises GPU: " + JSON.stringify(stringKdf));
+    throw new Error("ALTCHA memory-hard string KDF incorrectly advertises GPU: " + JSON.stringify(stringKdf));
+  }
+  if (nativeSha64Gpu && stringSha64.implementations.join(",") !== "auto,safe,wgpu") {
+    throw new Error("ALTCHA native SHA64 GPU capability order mismatch: " + JSON.stringify(stringSha64));
   }
   if (uint32.some((row) => row.implementations.includes("reference"))) {
     throw new Error(`ALTCHA production capabilities must not expose the external reference solver: ${JSON.stringify(uint32)}`);
@@ -132,9 +143,9 @@ async function runV1(algorithm) {
   console.log(`ALTCHA v1 ${algorithm}: PASS impl=${body.implementation} number=${payload.number}`);
 }
 
-// ISA/GPU implementations only apply to the optimized SHA-256 family. The
-// generic KDF path is deliberately auto/safe rather than pretending those
-// implementation selectors accelerate algorithms they do not implement.
+// CPU ISA-specific selectors only apply to optimized SHA-256. Native WGPU
+// covers the SHA-384/SHA-512 family when the selected device has shaderInt64;
+// Argon2id and Scrypt retain their generic CPU-only modes.
 const optimizedOnly = ["avx2", "avx512", "sha-ni", "wgpu"].includes(implementation);
 
 await runV2({ algorithm: "SHA-256", cost: 2, deriveKey: deriveSha, expectedImplementation: implementation });
@@ -154,10 +165,21 @@ if (!optimizedOnly) {
 }
 
 if (implementation === "wgpu") {
-  for (const [algorithm, cost, deriveKey] of [
+  const gpuAlgorithms = [
     ["SHA-256", 2, deriveSha],
     ["PBKDF2/SHA-256", 16, derivePbkdf2],
-  ]) {
+  ];
+  if (nativeSha64Gpu) {
+    gpuAlgorithms.push(
+      ["SHA-384", 2, deriveSha],
+      ["SHA-512", 2, deriveSha],
+      ["PBKDF2/SHA-384", 16, derivePbkdf2],
+      ["PBKDF2/SHA-512", 16, derivePbkdf2],
+    );
+  } else {
+    console.log("ALTCHA SHA-384/512 GPU E2E skipped: selected device has no native SHADER_INT64");
+  }
+  for (const [algorithm, cost, deriveKey] of gpuAlgorithms) {
     await runV2({ algorithm, cost, deriveKey, counterMode: "string", expectedImplementation: "wgpu" });
     // Odd-nibble hex prefixes are the common ALTCHA v2 shape. Exercise
     // truncated outputs and >64-bit prefix matching on real GPU hardware;
@@ -169,6 +191,14 @@ if (implementation === "wgpu") {
           expectedImplementation: "wgpu",
         });
       }
+    }
+    if (algorithm.includes("384") || algorithm.includes("512")) {
+      const fullLength = algorithm.endsWith("384") ? 48 : 64;
+      const keyLength = algorithm.startsWith("PBKDF2/") ? fullLength * 2 + 5 : fullLength;
+      await runV2({
+        algorithm, cost, deriveKey, counterMode: "string",
+        keyPrefix: "0", keyLength, expectedImplementation: "wgpu",
+      });
     }
   }
 }

@@ -22,7 +22,7 @@ use crate::{
 };
 
 /// Prefer GPU compute for supported independent-hash puzzles, including
-/// SHA-256 and Cerberus BLAKE3, irrespective of the CPU/GPU latency crossover. Unsupported
+/// SHA-256, SHA-384/512, and Cerberus BLAKE3, irrespective of latency crossover. Unsupported
 /// shapes and explicitly selected CPU implementations retain CPU routing.
 #[cfg(feature = "gpu")]
 fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str>) -> bool {
@@ -49,6 +49,24 @@ fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str
         }
         _ => false,
     }
+}
+
+/// Optional native-u64 GPU requirement for the complete SHA-512 compression
+/// family, including its PBKDF2-HMAC modes. Other families can use baseline
+/// GPU features, including the existing SHA-256 path.
+#[cfg(feature = "gpu")]
+fn requires_native_u64(solver: &str, challenge: &Value) -> bool {
+    if solver != "altcha" {
+        return false;
+    }
+    challenge
+        .pointer("/parameters/algorithm")
+        .and_then(Value::as_str)
+        .is_some_and(|algorithm| {
+            let normalized = algorithm.to_ascii_uppercase();
+            let digest = normalized.strip_prefix("PBKDF2/").unwrap_or(&normalized);
+            matches!(digest, "SHA-384" | "SHA-512")
+        })
 }
 
 impl AppState {
@@ -327,6 +345,7 @@ impl AppState {
     ) -> anyhow::Result<SolveResponse> {
         #[cfg(feature = "gpu")]
         if self.general_gpu_operational
+            && (!requires_native_u64(&solver, &challenge) || self.general_gpu_has_native_u64())
             && prefers_auto_gpu(&solver, &challenge, implementation.as_deref())
         {
             match self
@@ -543,7 +562,11 @@ mod auto_gpu_tests {
         let borderline = altcha("00", "SHA-256", 2);
         let substantial = altcha("000", "SHA-256", 2);
         let expensive_pbkdf2 = altcha("00", "PBKDF2/SHA-256", 16);
-        let unsupported = altcha("000000000", "SHA-512", 2);
+        let unsupported = altcha("000000000", "ARGON2ID", 2);
+        let sha384 = altcha("000", "SHA-384", 2);
+        let sha512 = altcha("000", "SHA-512", 2);
+        let hmac384 = altcha("00", "PBKDF2/SHA-384", 2);
+        let hmac512 = altcha("00", "PBKDF2/SHA-512", 2);
 
         assert!(prefers_auto_gpu("altcha", &cheap, None));
         assert!(prefers_auto_gpu("altcha", &borderline, Some("auto")));
@@ -552,6 +575,17 @@ mod auto_gpu_tests {
         assert!(!prefers_auto_gpu("altcha", &expensive_pbkdf2, Some("safe")));
         assert!(!prefers_auto_gpu("altcha", &substantial, Some("sha-ni")));
         assert!(!prefers_auto_gpu("altcha", &unsupported, None));
+        assert!(prefers_auto_gpu("altcha", &sha384, None));
+        assert!(prefers_auto_gpu("altcha", &sha512, None));
+        assert!(prefers_auto_gpu("altcha", &hmac384, None));
+        assert!(prefers_auto_gpu("altcha", &hmac512, None));
+        for challenge in [&sha384, &sha512, &hmac384, &hmac512] {
+            assert!(requires_native_u64("altcha", challenge));
+        }
+        assert!(!requires_native_u64("altcha", &substantial));
+        assert!(!requires_native_u64("altcha", &expensive_pbkdf2));
+        assert!(!requires_native_u64("altcha", &unsupported));
+        assert!(!requires_native_u64("cerberus", &sha384));
         assert!(prefers_auto_gpu("goaway", &substantial, None));
         assert!(prefers_auto_gpu("mcaptcha", &substantial, Some("auto")));
         assert!(prefers_auto_gpu("haphash", &substantial, None));
