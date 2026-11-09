@@ -36,19 +36,19 @@ mod routing;
 mod telemetry;
 pub use telemetry::stats;
 
-/// Policy for automatic SHA-256 work placement, independent of measured
+/// Policy for automatic hash-puzzle work placement, independent of measured
 /// CPU/GPU solve latency. Explicit backend requests override this policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum ShaGpuPolicy {
-    /// Assign supported SHA-256 to GPU, waiting for any in-process GPU job.
+pub enum GpuPolicy {
+    /// Assign supported hash puzzles to GPU, waiting for earlier GPU jobs.
     PreferGpu,
     /// Use GPU only when no in-process GPU job currently owns its slot.
     IdleOnly,
-    /// Route automatic SHA-256 to CPU; explicit GPU remains available.
+    /// Route automatic hash puzzles to CPU; explicit GPU remains available.
     CpuOnly,
 }
 
-impl ShaGpuPolicy {
+impl GpuPolicy {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PreferGpu => "prefer-gpu",
@@ -68,7 +68,7 @@ pub struct Config {
     #[cfg(feature = "gpu")]
     pub gpu_calibration_hashes: u64,
     pub gpu_enabled: bool,
-    pub sha_gpu_policy: ShaGpuPolicy,
+    pub gpu_policy: GpuPolicy,
     pub routing_calibration: Option<PathBuf>,
 }
 
@@ -713,7 +713,7 @@ mod tests {
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
             gpu_enabled: true,
-            sha_gpu_policy: ShaGpuPolicy::IdleOnly,
+            gpu_policy: GpuPolicy::IdleOnly,
             routing_calibration: None,
         })
         .await?;
@@ -764,7 +764,7 @@ mod tests {
         drop(busy);
         // Default policy favors GPU even while occupied by another request.
         // The semaphore is owned by the GPU job, not released when enqueued.
-        state.config.sha_gpu_policy = ShaGpuPolicy::PreferGpu;
+        state.config.gpu_policy = GpuPolicy::PreferGpu;
         let busy = state.gpu_slots.clone().acquire_owned().await?;
         {
             let pending = state.route_anubis("fast", classic.clone(), 1, Instant::now());
@@ -784,7 +784,7 @@ mod tests {
 
         // CPU-only is a preference for automatic work, not a prohibition on
         // the explicit GPU endpoint.
-        state.config.sha_gpu_policy = ShaGpuPolicy::CpuOnly;
+        state.config.gpu_policy = GpuPolicy::CpuOnly;
         let cpu = state
             .route_anubis("fast", classic.clone(), 1, Instant::now())
             .await?;
@@ -792,11 +792,45 @@ mod tests {
         let forced_gpu = state.run_gpu_only(classic.clone(), Instant::now()).await?;
         assert_eq!(forced_gpu.backend, "gpu");
 
-        state.config.sha_gpu_policy = ShaGpuPolicy::PreferGpu;
+        state.config.gpu_policy = GpuPolicy::PreferGpu;
         let recovered = state
             .route_anubis("fast", classic, 1, Instant::now())
             .await?;
         assert_eq!(recovered.backend, "gpu", "GPU should be reusable");
+
+        let cerberus = serde_json::json!({
+            "challenge": "gpu-policy-cerberus",
+            "difficulty": 2,
+            "nonce": 3959614364_u64,
+            "ts": 1759954402_u64,
+            "signature": "testing",
+            "version": "0.4.9"
+        });
+        let solved = state
+            .run_classic(
+                "cerberus".to_owned(),
+                cerberus.clone(),
+                None,
+                Instant::now(),
+            )
+            .await?;
+        assert_eq!(solved.backend, "gpu", "Cerberus BLAKE3 must prefer GPU");
+        assert!(solved.answer["response"].as_str().is_some());
+        assert!(solved.answer["solution"].as_str().is_some());
+        state.config.gpu_policy = GpuPolicy::CpuOnly;
+        let cpu = state
+            .run_classic(
+                "cerberus".to_owned(),
+                cerberus.clone(),
+                None,
+                Instant::now(),
+            )
+            .await?;
+        assert_eq!(cpu.backend, "cpu");
+        let explicit_gpu = state
+            .run_general_gpu("cerberus".to_owned(), cerberus, Instant::now())
+            .await?;
+        assert_eq!(explicit_gpu.backend, "gpu");
         Ok(())
     }
 

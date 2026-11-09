@@ -21,8 +21,8 @@ use crate::{
     routing::RouteEntry,
 };
 
-/// Prefer an idle GPU for every supported SHA-256/PBKDF2-SHA-256
-/// challenge, irrespective of the CPU/GPU latency crossover. Unsupported
+/// Prefer GPU compute for supported independent-hash puzzles, including
+/// SHA-256 and Cerberus BLAKE3, irrespective of the CPU/GPU latency crossover. Unsupported
 /// shapes and explicitly selected CPU implementations retain CPU routing.
 #[cfg(feature = "gpu")]
 fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str>) -> bool {
@@ -34,7 +34,7 @@ fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str
         // These classic families' GPU implementations compute SHA-256 work.
         // They validate the actual challenge with their existing parsers;
         // unsupported shapes transparently fall back to CPU.
-        "goaway" | "haphash" | "mcaptcha" => true,
+        "cerberus" | "goaway" | "haphash" | "mcaptcha" => true,
         "capjs" => {
             challenge.get("format").and_then(Value::as_u64) != Some(2)
                 || challenge
@@ -52,15 +52,15 @@ fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str
 }
 
 impl AppState {
-    /// Automatic SHA-256 placement favors GPU capacity, not lowest isolated
-    /// request latency. A single shared permit serializes this service's GPU
+    /// Automatic GPU placement favors available GPU capacity, not lowest
+    /// isolated request latency. A single shared permit serializes this service's GPU
     /// worker families; the default waits rather than scheduling CPU work.
     #[cfg(feature = "gpu")]
-    pub(super) async fn reserve_auto_sha_gpu(&self) -> Option<OwnedSemaphorePermit> {
-        match self.config.sha_gpu_policy {
-            super::ShaGpuPolicy::PreferGpu => self.gpu_slots.clone().acquire_owned().await.ok(),
-            super::ShaGpuPolicy::IdleOnly => self.gpu_slots.clone().try_acquire_owned().ok(),
-            super::ShaGpuPolicy::CpuOnly => None,
+    pub(super) async fn reserve_auto_gpu(&self) -> Option<OwnedSemaphorePermit> {
+        match self.config.gpu_policy {
+            super::GpuPolicy::PreferGpu => self.gpu_slots.clone().acquire_owned().await.ok(),
+            super::GpuPolicy::IdleOnly => self.gpu_slots.clone().try_acquire_owned().ok(),
+            super::GpuPolicy::CpuOnly => None,
         }
     }
 
@@ -335,10 +335,10 @@ impl AppState {
             {
                 Ok(Some(result)) => return Ok(result),
                 Ok(None) => {
-                    tracing::debug!(solver, "GPU occupied; routing SHA work to CPU");
+                    tracing::debug!(solver, "GPU occupied; routing hash work to CPU");
                 }
                 Err(err) => {
-                    tracing::warn!(solver, %err, "automatic SHA WGPU failed; routing to CPU");
+                    tracing::warn!(solver, %err, "automatic hash WGPU failed; routing to CPU");
                 }
             }
         }
@@ -415,7 +415,7 @@ impl AppState {
         let (result_tx, result_rx) = oneshot::channel();
         let job = GeneralGpuJob {
             _gpu_permit: if opportunistic {
-                let Some(permit) = self.reserve_auto_sha_gpu().await else {
+                let Some(permit) = self.reserve_auto_gpu().await else {
                     return Ok(None);
                 };
                 permit
@@ -556,7 +556,8 @@ mod auto_gpu_tests {
         assert!(prefers_auto_gpu("mcaptcha", &substantial, Some("auto")));
         assert!(prefers_auto_gpu("haphash", &substantial, None));
         assert!(prefers_auto_gpu("capjs", &substantial, None));
-        assert!(!prefers_auto_gpu("cerberus", &substantial, None));
+        assert!(prefers_auto_gpu("cerberus", &substantial, None));
+        assert!(!prefers_auto_gpu("cerberus", &substantial, Some("safe")));
         let sha256_only = serde_json::json!({
             "format": 2,
             "challenges": [{"protocol": "sha256-pow", "payload": {}}]

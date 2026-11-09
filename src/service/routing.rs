@@ -127,7 +127,7 @@ impl AppState {
         #[cfg(feature = "gpu")]
         if self.gpu_operational
             && challenge.gpu_compatible()
-            && let Some(permit) = self.reserve_auto_sha_gpu().await
+            && let Some(permit) = self.reserve_auto_gpu().await
         {
             match self
                 .run_gpu_with_permit(challenge.clone(), queued_at, permit)

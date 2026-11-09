@@ -18,7 +18,7 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
-use service::{AppState, Config, ShaGpuPolicy, WorkerPolicy};
+use service::{AppState, Config, GpuPolicy, WorkerPolicy};
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -48,10 +48,10 @@ struct Args {
     gpu_calibration_hashes: u64,
     #[arg(long, default_value_t = cfg!(feature = "gpu"), action = clap::ArgAction::Set)]
     gpu: bool,
-    /// Automatic SHA-256 placement: prefer GPU by default; optionally only
+    /// Automatic SHA-256/BLAKE3 placement: prefer GPU by default; optionally only
     /// use an idle GPU or keep automatic work on CPU.
-    #[arg(long, value_enum, default_value_t = ShaGpuPolicy::PreferGpu)]
-    sha_gpu_policy: ShaGpuPolicy,
+    #[arg(long, value_enum, default_value_t = GpuPolicy::PreferGpu)]
+    gpu_policy: GpuPolicy,
     #[cfg(feature = "gpu")]
     #[arg(long, default_value_t = false, hide = true)]
     list_hashx_gpu_adapters: bool,
@@ -171,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "gpu")]
         gpu_calibration_hashes: args.gpu_calibration_hashes,
         gpu_enabled: args.gpu,
-        sha_gpu_policy: args.sha_gpu_policy,
+        gpu_policy: args.gpu_policy,
         routing_calibration: args.routing_calibration,
     };
     let app = Router::new()
@@ -188,30 +188,30 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, ShaGpuPolicy, default_argon2_workers};
+    use super::{Args, GpuPolicy, default_argon2_workers};
     use clap::Parser;
 
     #[test]
-    fn automatic_sha_placement_defaults_to_gpu_and_is_configurable() {
+    fn automatic_gpu_placement_defaults_to_gpu_and_is_configurable() {
         assert!(matches!(
             Args::try_parse_from(["challenge-disasterer"]),
             Ok(Args {
-                sha_gpu_policy: ShaGpuPolicy::PreferGpu,
+                gpu_policy: GpuPolicy::PreferGpu,
                 ..
             })
         ));
         for (value, policy) in [
-            ("prefer-gpu", ShaGpuPolicy::PreferGpu),
-            ("idle-only", ShaGpuPolicy::IdleOnly),
-            ("cpu-only", ShaGpuPolicy::CpuOnly),
+            ("prefer-gpu", GpuPolicy::PreferGpu),
+            ("idle-only", GpuPolicy::IdleOnly),
+            ("cpu-only", GpuPolicy::CpuOnly),
         ] {
             assert!(matches!(
                 Args::try_parse_from([
                     "challenge-disasterer",
-                    "--sha-gpu-policy",
+                    "--gpu-policy",
                     value
                 ]),
-                Ok(Args { sha_gpu_policy, .. }) if sha_gpu_policy == policy
+                Ok(Args { gpu_policy, .. }) if gpu_policy == policy
             ));
         }
     }
