@@ -344,13 +344,29 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         },
         SolverCapability {
             solver: "altcha",
-            algorithms: &["sha1-v1", "sha256-v1", "sha512-v1"],
+            algorithms: &["sha1-v1", "sha256-v1"],
             difficulty_min: 1,
             difficulty_max: 64,
-            router: false,
+            router: state.general_gpu_operational,
             counter_mode: None,
-            counter_max: None,
-            implementations: vec!["auto", "safe"],
+            counter_max: Some(u64::from(u32::MAX)),
+            implementations: {
+                let mut supported = vec!["auto", "safe"];
+                if state.general_gpu_operational {
+                    supported.push("wgpu");
+                }
+                supported
+            },
+        },
+        SolverCapability {
+            solver: "altcha",
+            algorithms: &["sha512-v1"],
+            difficulty_min: 1,
+            difficulty_max: 64,
+            router: state.general_gpu_has_native_u64(),
+            counter_mode: None,
+            counter_max: Some(u64::from(u32::MAX)),
+            implementations: sha64_implementations(),
         },
     ]);
     available_solvers.push("linear");

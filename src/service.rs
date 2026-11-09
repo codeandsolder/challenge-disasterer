@@ -936,6 +936,73 @@ mod tests {
 
     #[cfg(feature = "gpu")]
     #[tokio::test]
+    #[ignore = "requires a physical WGPU adapter (SHA-512 requires SHADER_INT64)"]
+    async fn altcha_v1_gpu_first_cpu_only_and_forced_full_digest() -> anyhow::Result<()> {
+        use sha1::{Digest as _, Sha1};
+        use sha2::{Sha256, Sha512};
+
+        let mut state = AppState::initialize(Config {
+            cpu_workers: 2,
+            argon2_workers: 1,
+            altcha_worker_policy: WorkerPolicy::Adaptive,
+            argon2_memory_budget_mib: Some(128),
+            cpu_calibration_hashes: 8_192,
+            gpu_calibration_hashes: 8_192,
+            gpu_enabled: true,
+            gpu_policy: GpuPolicy::PreferGpu,
+            routing_calibration: None,
+        })
+        .await?;
+        assert!(state.general_gpu_operational);
+        for algorithm in ["SHA-1", "SHA-256", "SHA-512"] {
+            if algorithm == "SHA-512" && !state.general_gpu_has_native_u64() {
+                continue;
+            }
+            let long_salt = "x".repeat(121);
+            for salt in ["", "Привет-世界", long_salt.as_str()] {
+                let nonce = 17_u32;
+                let bytes = format!("{salt}{nonce}");
+                let digest = match algorithm {
+                    "SHA-1" => hex::encode(Sha1::digest(bytes.as_bytes())),
+                    "SHA-256" => hex::encode(Sha256::digest(bytes.as_bytes())),
+                    "SHA-512" => hex::encode(Sha512::digest(bytes.as_bytes())),
+                    _ => unreachable!("expected SHA variant"),
+                };
+                let challenge = serde_json::json!({
+                    "algorithm":algorithm,
+                    "salt":salt,
+                    "signature":"signed",
+                    "maxnumber":nonce+1,
+                    "challenge":digest,
+                });
+                let gpu = state
+                    .run_classic("altcha".to_owned(), challenge.clone(), None, Instant::now())
+                    .await?;
+                assert_eq!(gpu.backend, "gpu", "{algorithm}");
+                assert_eq!(gpu.answer["number"], nonce);
+                assert_eq!(gpu.implementation.as_deref(), Some("wgpu"));
+
+                state.config.gpu_policy = GpuPolicy::CpuOnly;
+                let cpu = state
+                    .run_classic("altcha".to_owned(), challenge.clone(), None, Instant::now())
+                    .await?;
+                assert_eq!(cpu.backend, "cpu");
+                assert_eq!(cpu.answer["number"], nonce);
+                assert_eq!(cpu.implementation.as_deref(), Some("auto"));
+
+                let forced = state
+                    .run_general_gpu("altcha".to_owned(), challenge, Instant::now())
+                    .await?;
+                assert_eq!(forced.backend, "gpu");
+                assert_eq!(forced.answer["number"], nonce);
+                state.config.gpu_policy = GpuPolicy::PreferGpu;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
     #[ignore = "requires a physical WGPU adapter"]
     async fn linear_sha1_gpu_first_cpu_only_and_explicit_override() -> anyhow::Result<()> {
         use sha1::{Digest, Sha1};
