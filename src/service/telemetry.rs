@@ -58,8 +58,6 @@ pub struct StatsConfig {
     argon2_workers: usize,
     altcha_worker_policy: &'static str,
     argon2_memory_budget_mib: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    altcha_auto_gpu_min_work: Option<u128>,
     gpu_compiled: bool,
     gpu_enabled: bool,
     gpu_operational: bool,
@@ -389,18 +387,6 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
                 super::WorkerPolicy::Fixed => "fixed",
             },
             argon2_memory_budget_mib: state.argon2_memory_capacity_mib,
-            altcha_auto_gpu_min_work: {
-                #[cfg(feature = "gpu")]
-                {
-                    state
-                        .general_gpu_operational
-                        .then_some(super::execution::ALTCHA_AUTO_GPU_MIN_WORK)
-                }
-                #[cfg(not(feature = "gpu"))]
-                {
-                    None
-                }
-            },
             gpu_compiled: cfg!(feature = "gpu"),
             gpu_enabled: state.config.gpu_enabled,
             gpu_operational: state.gpu_operational,

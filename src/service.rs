@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(feature = "gpu")]
 use std::sync::atomic::Ordering;
-use tokio::sync::{RwLock, Semaphore};
 #[cfg(feature = "gpu")]
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, mpsc, oneshot};
+use tokio::sync::{RwLock, Semaphore};
 use tracing::{info, warn};
 
 use crate::{
@@ -51,6 +51,7 @@ pub struct Config {
 
 #[cfg(feature = "gpu")]
 struct GpuJob {
+    _gpu_permit: OwnedSemaphorePermit,
     challenge: Challenge,
     expected_work: u64,
     started: oneshot::Sender<Instant>,
@@ -59,6 +60,7 @@ struct GpuJob {
 
 #[cfg(feature = "gpu")]
 struct HashxGpuJob {
+    _gpu_permit: OwnedSemaphorePermit,
     challenge: hashx::Challenge,
     implementation: Option<String>,
     started: oneshot::Sender<Instant>,
@@ -67,6 +69,7 @@ struct HashxGpuJob {
 
 #[cfg(feature = "gpu")]
 struct GeneralGpuJob {
+    _gpu_permit: OwnedSemaphorePermit,
     solver: String,
     challenge: Value,
     started: oneshot::Sender<Instant>,
@@ -86,6 +89,8 @@ pub struct AppState {
     hashx_gpu_operational: bool,
     general_gpu_operational: bool,
     hashx_gpu_implementations: Vec<&'static str>,
+    #[cfg(feature = "gpu")]
+    gpu_slots: Arc<Semaphore>,
     gpu_queue_work: Arc<AtomicU64>,
     gpu_queue_depth: Arc<AtomicU64>,
     gpu_active_work: Arc<AtomicU64>,
@@ -220,6 +225,8 @@ impl AppState {
             "CPU calibration complete"
         );
 
+        #[cfg(feature = "gpu")]
+        let gpu_slots = Arc::new(Semaphore::new(1));
         let queue_work = Arc::new(AtomicU64::new(0));
         let queue_depth = Arc::new(AtomicU64::new(0));
         let active_work = Arc::new(AtomicU64::new(0));
@@ -372,6 +379,8 @@ impl AppState {
             hashx_gpu_operational,
             general_gpu_operational,
             hashx_gpu_implementations,
+            #[cfg(feature = "gpu")]
+            gpu_slots,
             gpu_queue_work: queue_work,
             gpu_queue_depth: queue_depth,
             gpu_active_work: active_work,
@@ -664,6 +673,78 @@ pub async fn solve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hardware-only router test: GPU is preferred when idle, and the same
+    /// request falls back to CPU without waiting when another GPU job owns
+    /// the shared execution slot.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a physical WGPU adapter"]
+    async fn sha256_idle_gpu_route_and_busy_cpu_fallback() -> anyhow::Result<()> {
+        use std::time::Duration;
+
+        let state = AppState::initialize(Config {
+            cpu_workers: 2,
+            argon2_workers: 1,
+            altcha_worker_policy: WorkerPolicy::Adaptive,
+            argon2_memory_budget_mib: Some(128),
+            cpu_calibration_hashes: 8_192,
+            gpu_calibration_hashes: 8_192,
+            gpu_enabled: true,
+            routing_calibration: None,
+        })
+        .await?;
+        assert!(state.gpu_operational, "specialized SHA GPU must be ready");
+        assert!(
+            state.general_gpu_operational,
+            "general SHA GPU must be ready"
+        );
+        let classic = anubis::Challenge {
+            data: "a".repeat(64),
+            difficulty: 1,
+        };
+        let wasm = anubis_wasm::Challenge {
+            data: "02".repeat(64),
+            difficulty: 1,
+        };
+        let idle = state
+            .route_anubis("fast", classic.clone(), 1, Instant::now())
+            .await?;
+        assert_eq!(idle.backend, "gpu");
+        let answer: anubis::Answer = serde_json::from_value(idle.answer)?;
+        assert!(anubis::verify(&classic, &answer));
+
+        let idle = state
+            .try_run_anubis_wasm_gpu(wasm.clone(), Instant::now())
+            .await?
+            .context("idle general SHA256 GPU route")?;
+        assert_eq!(idle.backend, "gpu");
+        let answer: anubis::Answer = serde_json::from_value(idle.answer)?;
+        assert!(anubis_wasm::verify_sha256(&wasm, &answer));
+
+        let busy = state.gpu_slots.clone().acquire_owned().await?;
+        let cpu = tokio::time::timeout(
+            Duration::from_secs(10),
+            state.route_anubis("fast", classic.clone(), 1, Instant::now()),
+        )
+        .await??;
+        assert_eq!(cpu.backend, "cpu", "must not wait for busy GPU");
+        let answer: anubis::Answer = serde_json::from_value(cpu.answer)?;
+        assert!(anubis::verify(&classic, &answer));
+        assert!(
+            state
+                .try_run_anubis_wasm_gpu(wasm, Instant::now())
+                .await?
+                .is_none(),
+            "general SHA256 GPU must also see the occupied global slot"
+        );
+        drop(busy);
+        let recovered = state
+            .route_anubis("fast", classic, 1, Instant::now())
+            .await?;
+        assert_eq!(recovered.backend, "gpu", "slot should release");
+        Ok(())
+    }
 
     #[test]
     fn response_stats_record_solve_time_not_queue_or_request_time() {

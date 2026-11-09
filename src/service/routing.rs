@@ -1,16 +1,10 @@
 //! Calibrated route selection and fallback, separate from backend execution.
 
-#[cfg(feature = "gpu")]
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use anyhow::Context;
-#[cfg(feature = "gpu")]
-use tokio::sync::oneshot;
 use tracing::warn;
 
-#[cfg(feature = "gpu")]
-use super::GpuJob;
 use super::{AppState, SolveResponse};
 use crate::{
     anubis::{self, Challenge},
@@ -119,10 +113,6 @@ impl AppState {
         self.run_hashx_jit(challenge, queued_at).await
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "routing fallback order is intentionally linear and mirrors the calibrated route sequence"
-    )]
     pub(super) async fn route_anubis(
         &self,
         algorithm: &str,
@@ -131,6 +121,24 @@ impl AppState {
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
         challenge.validate()?;
+        // Spend idle GPU capacity before consuming CPU resources, regardless
+        // of which backend has a lower calibrated single-request latency.
+        // Reserving the shared permit is atomic across all GPU queues.
+        #[cfg(feature = "gpu")]
+        if self.gpu_operational && challenge.gpu_compatible() {
+            if let Ok(permit) = self.gpu_slots.clone().try_acquire_owned() {
+                match self
+                    .run_gpu_with_permit(challenge.clone(), queued_at, permit)
+                    .await
+                {
+                    Ok(response) => return Ok(response),
+                    Err(err) => {
+                        warn!(%err, "idle GPU solve failed; falling back to calibrated routes")
+                    }
+                }
+            }
+        }
+
         for route in
             self.calibrated_routes(algorithm, u32::from(challenge.difficulty), batch_size_hint)
         {
@@ -142,18 +150,9 @@ impl AppState {
                             warn!(solver = %route.solver, %err, "calibrated local Anubis route failed; trying next candidate");
                         }
                     },
-                    "anubis-gpu" =>
-                    {
-                        #[cfg(feature = "gpu")]
-                        if self.gpu_operational && challenge.gpu_compatible() {
-                            match self.run_gpu_only(challenge.clone(), queued_at).await {
-                                Ok(response) => return Ok(response),
-                                Err(err) => {
-                                    warn!(solver = %route.solver, %err, "calibrated local Anubis route failed; trying next candidate");
-                                }
-                            }
-                        }
-                    }
+                    // The idle GPU was considered above. A calibration row
+                    // must not queue behind busy GPU work and hog the device.
+                    "anubis-gpu" => {}
                     _ => {}
                 }
             } else {
@@ -186,58 +185,6 @@ impl AppState {
                     }
                 }
             }
-        }
-
-        #[cfg(feature = "gpu")]
-        if let Some(tx) = self.gpu_tx.as_ref().filter(|_| challenge.gpu_compatible()) {
-            let expected_work = challenge.expected_work();
-            let (started_tx, started_rx) = oneshot::channel();
-            let (result_tx, result_rx) = oneshot::channel();
-            self.gpu_queue_work
-                .fetch_add(expected_work, Ordering::Relaxed);
-            self.gpu_queue_depth.fetch_add(1, Ordering::Relaxed);
-
-            if tx
-                .send(GpuJob {
-                    challenge: challenge.clone(),
-                    expected_work,
-                    started: started_tx,
-                    result: result_tx,
-                })
-                .await
-                .is_err()
-            {
-                self.gpu_queue_work
-                    .fetch_sub(expected_work, Ordering::Relaxed);
-                self.gpu_queue_depth.fetch_sub(1, Ordering::Relaxed);
-                warn!("GPU worker unavailable; falling back to CPU");
-                return self.run_cpu(challenge, queued_at).await;
-            }
-
-            let started = started_rx
-                .await
-                .map_err(|_| anyhow::anyhow!("GPU worker dropped start signal"))?;
-            let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
-            return match result_rx
-                .await
-                .map_err(|_| anyhow::anyhow!("GPU worker dropped result"))?
-            {
-                Ok(result) => Ok(SolveResponse {
-                    solver: "anubis".to_owned(),
-                    backend: "gpu".to_owned(),
-                    implementation: None,
-                    answer: serde_json::to_value(result.answer)
-                        .context("serialize solver answer")?,
-                    nonce_workers: None,
-                    queue_ms,
-                    solve_ms: result.solve_ms,
-                    total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
-                }),
-                Err(err) => {
-                    warn!(%err, "GPU solve failed; falling back to CPU");
-                    self.run_cpu(challenge, queued_at).await
-                }
-            };
         }
 
         self.run_cpu(challenge, queued_at).await
