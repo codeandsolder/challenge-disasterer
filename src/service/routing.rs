@@ -133,7 +133,7 @@ impl AppState {
                 {
                     Ok(response) => return Ok(response),
                     Err(err) => {
-                        warn!(%err, "idle GPU solve failed; falling back to calibrated routes")
+                        warn!(%err, "idle GPU solve failed; falling back to calibrated routes");
                     }
                 }
             }
