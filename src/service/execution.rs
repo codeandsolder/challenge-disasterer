@@ -401,16 +401,15 @@ impl AppState {
             .context("general WGPU backend unavailable")?;
         let (started_tx, started_rx) = oneshot::channel();
         let (result_tx, result_rx) = oneshot::channel();
-        let gpu_permit = if opportunistic {
-            match self.gpu_slots.clone().try_acquire_owned() {
-                Ok(permit) => permit,
-                Err(_) => return Ok(None),
-            }
-        } else {
-            self.gpu_slots.clone().acquire_owned().await?
-        };
         let job = GeneralGpuJob {
-            _gpu_permit: gpu_permit,
+            _gpu_permit: if opportunistic {
+                match self.gpu_slots.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => return Ok(None),
+                }
+            } else {
+                self.gpu_slots.clone().acquire_owned().await?
+            },
             solver: solver.clone(),
             challenge,
             started: started_tx,

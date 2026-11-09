@@ -125,16 +125,17 @@ impl AppState {
         // of which backend has a lower calibrated single-request latency.
         // Reserving the shared permit is atomic across all GPU queues.
         #[cfg(feature = "gpu")]
-        if self.gpu_operational && challenge.gpu_compatible() {
-            if let Ok(permit) = self.gpu_slots.clone().try_acquire_owned() {
-                match self
-                    .run_gpu_with_permit(challenge.clone(), queued_at, permit)
-                    .await
-                {
-                    Ok(response) => return Ok(response),
-                    Err(err) => {
-                        warn!(%err, "idle GPU solve failed; falling back to calibrated routes");
-                    }
+        if self.gpu_operational
+            && challenge.gpu_compatible()
+            && let Ok(permit) = self.gpu_slots.clone().try_acquire_owned()
+        {
+            match self
+                .run_gpu_with_permit(challenge.clone(), queued_at, permit)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(err) => {
+                    warn!(%err, "idle GPU solve failed; falling back to calibrated routes");
                 }
             }
         }
@@ -150,9 +151,8 @@ impl AppState {
                             warn!(solver = %route.solver, %err, "calibrated local Anubis route failed; trying next candidate");
                         }
                     },
-                    // The idle GPU was considered above. A calibration row
-                    // must not queue behind busy GPU work and hog the device.
-                    "anubis-gpu" => {}
+                    // The idle GPU was considered above; skip its calibration
+                    // rows rather than queueing behind busy GPU work.
                     _ => {}
                 }
             } else {
