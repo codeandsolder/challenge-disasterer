@@ -2412,7 +2412,7 @@ mod tests {
             assert_eq!(warm, reference, "initial full GPU result mismatch");
             for trial in 0..3_u32 {
                 let mut cpu_ns = 0_u128;
-                let mut gpu_ns = 0_u128;
+                let gpu_ns;
                 let mut run_cpu = || -> Result<()> {
                     let start = Instant::now();
                     let mut actual = [0_u8; 32];
@@ -2569,7 +2569,7 @@ mod tests {
             assert_eq!(initial, expected);
             for trial in 0..3_u32 {
                 let mut cpu_ns = 0_u128;
-                let mut gpu_ns = 0_u128;
+                let gpu_ns;
                 let mut cpu = || -> Result<()> {
                     let start = Instant::now();
                     let mut derived = Vec::with_capacity(count);
