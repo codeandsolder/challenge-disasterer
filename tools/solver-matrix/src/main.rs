@@ -2370,6 +2370,246 @@ mod tests {
         Ok(())
     }
 
+    /// Optimized release-profile benchmark: a single scrypt KDF whose
+    /// p independent ROMix lanes are fully GPU-resident. Unlike the older
+    /// ROMix-only matrix, both PBKDF2 stages and final key are on device.
+    /// Exact complete CPU oracle output is checked for every GPU trial.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires real GPU; run cargo test --release -- --ignored"]
+    async fn scrypt_full_wgpu_release_economics() -> Result<()> {
+        use challenge_solvers::gpu::{GpuContext, ScryptKdfGpu};
+
+        let gpu = GpuContext::create().await?;
+        let solver = ScryptKdfGpu::new(&gpu);
+        let password: Vec<u8> = (0_u8..65).map(|i| i.wrapping_mul(31)).collect();
+        let salt: Vec<u8> = (0_u8..59).map(|i| i.wrapping_mul(23)).collect();
+        for (n, r, p) in [
+            (16_u32, 1_u32, 1_u32),
+            (16, 1, 64),
+            (16, 8, 1),
+            (16, 8, 64),
+            (64, 1, 1),
+            (64, 1, 64),
+            (64, 8, 1),
+            (64, 8, 64),
+            (256, 1, 1),
+            (256, 1, 64),
+            (256, 8, 1),
+            (256, 8, 64),
+            (1024, 1, 1),
+            (1024, 1, 64),
+            (1024, 8, 1),
+            (1024, 8, 64),
+            (1024, 8, 130),
+        ] {
+            let params = scrypt::Params::new(u8::try_from(n.ilog2())?, r, p)
+                .map_err(|_| anyhow::anyhow!("invalid RFC scrypt params"))?;
+            let mut reference = [0_u8; 32];
+            scrypt::scrypt(&password, &salt, &params, &mut reference)
+                .map_err(|_| anyhow::anyhow!("reference scrypt failed"))?;
+            let warm = solver.derive_key(&password, &salt, n, r, p, 32).await?;
+            assert_eq!(warm, reference, "initial full GPU result mismatch");
+            for trial in 0..3_u32 {
+                let mut cpu_ns = 0_u128;
+                let mut gpu_ns = 0_u128;
+                let mut run_cpu = || -> Result<()> {
+                    let start = Instant::now();
+                    let mut actual = [0_u8; 32];
+                    scrypt::scrypt(&password, &salt, &params, &mut actual)
+                        .map_err(|_| anyhow::anyhow!("reference scrypt failed"))?;
+                    cpu_ns = start.elapsed().as_nanos();
+                    assert_eq!(actual, reference);
+                    Ok(())
+                };
+                if trial.is_multiple_of(2) {
+                    let start = Instant::now();
+                    let derived = solver.derive_key(&password, &salt, n, r, p, 32).await?;
+                    gpu_ns = start.elapsed().as_nanos();
+                    assert_eq!(derived, reference, "GPU != CPU RFC7914");
+                    run_cpu()?;
+                } else {
+                    run_cpu()?;
+                    let start = Instant::now();
+                    let derived = solver.derive_key(&password, &salt, n, r, p, 32).await?;
+                    gpu_ns = start.elapsed().as_nanos();
+                    assert_eq!(derived, reference, "GPU != CPU RFC7914");
+                }
+                println!(
+                    "{}",
+                    json!({
+                        "n":n, "r":r, "p":p, "trial":trial,
+                        "cpu_ns":cpu_ns, "full_gpu_ns":gpu_ns,
+                        "speedup":cpu_ns as f64/gpu_ns as f64,
+                        "scratch_bytes_per_lane":u64::from(n)*u64::from(r)*128,
+                        "key_length":32, "verified":true
+                    })
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Complete multi-password GPU KDF compared with independent CPU RFC7914.
+    /// Separates independent candidate count from scrypt's internal p lanes.
+    /// Exercise SHA256 HMAC key boundaries, arbitrary salt sizes, and
+    /// simultaneous per-password output >32 bytes.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires an actual WGPU device"]
+    async fn scrypt_batched_passwords_gpu_independent_reference() -> Result<()> {
+        use challenge_solvers::gpu::{GpuContext, ScryptKdfGpu};
+
+        let gpu = GpuContext::create().await?;
+        let solver = ScryptKdfGpu::new(&gpu);
+        for (n, r, p, candidates, key_length, salt_len) in [
+            (2_u32, 1_u32, 1_u32, 1_usize, 1_usize, 0_usize),
+            (16, 1, 1, 2, 33, 55),
+            (16, 1, 4, 17, 64, 56),
+            (64, 8, 2, 8, 96, 120),
+            (256, 1, 3, 64, 64, 4096),
+            (1024, 8, 1, 130, 32, 52),
+        ] {
+            let salt: Vec<u8> = (0..salt_len).map(|i| (i as u8).wrapping_mul(13)).collect();
+            let lengths = [0, 1, 16, 63, 64, 65, 128];
+            let passwords: Vec<Vec<u8>> = (0..candidates)
+                .map(|candidate| {
+                    (0..lengths[candidate % lengths.len()])
+                        .map(|i| (i as u8).wrapping_mul(23).wrapping_add(candidate as u8))
+                        .collect()
+                })
+                .collect();
+            let refs: Vec<&[u8]> = passwords.iter().map(Vec::as_slice).collect();
+            let actual = solver
+                .derive_keys(&refs, &salt, n, r, p, key_length)
+                .await?;
+            assert_eq!(actual.len(), candidates);
+            let params = scrypt::Params::new(u8::try_from(n.ilog2())?, r, p)
+                .map_err(|_| anyhow::anyhow!("invalid RFC7914 reference params"))?;
+            for (index, (password, result)) in passwords.iter().zip(actual).enumerate() {
+                let mut expected = vec![0_u8; key_length];
+                scrypt::scrypt(password, &salt, &params, &mut expected)
+                    .map_err(|_| anyhow::anyhow!("RustCrypto scrypt rejected parameters"))?;
+                assert_eq!(
+                    result, expected,
+                    "candidate {index}, N={n}, r={r}, p={p}, count={candidates}"
+                );
+            }
+            assert_eq!(
+                solver
+                    .derive_key(&passwords[0], &salt, n, r, p, key_length)
+                    .await?,
+                solver
+                    .derive_keys(&[refs[0]], &salt, n, r, p, key_length)
+                    .await?[0],
+            );
+            assert!(solver.batch_candidates(salt.len(), n, r, p, key_length)? > 0);
+        }
+        let empty: Vec<&[u8]> = Vec::new();
+        assert!(
+            solver
+                .derive_keys(&empty, b"", 16, 8, 1, 32)
+                .await?
+                .is_empty()
+        );
+        assert!(solver.batch_candidates(16, 3, 8, 1, 32).is_err());
+        assert!(solver.batch_candidates(16, 16, 0, 1, 32).is_err());
+        assert!(solver.batch_candidates(16, 16, 8, 0, 32).is_err());
+        Ok(())
+    }
+
+    /// Optimized release benchmark for independent *candidate passwords*,
+    /// as opposed to one scrypt password using p internal lanes.
+    /// Every returned key is compared against RustCrypto CPU scrypt.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires real GPU; run with cargo test --release"]
+    async fn scrypt_batched_passwords_release_economics() -> Result<()> {
+        use challenge_solvers::gpu::{GpuContext, ScryptKdfGpu};
+
+        let gpu = GpuContext::create().await?;
+        let solver = ScryptKdfGpu::new(&gpu);
+        let salt: Vec<u8> = (0..53).map(|i| (i as u8).wrapping_mul(31)).collect();
+        for (n, r, count) in [
+            (64_u32, 1_u32, 1_usize),
+            (64, 1, 64),
+            (64, 1, 256),
+            (256, 1, 1),
+            (256, 1, 64),
+            (256, 1, 256),
+            (256, 8, 1),
+            (256, 8, 64),
+            (256, 8, 256),
+            (1024, 1, 1),
+            (1024, 1, 64),
+            (1024, 1, 256),
+            (1024, 8, 1),
+            (1024, 8, 64),
+            (1024, 8, 128),
+            (1024, 8, 256),
+        ] {
+            let passwords: Vec<Vec<u8>> = (0..count)
+                .map(|candidate| {
+                    (0..65)
+                        .map(|i| (i as u8).wrapping_mul(17).wrapping_add(candidate as u8))
+                        .collect()
+                })
+                .collect();
+            let refs: Vec<&[u8]> = passwords.iter().map(Vec::as_slice).collect();
+            let params = scrypt::Params::new(u8::try_from(n.ilog2())?, r, 1)
+                .map_err(|_| anyhow::anyhow!("invalid scrypt benchmark params"))?;
+            let mut expected = Vec::with_capacity(count);
+            for password in &passwords {
+                let mut key = [0_u8; 32];
+                scrypt::scrypt(password, &salt, &params, &mut key)
+                    .map_err(|_| anyhow::anyhow!("RustCrypto failed reference key"))?;
+                expected.push(key.to_vec());
+            }
+            let initial = solver.derive_keys(&refs, &salt, n, r, 1, 32).await?;
+            assert_eq!(initial, expected);
+            for trial in 0..3_u32 {
+                let mut cpu_ns = 0_u128;
+                let mut gpu_ns = 0_u128;
+                let mut cpu = || -> Result<()> {
+                    let start = Instant::now();
+                    let mut derived = Vec::with_capacity(count);
+                    for password in &passwords {
+                        let mut key = [0_u8; 32];
+                        scrypt::scrypt(password, &salt, &params, &mut key)
+                            .map_err(|_| anyhow::anyhow!("reference scrypt failed"))?;
+                        derived.push(key.to_vec());
+                    }
+                    cpu_ns = start.elapsed().as_nanos();
+                    assert_eq!(derived, expected);
+                    Ok(())
+                };
+                if trial.is_multiple_of(2) {
+                    let start = Instant::now();
+                    let keys = solver.derive_keys(&refs, &salt, n, r, 1, 32).await?;
+                    gpu_ns = start.elapsed().as_nanos();
+                    assert_eq!(keys, expected);
+                    cpu()?;
+                } else {
+                    cpu()?;
+                    let start = Instant::now();
+                    let keys = solver.derive_keys(&refs, &salt, n, r, 1, 32).await?;
+                    gpu_ns = start.elapsed().as_nanos();
+                    assert_eq!(keys, expected);
+                }
+                println!(
+                    "{}",
+                    json!({
+                        "n":n, "r":r, "p":1, "candidates":count, "trial":trial,
+                        "cpu_ns":cpu_ns, "gpu_batch_ns":gpu_ns,
+                        "speedup":cpu_ns as f64/gpu_ns as f64, "verified":true,
+                        "device_batch_capacity":solver.batch_candidates(salt.len(),n,r,1,32)?
+                    })
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn throughput_condition_preserves_comparison_type() {
         assert_eq!(
