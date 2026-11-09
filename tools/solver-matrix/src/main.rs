@@ -2324,6 +2324,52 @@ mod tests {
         Ok(())
     }
 
+    /// Compare the entire on-device PBKDF2/ROMix/PBKDF2 pipeline with the
+    /// independent RFC7914 RustCrypto reference, including multiblock keys,
+    /// arbitrary salt/password lengths and cross-batch p lanes.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a real GPU"]
+    async fn scrypt_full_wgpu_matches_independent_rfc7914_kdf() -> Result<()> {
+        use challenge_solvers::gpu::{GpuContext, ScryptKdfGpu};
+
+        let gpu = GpuContext::create().await?;
+        let scrypt_gpu = ScryptKdfGpu::new(&gpu);
+        for (n, r, p, password_len, salt_len, key_len) in [
+            (2_u32, 1_u32, 1_u32, 0_usize, 0_usize, 1_usize),
+            (2, 1, 1, 1, 1, 33),
+            (16, 1, 1, 16, 55, 32),
+            (16, 1, 4, 64, 56, 64),
+            (16, 2, 3, 65, 59, 96),
+            (16, 8, 1, 128, 60, 32),
+            (64, 1, 8, 31, 119, 33),
+            (64, 8, 2, 65, 120, 64),
+            (256, 1, 4, 48, 257, 80),
+            (1024, 8, 1, 65, 4096, 64),
+            (1024, 8, 130, 17, 52, 32),
+        ] {
+            let password = (0..password_len)
+                .map(|i| (i as u8).wrapping_mul(19))
+                .collect::<Vec<_>>();
+            let salt = (0..salt_len)
+                .map(|i| (i as u8).wrapping_mul(43))
+                .collect::<Vec<_>>();
+            let params = scrypt::Params::new(u8::try_from(n.ilog2())?, r, p)
+                .map_err(|_| anyhow::anyhow!("invalid scrypt reference parameters"))?;
+            let mut expected = vec![0_u8; key_len];
+            scrypt::scrypt(&password, &salt, &params, &mut expected)
+                .map_err(|_| anyhow::anyhow!("RustCrypto reference rejected output length"))?;
+            let actual = scrypt_gpu
+                .derive_key(&password, &salt, n, r, p, key_len)
+                .await?;
+            assert_eq!(
+                actual, expected,
+                "GPU full scrypt mismatch N={n},r={r},p={p},password_len={password_len},salt_len={salt_len},key_len={key_len}"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn throughput_condition_preserves_comparison_type() {
         assert_eq!(
