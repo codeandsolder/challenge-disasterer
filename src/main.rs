@@ -174,11 +174,10 @@ async fn main() -> anyhow::Result<()> {
         sha_gpu_policy: args.sha_gpu_policy,
         routing_calibration: args.routing_calibration,
     };
-    let state = Arc::new(AppState::initialize(config).await?);
     let app = Router::new()
         .route("/solve", post(service::solve))
         .route("/stats", get(service::stats))
-        .with_state(state);
+        .with_state(Arc::new(AppState::initialize(config).await?));
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
         .context("bind")?;
