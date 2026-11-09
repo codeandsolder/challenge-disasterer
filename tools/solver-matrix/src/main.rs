@@ -2187,6 +2187,143 @@ mod tests {
         Ok(())
     }
 
+    /// Verify both ROMix phases and all p lanes against an independent full
+    /// RFC 7914 scrypt implementation, including varying N and r.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a real GPU"]
+    async fn scrypt_romix_wgpu_matches_full_rfc7914_cpu_reference() -> Result<()> {
+        use challenge_solvers::gpu::{GpuContext, ScryptRomixGpu};
+
+        let gpu = GpuContext::create().await?;
+        let romix = ScryptRomixGpu::new(&gpu);
+        for (n, r, p) in [
+            (2_u32, 1_u32, 1_u32),
+            (16, 1, 1),
+            (16, 1, 4),
+            (16, 2, 3),
+            (16, 8, 1),
+            (32, 8, 2),
+            (64, 1, 8),
+            (64, 8, 2),
+            (256, 1, 4),
+            (256, 8, 1),
+            (1024, 1, 2),
+            (1024, 8, 1),
+        ] {
+            let password: Vec<u8> = (0..41)
+                .map(|index| (index as u8).wrapping_mul(19))
+                .collect();
+            let salt: Vec<u8> = (0..(n as usize % 59))
+                .map(|index| (index as u8).wrapping_mul(31))
+                .collect();
+            let params = scrypt::Params::new(u8::try_from(n.ilog2())?, r, p)
+                .map_err(|_| anyhow::anyhow!("invalid scrypt test parameter"))?;
+            let initial_len = usize::try_from(r)?
+                .checked_mul(usize::try_from(p)?)
+                .and_then(|rp| rp.checked_mul(128))
+                .context("scrypt initial B byte count overflow")?;
+            let mut original = vec![0_u8; initial_len];
+            pbkdf2::pbkdf2_hmac::<Sha256>(&password, &salt, 1, &mut original);
+            let scratch_max_lanes = romix.batch_lanes(n, r)?;
+            assert!(scratch_max_lanes > 0);
+            let mixed = romix.mix_blocks(&original, n, r).await?;
+            assert_eq!(mixed.len(), original.len());
+            let mut gpu_derived = [0_u8; 64];
+            pbkdf2::pbkdf2_hmac::<Sha256>(&password, &mixed, 1, &mut gpu_derived);
+            let mut reference = [0_u8; 64];
+            scrypt::scrypt(&password, &salt, &params, &mut reference)
+                .map_err(|_| anyhow::anyhow!("reference scrypt rejected key length"))?;
+            assert_eq!(
+                gpu_derived, reference,
+                "scrypt ROMix mismatch for N={n}, r={r}, p={p}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Compare completed end-to-end GPU-offloaded scrypt against the same
+    /// RFC 7914 CPU KDF, over different batch occupancy and scratch sizes.
+    /// The GPU time includes host PBKDF2 input and output phases, transfers,
+    /// and the GPU ROMix, not only compute-shader execution.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a real GPU"]
+    async fn scrypt_romix_wgpu_economics_cross_section() -> Result<()> {
+        use challenge_solvers::gpu::{GpuContext, ScryptRomixGpu};
+
+        let gpu = GpuContext::create().await?;
+        let romix = ScryptRomixGpu::new(&gpu);
+        for (n, r, lanes) in [
+            (16_u32, 1_u32, 1_usize),
+            (16, 1, 64),
+            (16, 8, 1),
+            (16, 8, 64),
+            (64, 1, 1),
+            (64, 1, 64),
+            (64, 8, 1),
+            (64, 8, 64),
+            (256, 1, 1),
+            (256, 1, 64),
+            (256, 8, 1),
+            (256, 8, 64),
+            (1024, 1, 1),
+            (1024, 1, 64),
+            (1024, 8, 1),
+            (1024, 8, 64),
+        ] {
+            let params = scrypt::Params::new(u8::try_from(n.ilog2())?, r, 1)
+                .map_err(|_| anyhow::anyhow!("invalid scrypt reference parameters"))?;
+            let salt: Vec<u8> = (0..16).map(|i| (i as u8).wrapping_mul(31)).collect();
+            let passwords: Vec<Vec<u8>> = (0..lanes)
+                .map(|i| format!("challenge-solvers-scrypt-{i}").into_bytes())
+                .collect();
+            let mut expected = Vec::with_capacity(lanes);
+            let start_cpu = Instant::now();
+            for password in &passwords {
+                let mut output = [0_u8; 32];
+                scrypt::scrypt(password, &salt, &params, &mut output)
+                    .map_err(|_| anyhow::anyhow!("reference scrypt invalid key"))?;
+                expected.push(output);
+            }
+            let cpu_ms = start_cpu.elapsed().as_secs_f64() * 1000.0;
+
+            let start_gpu = Instant::now();
+            let block_size = usize::try_from(r)?
+                .checked_mul(128)
+                .context("ROMix block size overflow")?;
+            let mut original = Vec::with_capacity(lanes * block_size);
+            for password in &passwords {
+                let mut b = vec![0_u8; block_size];
+                pbkdf2::pbkdf2_hmac::<Sha256>(password, &salt, 1, &mut b);
+                original.extend_from_slice(&b);
+            }
+            let mixed = romix.mix_blocks(&original, n, r).await?;
+            let mut actual = Vec::with_capacity(lanes);
+            for (password, chunk) in passwords.iter().zip(mixed.chunks_exact(block_size)) {
+                let mut output = [0_u8; 32];
+                pbkdf2::pbkdf2_hmac::<Sha256>(password, chunk, 1, &mut output);
+                actual.push(output);
+            }
+            let gpu_ms = start_gpu.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(
+                actual, expected,
+                "reference GPU scrypt N={n} r={r} lanes={lanes}"
+            );
+            println!(
+                "{}",
+                json!({
+                    "n": n, "r": r, "lanes": lanes, "cpu_ms": cpu_ms,
+                    "gpu_hybrid_ms": gpu_ms, "speedup": cpu_ms/gpu_ms,
+                    "scratch_bytes_per_lane": u64::from(n)*u64::from(r)*128,
+                    "max_gpu_lanes": romix.batch_lanes(n,r)?,
+                    "verified": true,
+                })
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn throughput_condition_preserves_comparison_type() {
         assert_eq!(
