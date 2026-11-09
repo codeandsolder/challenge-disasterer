@@ -137,7 +137,9 @@ async function runV1(algorithm, requestedImplementation = implementation, salt =
     salt,
   });
   const body = await callSolver(challenge, requestedImplementation);
-  if (body.implementation !== requestedImplementation) {
+  // Explicit auto may route to the GPU under the default policy.
+  // Explicit safe/wgpu still must honor the selected implementation.
+  if (requestedImplementation !== "auto" && body.implementation !== requestedImplementation) {
     throw new Error("v1 " + algorithm + ": unexpected backend " + body.implementation);
   }
   const payload = {
