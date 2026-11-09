@@ -111,7 +111,8 @@ pub struct AppState {
     gpu_operational: bool,
     hashx_gpu_operational: bool,
     general_gpu_operational: bool,
-    general_gpu_native_u64: bool,
+    #[cfg(feature = "gpu")]
+    general_gpu_features: wgpu::Features,
     hashx_gpu_implementations: Vec<&'static str>,
     #[cfg(feature = "gpu")]
     gpu_slots: Arc<Semaphore>,
@@ -203,6 +204,24 @@ async fn solve_general_gpu(
 }
 
 impl AppState {
+    /// Whether the running general WGPU context can execute native-u64 shaders.
+    /// The status reflects the negotiated device, not the adapter name or
+    /// unrelated SHA-256 GPU capability.
+    fn general_gpu_has_native_u64(&self) -> bool {
+        if !self.general_gpu_operational {
+            return false;
+        }
+        #[cfg(feature = "gpu")]
+        {
+            self.general_gpu_features
+                .contains(wgpu::Features::SHADER_INT64)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            false
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "service initialization keeps calibration and backend bring-up in one ordered transaction"
@@ -341,13 +360,12 @@ impl AppState {
         let (hashx_gpu_operational, hashx_gpu_implementations) = (false, Vec::new());
 
         #[cfg(feature = "gpu")]
-        let (general_gpu_tx, general_gpu_operational, general_gpu_native_u64) = if config
-            .gpu_enabled
+        let (general_gpu_tx, general_gpu_operational, general_gpu_features) = if config.gpu_enabled
         {
             match challenge_solvers::gpu::GpuContext::create().await {
                 Ok(gpu) => {
                     let adapter = gpu.adapter().to_owned();
-                    let native_u64 = gpu.features().contains(wgpu::Features::SHADER_INT64);
+                    let enabled_features = gpu.features();
                     match gpu.warm_up().await {
                         Ok(()) => {
                             info!(adapter = %adapter, "general WGPU backend ready");
@@ -360,25 +378,25 @@ impl AppState {
                                     let _ = job.result.send(result);
                                 }
                             });
-                            (Some(tx), true, native_u64)
+                            (Some(tx), true, enabled_features)
                         }
                         Err(err) => {
                             warn!(%err, "general WGPU warm-up failed");
-                            (None, false, false)
+                            (None, false, wgpu::Features::empty())
                         }
                     }
                 }
                 Err(err) => {
                     warn!(%err, "general WGPU unavailable");
-                    (None, false, false)
+                    (None, false, wgpu::Features::empty())
                 }
             }
         } else {
-            (None, false, false)
+            (None, false, wgpu::Features::empty())
         };
 
         #[cfg(not(feature = "gpu"))]
-        let (general_gpu_operational, general_gpu_native_u64) = (false, false);
+        let general_gpu_operational = false;
 
         let routing = config
             .routing_calibration
@@ -405,7 +423,8 @@ impl AppState {
             gpu_operational,
             hashx_gpu_operational,
             general_gpu_operational,
-            general_gpu_native_u64,
+            #[cfg(feature = "gpu")]
+            general_gpu_features,
             hashx_gpu_implementations,
             #[cfg(feature = "gpu")]
             gpu_slots,
@@ -858,6 +877,10 @@ mod tests {
         })
         .await?;
         assert!(state.general_gpu_operational);
+        assert!(
+            state.general_gpu_has_native_u64(),
+            "selected GPU must have SHADER_INT64"
+        );
         for (algorithm, key_length, decimal) in [
             ("SHA-384", 33, false),
             ("SHA-512", 47, true),

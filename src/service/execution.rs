@@ -345,7 +345,7 @@ impl AppState {
     ) -> anyhow::Result<SolveResponse> {
         #[cfg(feature = "gpu")]
         if self.general_gpu_operational
-            && (!requires_native_u64(&solver, &challenge) || self.general_gpu_native_u64)
+            && (!requires_native_u64(&solver, &challenge) || self.general_gpu_has_native_u64())
             && prefers_auto_gpu(&solver, &challenge, implementation.as_deref())
         {
             match self

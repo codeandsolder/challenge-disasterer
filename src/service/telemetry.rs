@@ -199,7 +199,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
 
     let sha64_implementations = || {
         let mut implementations = vec!["auto", "safe"];
-        if state.general_gpu_native_u64 {
+        if state.general_gpu_has_native_u64() {
             implementations.push("wgpu");
         }
         implementations
@@ -291,7 +291,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             algorithms: &["sha384", "sha512", "pbkdf2-sha384", "pbkdf2-sha512"],
             difficulty_min: 1,
             difficulty_max: 64,
-            router: state.general_gpu_native_u64,
+            router: state.general_gpu_has_native_u64(),
             counter_mode: Some("uint32"),
             counter_max: Some(u64::from(u32::MAX)),
             implementations: sha64_implementations(),
@@ -327,7 +327,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             algorithms: &["sha384", "sha512", "pbkdf2-sha384", "pbkdf2-sha512"],
             difficulty_min: 1,
             difficulty_max: 64,
-            router: state.general_gpu_native_u64,
+            router: state.general_gpu_has_native_u64(),
             counter_mode: Some("string"),
             counter_max: Some(9_007_199_254_740_991),
             implementations: sha64_implementations(),
