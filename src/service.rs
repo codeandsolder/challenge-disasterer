@@ -643,9 +643,11 @@ pub async fn solve(
             (difficulty, result)
         }
         "cerberus" | "goaway" | "capjs" | "mcaptcha" | "haphash" | "altcha" | "linear"
-        | "friendlycaptcha" | "tor-hs-v1" => {
-            if matches!(request.solver.as_str(), "friendlycaptcha" | "tor-hs-v1")
-                && request.implementation.as_deref() == Some("wgpu")
+        | "friendlycaptcha" | "tor-hs-v1" | "pow-bot-deterrent" => {
+            if matches!(
+                request.solver.as_str(),
+                "friendlycaptcha" | "tor-hs-v1" | "pow-bot-deterrent"
+            ) && request.implementation.as_deref() == Some("wgpu")
             {
                 return Err((
                     StatusCode::BAD_REQUEST,
@@ -903,6 +905,101 @@ mod tests {
             drop(held);
             assert_eq!(state.cpu_slots.available_permits(), 4);
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sequentialread_scrypt_http_route_and_go_reference() -> anyhow::Result<()> {
+        use anyhow::Context as _;
+
+        // Exact base64(JSON) challenge from sequentialread's Go data model,
+        // with scrypt.Key verification independently generated using x/crypto.
+        let challenge = serde_json::Value::String(
+            "eyJOIjoxNiwiciI6MSwicCI6MSwia2xlbiI6MTYsImkiOiJBUUlEQkFVR0J3Zz0iLCJkIjoiMGZmZiIsImRsIjo0fQ==".to_owned()
+        );
+        let state = Arc::new(
+            AppState::initialize(Config {
+                cpu_workers: 4,
+                argon2_workers: 1,
+                altcha_worker_policy: WorkerPolicy::Adaptive,
+                argon2_memory_budget_mib: Some(128),
+                cpu_calibration_hashes: 8_192,
+                #[cfg(feature = "gpu")]
+                gpu_calibration_hashes: 8_192,
+                gpu_enabled: false,
+                gpu_policy: GpuPolicy::CpuOnly,
+                routing_calibration: None,
+            })
+            .await?,
+        );
+        let before = state.cpu_slots.available_permits();
+        let Json(response) = solve(
+            State(state.clone()),
+            Json(SolveRequest {
+                solver: "pow-bot-deterrent".to_owned(),
+                algorithm: None,
+                implementation: None,
+                batch_size_hint: 1,
+                challenge: challenge.clone(),
+            }),
+        )
+        .await
+        .map_err(|(status, Json(err))| {
+            anyhow::anyhow!("sequentialread Scrypt returned {status}: {}", err.error)
+        })?;
+        assert_eq!(response.solver, "pow-bot-deterrent");
+        assert_eq!(response.backend, "cpu");
+        assert_eq!(response.implementation.as_deref(), Some("scrypt"));
+        assert_eq!(response.nonce_workers, Some(1));
+        assert_eq!(response.answer["nonce"], "10");
+        assert_eq!(
+            response.answer["derived_key"],
+            "732d9a0d3e86cd94a3f9bfda94f00620"
+        );
+        assert_eq!(response.answer["challenge"], challenge);
+        assert!(challenge_protocols::classic_pow::verify_pow_bot_deterrent(
+            &challenge,
+            response.answer["nonce"].as_str().context("nonce")?,
+        )?);
+        assert_eq!(state.cpu_slots.available_permits(), before);
+
+        let Json(stats) = stats(State(state.clone())).await;
+        let advertised = serde_json::to_value(stats)?;
+        assert!(
+            advertised["available_solvers"]
+                .as_array()
+                .context("available_solvers")?
+                .iter()
+                .any(|name| name == "pow-bot-deterrent")
+        );
+        let capability = advertised["solver_capabilities"]
+            .as_array()
+            .context("solver_capabilities")?
+            .iter()
+            .find(|cap| cap["solver"] == "pow-bot-deterrent")
+            .context("sequentialread capability")?;
+        assert_eq!(capability["algorithms"], serde_json::json!(["scrypt"]));
+        assert_eq!(
+            capability["implementations"],
+            serde_json::json!(["auto", "safe"])
+        );
+
+        let Err((status, _)) = solve(
+            State(state.clone()),
+            Json(SolveRequest {
+                solver: "pow-bot-deterrent".to_owned(),
+                algorithm: None,
+                implementation: Some("wgpu".to_owned()),
+                batch_size_hint: 1,
+                challenge: challenge.clone(),
+            }),
+        )
+        .await
+        else {
+            anyhow::bail!("wgpu was erroneously accepted")
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(state.cpu_slots.available_permits(), before);
         Ok(())
     }
 

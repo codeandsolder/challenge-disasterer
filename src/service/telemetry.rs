@@ -200,6 +200,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         "altcha",
         "friendlycaptcha",
         "tor-hs-v1",
+        "pow-bot-deterrent",
     ] {
         available_solvers.push(solver);
     }
@@ -213,6 +214,16 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
     };
 
     solver_capabilities.extend([
+        SolverCapability {
+            solver: "pow-bot-deterrent",
+            algorithms: &["scrypt"],
+            difficulty_min: 0,
+            difficulty_max: u32::MAX,
+            router: false,
+            counter_mode: Some("hex-nonce-big-endian"),
+            counter_max: None,
+            implementations: vec!["auto", "safe"],
+        },
         SolverCapability {
             solver: "tor-hs-v1",
             algorithms: &["equix", "blake2b-32"],
