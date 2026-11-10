@@ -515,9 +515,12 @@ impl AppState {
     ) -> anyhow::Result<SolveResponse> {
         let work = Work::from_challenge(&solver, &challenge);
         let friendly = solver == "friendlycaptcha";
+        let tor_equix = solver == "tor-hs-v1";
         let desired = if friendly {
             classic_pow::friendlycaptcha_suggested_workers(&challenge, self.config.cpu_workers)
                 .unwrap_or(1)
+        } else if tor_equix {
+            self.config.cpu_workers.max(1)
         } else {
             work.map_or(1, |profile| {
                 profile.target_workers(
@@ -553,7 +556,7 @@ impl AppState {
             backend: "cpu".to_owned(),
             implementation: Some(result.implementation),
             answer: result.answer,
-            nonce_workers: if friendly || work.is_some() {
+            nonce_workers: if friendly || tor_equix || work.is_some() {
                 Some(workers)
             } else {
                 None
