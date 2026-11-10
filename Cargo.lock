@@ -85,7 +85,7 @@ dependencies = [
 [[package]]
 name = "anubis-argon2"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=0eda46ed2045d715dacdb70ea5eaae712d73c09b#0eda46ed2045d715dacdb70ea5eaae712d73c09b"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=a6f43d95a8b7ab3c6f8759e002ca82660f79ab56#a6f43d95a8b7ab3c6f8759e002ca82660f79ab56"
 dependencies = [
  "blake2 0.11.0",
 ]
@@ -99,7 +99,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "argon2"
 version = "0.6.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=0eda46ed2045d715dacdb70ea5eaae712d73c09b#0eda46ed2045d715dacdb70ea5eaae712d73c09b"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=a6f43d95a8b7ab3c6f8759e002ca82660f79ab56#a6f43d95a8b7ab3c6f8759e002ca82660f79ab56"
 dependencies = [
  "base64ct",
  "blake2 0.11.0",
@@ -489,7 +489,7 @@ dependencies = [
 [[package]]
 name = "challenge-hashx"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=0eda46ed2045d715dacdb70ea5eaae712d73c09b#0eda46ed2045d715dacdb70ea5eaae712d73c09b"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=a6f43d95a8b7ab3c6f8759e002ca82660f79ab56#a6f43d95a8b7ab3c6f8759e002ca82660f79ab56"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -504,7 +504,7 @@ dependencies = [
 [[package]]
 name = "challenge-protocols"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=0eda46ed2045d715dacdb70ea5eaae712d73c09b#0eda46ed2045d715dacdb70ea5eaae712d73c09b"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=a6f43d95a8b7ab3c6f8759e002ca82660f79ab56#a6f43d95a8b7ab3c6f8759e002ca82660f79ab56"
 dependencies = [
  "anubis-argon2",
  "anyhow",
@@ -512,6 +512,8 @@ dependencies = [
  "base64 0.22.1",
  "blake2 0.11.0",
  "challenge-solvers",
+ "equix",
+ "getrandom 0.3.4",
  "hashwx",
  "hex",
  "itoa",
@@ -528,7 +530,7 @@ dependencies = [
 [[package]]
 name = "challenge-solvers"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=0eda46ed2045d715dacdb70ea5eaae712d73c09b#0eda46ed2045d715dacdb70ea5eaae712d73c09b"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=a6f43d95a8b7ab3c6f8759e002ca82660f79ab56#a6f43d95a8b7ab3c6f8759e002ca82660f79ab56"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -985,6 +987,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "equix"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2087bd2d167cbceeed54976d41442c5d72df4956ff4b8f7d23192d737567f34"
+dependencies = [
+ "arrayvec",
+ "hashx",
+ "num-traits",
+ "thiserror",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1005,6 +1019,12 @@ name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
+
+[[package]]
+name = "fixed-capacity-vec"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b31a14f5ee08ed1a40e1252b35af18bed062e3f39b69aab34decde36bc43e40"
 
 [[package]]
 name = "flate2"
@@ -1118,6 +1138,18 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "r-efi 5.3.0",
+ "wasip2",
+]
+
+[[package]]
+name = "getrandom"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
@@ -1125,7 +1157,7 @@ dependencies = [
  "cfg-if",
  "js-sys",
  "libc",
- "r-efi",
+ "r-efi 6.0.0",
  "rand_core",
  "wasm-bindgen",
 ]
@@ -1218,6 +1250,22 @@ dependencies = [
  "dynasm",
  "dynasmrt",
  "rand_core",
+]
+
+[[package]]
+name = "hashx"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75f15a0cb0bebaf49fdd27261441085a2cc39276115102d003842f7ae448cd69"
+dependencies = [
+ "arrayvec",
+ "blake2 0.11.0",
+ "digest 0.11.3",
+ "dynasmrt",
+ "fixed-capacity-vec",
+ "hex",
+ "rand_core",
+ "thiserror",
 ]
 
 [[package]]
@@ -2249,6 +2297,12 @@ dependencies = [
 
 [[package]]
 name = "r-efi"
+version = "5.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+
+[[package]]
+name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
@@ -3221,6 +3275,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
+name = "wasip2"
+version = "1.0.4+wasi-0.2.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487"
+dependencies = [
+ "wit-bindgen",
+]
+
+[[package]]
 name = "wasm-bindgen"
 version = "0.2.129"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3690,6 +3753,12 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+
+[[package]]
+name = "wit-bindgen"
+version = "0.57.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "writeable"

@@ -643,14 +643,14 @@ pub async fn solve(
             (difficulty, result)
         }
         "cerberus" | "goaway" | "capjs" | "mcaptcha" | "haphash" | "altcha" | "linear"
-        | "friendlycaptcha" => {
-            if request.solver == "friendlycaptcha"
+        | "friendlycaptcha" | "tor-hs-v1" => {
+            if matches!(request.solver.as_str(), "friendlycaptcha" | "tor-hs-v1")
                 && request.implementation.as_deref() == Some("wgpu")
             {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
-                        error: "Friendly Captcha v1 supports only CPU implementations".to_owned(),
+                        error: format!("{} supports only CPU implementations", request.solver),
                     }),
                 ));
             }
@@ -903,6 +903,117 @@ mod tests {
             drop(held);
             assert_eq!(state.cpu_slots.available_permits(), 4);
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tor_hs_v1_cpu_permits_and_c_tor_reference_roundtrip() -> anyhow::Result<()> {
+        use anyhow::Context as _;
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        let id = "11".repeat(32);
+        let seed = STANDARD.encode([0xaa_u8; 32]);
+        let state = Arc::new(
+            AppState::initialize(Config {
+                cpu_workers: 2,
+                argon2_workers: 1,
+                altcha_worker_policy: WorkerPolicy::Adaptive,
+                argon2_memory_budget_mib: Some(128),
+                cpu_calibration_hashes: 8_192,
+                #[cfg(feature = "gpu")]
+                gpu_calibration_hashes: 8_192,
+                gpu_enabled: false,
+                gpu_policy: GpuPolicy::CpuOnly,
+                routing_calibration: None,
+            })
+            .await?,
+        );
+        let Json(snapshot) = stats(State(state.clone())).await;
+        let advertised = serde_json::to_value(snapshot)?;
+        assert!(
+            advertised["available_solvers"]
+                .as_array()
+                .context("available_solvers")?
+                .iter()
+                .any(|item| item == "tor-hs-v1")
+        );
+        let capability = advertised["solver_capabilities"]
+            .as_array()
+            .context("solver_capabilities")?
+            .iter()
+            .find(|item| item["solver"] == "tor-hs-v1")
+            .context("Tor v1 solver capability")?;
+        assert_eq!(
+            capability["algorithms"],
+            serde_json::json!(["equix", "blake2b-32"])
+        );
+        assert_eq!(capability["difficulty_max"], u32::MAX);
+        assert_eq!(capability["counter_mode"], "nonce-u128-le");
+        assert_eq!(
+            capability["implementations"],
+            serde_json::json!(["auto", "safe"])
+        );
+
+        for held_permits in [1_u32, 0_u32] {
+            let held = if held_permits == 0 {
+                None
+            } else {
+                Some(state.cpu_slots.clone().acquire_owned().await?)
+            };
+            let available = usize::try_from(2 - held_permits)?;
+            let challenge = serde_json::json!({
+                "blinded_id": id,
+                "seed_b64": seed,
+                "effort": 100,
+                "nonce": "55555555555555555555555555555555",
+            });
+            let request = SolveRequest {
+                solver: "tor-hs-v1".to_owned(),
+                algorithm: None,
+                implementation: None,
+                batch_size_hint: 1,
+                challenge: challenge.clone(),
+            };
+            let Json(response) = solve(State(state.clone()), Json(request)).await.map_err(
+                |(status, Json(err))| {
+                    anyhow::anyhow!("Tor v1 CPU route failed {status}: {}", err.error)
+                },
+            )?;
+            assert_eq!(response.backend, "cpu");
+            assert_eq!(response.solver, "tor-hs-v1");
+            assert_eq!(response.nonce_workers, Some(available));
+            assert_eq!(response.implementation.as_deref(), Some("equix-hashx"));
+            assert_eq!(response.answer["extension_type"], 2);
+            assert_eq!(response.answer["effort"], 100);
+            let proof = hex::decode(
+                response.answer["extension_body"]
+                    .as_str()
+                    .context("extension_body")?,
+            )?;
+            assert_eq!(proof.len(), 41);
+            assert!(challenge_protocols::classic_pow::verify_tor_hs_v1(
+                &id, &seed, &proof,
+            )?);
+            assert_eq!(state.cpu_slots.available_permits(), available);
+            drop(held);
+            assert_eq!(state.cpu_slots.available_permits(), 2);
+        }
+        let unsupported = SolveRequest {
+            solver: "tor-hs-v1".to_owned(),
+            algorithm: None,
+            implementation: Some("wgpu".to_owned()),
+            batch_size_hint: 1,
+            challenge: serde_json::json!({
+                "blinded_id": id,
+                "seed_b64": seed,
+                "effort": 1,
+                "nonce": "00000000000000000000000000000000",
+            }),
+        };
+        assert!(matches!(
+            solve(State(state), Json(unsupported)).await,
+            Err((StatusCode::BAD_REQUEST, _))
+        ));
         Ok(())
     }
 
