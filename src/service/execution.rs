@@ -121,9 +121,9 @@ fn split_mixed_capjs(challenge: &Value) -> Option<MixedCapJs> {
 
 #[cfg(feature = "gpu")]
 fn merge_mixed_capjs(
-    mixed: MixedCapJs,
+    mixed: &MixedCapJs,
     gpu: SolveResponse,
-    cpu: SolveResponse,
+    cpu: &SolveResponse,
     queued_at: Instant,
 ) -> anyhow::Result<SolveResponse> {
     let mut sha_solutions = gpu
@@ -490,7 +490,7 @@ impl AppState {
                         let cpu = self
                             .run_classic_cpu(solver, parts.cpu.clone(), None, queued_at)
                             .await?;
-                        return merge_mixed_capjs(parts, gpu, cpu, queued_at);
+                        return merge_mixed_capjs(&parts, gpu, &cpu, queued_at);
                     }
                     return Ok(gpu);
                 }
@@ -562,19 +562,19 @@ impl AppState {
         challenge: Value,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
-        if solver == "capjs" {
-            if let Some(parts) = split_mixed_capjs(&challenge) {
-                let gpu = self
-                    .dispatch_general_gpu(solver.clone(), parts.sha.clone(), queued_at, false)
-                    .await?
-                    .context("mandatory WGPU dispatch was not enqueued")?;
-                // Even explicit WGPU runs CPU-only subchallenges without
-                // occupying the GPU worker or its shared permit.
-                let cpu = self
-                    .run_classic_cpu(solver, parts.cpu.clone(), None, queued_at)
-                    .await?;
-                return merge_mixed_capjs(parts, gpu, cpu, queued_at);
-            }
+        if solver == "capjs"
+            && let Some(parts) = split_mixed_capjs(&challenge)
+        {
+            let gpu = self
+                .dispatch_general_gpu(solver.clone(), parts.sha.clone(), queued_at, false)
+                .await?
+                .context("mandatory WGPU dispatch was not enqueued")?;
+            // Even explicit WGPU runs CPU-only subchallenges without
+            // occupying the GPU worker or its shared permit.
+            let cpu = self
+                .run_classic_cpu(solver, parts.cpu.clone(), None, queued_at)
+                .await?;
+            return merge_mixed_capjs(&parts, gpu, &cpu, queued_at);
         }
         self.dispatch_general_gpu(solver, challenge, queued_at, false)
             .await?
@@ -838,7 +838,7 @@ mod auto_gpu_tests {
             "cpu",
             "hashwx-native+rsw",
         );
-        let merged = merge_mixed_capjs(parts, gpu, cpu, Instant::now())?;
+        let merged = merge_mixed_capjs(&parts, gpu, &cpu, Instant::now())?;
         assert_eq!(merged.backend, "gpu+cpu");
         assert_eq!(
             merged.implementation.as_deref(),
