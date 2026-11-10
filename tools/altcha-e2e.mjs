@@ -32,6 +32,17 @@ async function assertCapabilities() {
     throw new Error("ALTCHA SHA64 capabilities not advertised: " + JSON.stringify(string));
   }
   nativeSha64Gpu = stringSha64.implementations.includes("wgpu");
+  const v1Sha = rows.find((row) => ["sha1-v1", "sha256-v1"].every((name) => row.algorithms.includes(name)));
+  const v1Sha512 = rows.find((row) => row.algorithms.includes("sha512-v1"));
+  if (!v1Sha || !v1Sha512) {
+    throw new Error("ALTCHA v1 per-device algorithm capabilities missing: " + JSON.stringify(rows));
+  }
+  if (implementation === "wgpu") {
+    if (!v1Sha.implementations.includes("wgpu")) throw new Error("ALTCHA v1 baseline GPU missing");
+    if (v1Sha512.implementations.includes("wgpu") !== nativeSha64Gpu) {
+      throw new Error("ALTCHA v1 SHA512 GPU capability does not match actual device features");
+    }
+  }
   if (uint32.length < 2 || !stringSha || !stringKdf) {
     throw new Error("ALTCHA string-mode capabilities incomplete: " + JSON.stringify(rows));
   }
@@ -117,15 +128,20 @@ async function runV2({ algorithm, cost, deriveKey, counterMode = "uint32", keyPr
   console.log(`${algorithm}/${counterMode}: PASS impl=${body.implementation} counter=${solution.counter} solve_ms=${body.solve_ms.toFixed(3)}`);
 }
 
-async function runV1(algorithm) {
+async function runV1(algorithm, requestedImplementation = implementation, salt = "0123456789abcdef") {
   const challenge = await v1.createChallenge({
     algorithm,
     hmacKey: secret,
     number: 17,
     maxnumber: 32,
-    salt: "0123456789abcdef",
+    salt,
   });
-  const body = await callSolver(challenge);
+  const body = await callSolver(challenge, requestedImplementation);
+  // Explicit auto may route to the GPU under the default policy.
+  // Explicit safe/wgpu still must honor the selected implementation.
+  if (requestedImplementation !== "auto" && body.implementation !== requestedImplementation) {
+    throw new Error("v1 " + algorithm + ": unexpected backend " + body.implementation);
+  }
   const payload = {
     algorithm: challenge.algorithm,
     challenge: challenge.challenge,
@@ -216,10 +232,18 @@ if (implementation === "auto" || implementation === "safe") {
   await runV2({ algorithm: "SCRYPT", cost: 16, deriveKey: deriveScrypt, counterMode: "string", keyPrefix: "0", memoryCost: 1, parallelism: 1, expectedImplementation: "altcha-string" });
 }
 
-// Still-supported v1 protocol. Its generic digest loop intentionally exposes
-// only auto/safe rather than pretending ISA-specific backends exist.
-if (implementation === "auto" || implementation === "safe") {
+// Still-deployed ALTCHA v1 SHA variants. Explicit WGPU uses exact full
+// SHA digest matching of the UTF-8 salt and decimal u32 number. SHA512
+// requires native SHADER_INT64, while SHA1/SHA256 work on baseline GPU.
+if (["auto", "safe", "wgpu"].includes(implementation)) {
   for (const algorithm of ["SHA-1", "SHA-256", "SHA-512"]) {
+    if (implementation === "wgpu" && algorithm === "SHA-512" && !nativeSha64Gpu) {
+      console.log("ALTCHA v1 SHA512 GPU unavailable: SHADER_INT64 not negotiated");
+      continue;
+    }
     await runV1(algorithm);
+    if (implementation === "wgpu") {
+      await runV1(algorithm, "wgpu", "Привет-世界-" + "z".repeat(120));
+    }
   }
 }

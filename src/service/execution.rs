@@ -61,6 +61,7 @@ fn requires_native_u64(solver: &str, challenge: &Value) -> bool {
     }
     challenge
         .pointer("/parameters/algorithm")
+        .or_else(|| challenge.get("algorithm"))
         .and_then(Value::as_str)
         .is_some_and(|algorithm| {
             let normalized = algorithm.to_ascii_uppercase();
