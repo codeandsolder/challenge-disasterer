@@ -780,6 +780,7 @@ mod tests {
         );
 
         for implementation in [None, Some("safe".to_owned())] {
+            let safe = implementation.is_some();
             let request = SolveRequest {
                 solver: "friendlycaptcha".to_owned(),
                 algorithm: None,
@@ -799,7 +800,7 @@ mod tests {
             assert_eq!(response.backend, "cpu");
             assert_eq!(
                 response.implementation.as_deref(),
-                Some(if implementation.is_some() {
+                Some(if safe {
                     "rustcrypto-blake2b"
                 } else {
                     "blake2b-single-block"
