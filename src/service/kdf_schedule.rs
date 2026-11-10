@@ -1,4 +1,4 @@
-//! Shared CPU and memory reservations for memory-hard PoW, with ALTCHA Argon2id fanout.
+//! Shared CPU and memory reservations for memory-hard `PoW`, with ALTCHA Argon2id fanout.
 use anyhow::{Context, ensure};
 use clap::ValueEnum;
 use serde_json::Value;
