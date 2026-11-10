@@ -831,6 +831,85 @@ mod tests {
         Ok(())
     }
 
+    /// Independently searched Friendly banks may consume only actually owned CPU permits.
+    #[tokio::test]
+    async fn friendlycaptcha_parallel_bank_workers_respect_cpu_permits() -> anyhow::Result<()> {
+        use anyhow::Context as _;
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        let mut header = [0_u8; 32];
+        header[12] = 1;
+        header[14] = 16;
+        header[15] = 128;
+        let puzzle = format!("fixture.{}", STANDARD.encode(header));
+        let state = Arc::new(
+            AppState::initialize(Config {
+                cpu_workers: 4,
+                argon2_workers: 1,
+                altcha_worker_policy: WorkerPolicy::Adaptive,
+                argon2_memory_budget_mib: Some(128),
+                cpu_calibration_hashes: 8_192,
+                #[cfg(feature = "gpu")]
+                gpu_calibration_hashes: 8_192,
+                gpu_enabled: false,
+                gpu_policy: GpuPolicy::CpuOnly,
+                routing_calibration: None,
+            })
+            .await?,
+        );
+        for held_permits in [2_u32, 0_u32] {
+            let held = if held_permits == 0 {
+                None
+            } else {
+                Some(
+                    state
+                        .cpu_slots
+                        .clone()
+                        .acquire_many_owned(held_permits)
+                        .await?,
+                )
+            };
+            let available = usize::try_from(4_u32 - held_permits)?;
+            assert_eq!(state.cpu_slots.available_permits(), available);
+            let request = SolveRequest {
+                solver: "friendlycaptcha".to_owned(),
+                algorithm: None,
+                implementation: None,
+                batch_size_hint: 1,
+                challenge: serde_json::json!({"puzzle": puzzle}),
+            };
+            let Json(response) = solve(State(state.clone()), Json(request)).await.map_err(
+                |(status, Json(err))| {
+                    anyhow::anyhow!("Friendly CPU reservation returned {status}: {}", err.error)
+                },
+            )?;
+            assert_eq!(response.backend, "cpu");
+            assert_eq!(response.nonce_workers, Some(available));
+            assert_eq!(
+                response.implementation.as_deref(),
+                Some("blake2b-single-block")
+            );
+            assert_eq!(response.answer["solution_count"], 16);
+            let response_text = response.answer["response"]
+                .as_str()
+                .context("missing Friendly Captcha proof")?;
+            let proof_bytes = STANDARD.decode(
+                response_text
+                    .split('.')
+                    .nth(2)
+                    .context("missing proof section")?,
+            )?;
+            assert!(challenge_protocols::classic_pow::verify_friendlycaptcha_v1(
+                &puzzle,
+                &proof_bytes,
+            )?);
+            assert_eq!(state.cpu_slots.available_permits(), available);
+            drop(held);
+            assert_eq!(state.cpu_slots.available_permits(), 4);
+        }
+        Ok(())
+    }
+
     /// Hardware-only route test: all automatic GPU policies honor the same
     /// GPU ownership, with verified CPU and GPU challenge solutions.
     #[cfg(feature = "gpu")]
