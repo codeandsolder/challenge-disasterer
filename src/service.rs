@@ -858,6 +858,84 @@ mod tests {
         Ok(())
     }
 
+    /// Mixed Cap.js format-2 GPU SHA-256 plus CPU HashWX/RSW.
+    /// The GPU permit must not be retained while running CPU-only subchallenges.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a physical WGPU adapter"]
+    async fn capjs_mixed_gpu_sha_with_cpu_hashwx_and_rsw() -> anyhow::Result<()> {
+        use sha2::{Digest as _, Sha256};
+
+        let mut state = AppState::initialize(Config {
+            cpu_workers: 2,
+            argon2_workers: 1,
+            altcha_worker_policy: WorkerPolicy::Adaptive,
+            argon2_memory_budget_mib: Some(128),
+            cpu_calibration_hashes: 8_192,
+            gpu_calibration_hashes: 8_192,
+            gpu_enabled: true,
+            gpu_policy: GpuPolicy::PreferGpu,
+            routing_calibration: None,
+        })
+        .await?;
+        assert!(state.general_gpu_operational);
+        let challenge = serde_json::json!({
+            "token": "hybrid-cap",
+            "format": 2,
+            "challenges": [
+                {"protocol": "hashwx", "payload": {
+                    "c": "00".repeat(32), "d": 1, "n": 1
+                }},
+                {"protocol": "sha256-pow", "payload": {
+                    "salt": "hybrid-sha-", "target": "0"
+                }},
+                {"protocol": "rsw", "payload": {
+                    "N": "11", "x": "2", "t": 3
+                }}
+            ]
+        });
+        let verify = |answer: &Value| -> anyhow::Result<()> {
+            let solutions = answer["solutions"]
+                .as_array()
+                .context("Cap.js solutions must be an array")?;
+            assert_eq!(solutions.len(), 3);
+            assert_eq!(solutions[0]["nonce"], "0");
+            assert_eq!(solutions[2]["y"], "1");
+            let nonce = solutions[1]["nonce"]
+                .as_f64()
+                .context("Cap.js SHA nonce must be a number")?;
+            let digest = Sha256::digest(format!("hybrid-sha-{nonce}").as_bytes());
+            assert_eq!(
+                digest[0] >> 4,
+                0,
+                "SHA-256 prefix must be independently valid"
+            );
+            Ok(())
+        };
+        let mixed = state
+            .run_classic("capjs".to_owned(), challenge.clone(), None, Instant::now())
+            .await?;
+        assert_eq!(mixed.backend, "gpu+cpu");
+        assert_eq!(
+            mixed.implementation.as_deref(),
+            Some("wgpu+hashwx-native+rsw")
+        );
+        verify(&mixed.answer)?;
+        let forced = state
+            .run_general_gpu("capjs".to_owned(), challenge.clone(), Instant::now())
+            .await?;
+        assert_eq!(forced.backend, "gpu+cpu");
+        verify(&forced.answer)?;
+
+        state.config.gpu_policy = GpuPolicy::CpuOnly;
+        let cpu = state
+            .run_classic("capjs".to_owned(), challenge, None, Instant::now())
+            .await?;
+        assert_eq!(cpu.backend, "cpu");
+        verify(&cpu.answer)?;
+        Ok(())
+    }
+
     /// Real service routing through the ALTCHA SHA-384/SHA-512 and PBKDF2
     /// protocol adapter. Compares complete keys to the independent CPU path.
     #[cfg(feature = "gpu")]

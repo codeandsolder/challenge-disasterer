@@ -41,10 +41,12 @@ fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str
                     .get("challenges")
                     .and_then(Value::as_array)
                     .is_some_and(|challenges| {
-                        !challenges.is_empty()
-                            && challenges.iter().all(|entry| {
-                                entry.get("protocol").and_then(Value::as_str) == Some("sha256-pow")
-                            })
+                        // Offload SHA-256 even in mixed format-2 lists. The
+                        // existing protocol adapter executes RSW and HashWX
+                        // with their native CPU implementations.
+                        challenges.iter().any(|entry| {
+                            entry.get("protocol").and_then(Value::as_str) == Some("sha256-pow")
+                        })
                     })
         }
         _ => false,
@@ -68,6 +70,129 @@ fn requires_native_u64(solver: &str, challenge: &Value) -> bool {
             let digest = normalized.strip_prefix("PBKDF2/").unwrap_or(&normalized);
             matches!(digest, "SHA-384" | "SHA-512")
         })
+}
+
+/// A format-2 Cap.js request with both GPU SHA-256 and CPU-only protocols.
+/// Split by protocol, preserving the original response ordering.
+#[cfg(feature = "gpu")]
+struct MixedCapJs {
+    sha: Value,
+    cpu: Value,
+    sha_positions: Vec<bool>,
+}
+
+#[cfg(feature = "gpu")]
+fn split_mixed_capjs(challenge: &Value) -> Option<MixedCapJs> {
+    if challenge.get("format").and_then(Value::as_u64) != Some(2) {
+        return None;
+    }
+    let entries = challenge.get("challenges")?.as_array()?;
+    let sha_positions: Vec<bool> = entries
+        .iter()
+        .map(|entry| entry.get("protocol").and_then(Value::as_str) == Some("sha256-pow"))
+        .collect();
+    if !sha_positions.iter().any(|is_sha| *is_sha) || sha_positions.iter().all(|is_sha| *is_sha) {
+        return None;
+    }
+    let mut sha = challenge.clone();
+    let mut cpu = challenge.clone();
+    sha["challenges"] = Value::Array(
+        entries
+            .iter()
+            .zip(&sha_positions)
+            .filter(|(_, is_sha)| **is_sha)
+            .map(|(entry, _)| entry.clone())
+            .collect(),
+    );
+    cpu["challenges"] = Value::Array(
+        entries
+            .iter()
+            .zip(&sha_positions)
+            .filter(|(_, is_sha)| !**is_sha)
+            .map(|(entry, _)| entry.clone())
+            .collect(),
+    );
+    Some(MixedCapJs {
+        sha,
+        cpu,
+        sha_positions,
+    })
+}
+
+#[cfg(feature = "gpu")]
+fn merge_mixed_capjs(
+    mixed: &MixedCapJs,
+    gpu: SolveResponse,
+    cpu: &SolveResponse,
+    queued_at: Instant,
+) -> anyhow::Result<SolveResponse> {
+    let mut sha_solutions = gpu
+        .answer
+        .get("solutions")
+        .and_then(Value::as_array)
+        .context("GPU Cap.js response lacks solutions")?
+        .iter();
+    let mut cpu_solutions = cpu
+        .answer
+        .get("solutions")
+        .and_then(Value::as_array)
+        .context("CPU Cap.js response lacks solutions")?
+        .iter();
+    let solutions: Vec<Value> = mixed
+        .sha_positions
+        .iter()
+        .map(|is_sha| {
+            if *is_sha {
+                sha_solutions.next()
+            } else {
+                cpu_solutions.next()
+            }
+            .cloned()
+            .context("Cap.js partial response lost a subchallenge")
+        })
+        .collect::<anyhow::Result<_>>()?;
+    anyhow::ensure!(
+        sha_solutions.next().is_none() && cpu_solutions.next().is_none(),
+        "Cap.js partial response had extra subchallenge solutions"
+    );
+    anyhow::ensure!(
+        gpu.answer.get("token") == cpu.answer.get("token"),
+        "Cap.js partial responses have mismatched tokens"
+    );
+    let attempts = gpu
+        .answer
+        .get("attempted_nonces_total")
+        .and_then(Value::as_u64)
+        .context("GPU Cap.js response lacks attempted count")?
+        .checked_add(
+            cpu.answer
+                .get("attempted_nonces_total")
+                .and_then(Value::as_u64)
+                .context("CPU Cap.js response lacks attempted count")?,
+        )
+        .context("Cap.js combined attempted count overflow")?;
+    let mut answer = gpu.answer;
+    answer["solutions"] = Value::Array(solutions);
+    answer["attempted_nonces_total"] = serde_json::json!(attempts);
+    let total_ms = queued_at.elapsed().as_secs_f64() * 1000.0;
+    // Both partial responses use the same request start. Subtract the GPU
+    // stage's elapsed time before accounting for subsequent CPU queueing.
+    let queue_ms = gpu.queue_ms + (cpu.queue_ms - gpu.total_ms).max(0.0);
+    let solve_ms = gpu.solve_ms + cpu.solve_ms;
+    Ok(SolveResponse {
+        solver: "capjs".to_owned(),
+        backend: "gpu+cpu".to_owned(),
+        implementation: Some(format!(
+            "{}+{}",
+            gpu.implementation.as_deref().unwrap_or("wgpu"),
+            cpu.implementation.as_deref().unwrap_or("cpu")
+        )),
+        answer,
+        nonce_workers: cpu.nonce_workers,
+        queue_ms,
+        solve_ms,
+        total_ms,
+    })
 }
 
 impl AppState {
@@ -349,11 +474,26 @@ impl AppState {
             && (!requires_native_u64(&solver, &challenge) || self.general_gpu_has_native_u64())
             && prefers_auto_gpu(&solver, &challenge, implementation.as_deref())
         {
+            let mixed = (solver == "capjs")
+                .then(|| split_mixed_capjs(&challenge))
+                .flatten();
+            let gpu_challenge = mixed
+                .as_ref()
+                .map_or_else(|| challenge.clone(), |parts| parts.sha.clone());
             match self
-                .dispatch_general_gpu(solver.clone(), challenge.clone(), queued_at, true)
+                .dispatch_general_gpu(solver.clone(), gpu_challenge, queued_at, true)
                 .await
             {
-                Ok(Some(result)) => return Ok(result),
+                Ok(Some(gpu)) => {
+                    if let Some(parts) = mixed {
+                        // GPU permit released; CPU-only work never holds the GPU queue.
+                        let cpu = self
+                            .run_classic_cpu(solver, parts.cpu.clone(), None, queued_at)
+                            .await?;
+                        return merge_mixed_capjs(&parts, gpu, &cpu, queued_at);
+                    }
+                    return Ok(gpu);
+                }
                 Ok(None) => {
                     tracing::debug!(solver, "GPU occupied; routing hash work to CPU");
                 }
@@ -362,6 +502,17 @@ impl AppState {
                 }
             }
         }
+        self.run_classic_cpu(solver, challenge, implementation, queued_at)
+            .await
+    }
+
+    async fn run_classic_cpu(
+        &self,
+        solver: String,
+        challenge: Value,
+        implementation: Option<String>,
+        queued_at: Instant,
+    ) -> anyhow::Result<SolveResponse> {
         let work = Work::from_challenge(&solver, &challenge);
         let desired = work.map_or(1, |profile| {
             profile.target_workers(
@@ -411,6 +562,20 @@ impl AppState {
         challenge: Value,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
+        if solver == "capjs"
+            && let Some(parts) = split_mixed_capjs(&challenge)
+        {
+            let gpu = self
+                .dispatch_general_gpu(solver.clone(), parts.sha.clone(), queued_at, false)
+                .await?
+                .context("mandatory WGPU dispatch was not enqueued")?;
+            // Even explicit WGPU runs CPU-only subchallenges without
+            // occupying the GPU worker or its shared permit.
+            let cpu = self
+                .run_classic_cpu(solver, parts.cpu.clone(), None, queued_at)
+                .await?;
+            return merge_mixed_capjs(&parts, gpu, &cpu, queued_at);
+        }
         self.dispatch_general_gpu(solver, challenge, queued_at, false)
             .await?
             .context("mandatory WGPU dispatch was not enqueued")
@@ -604,8 +769,96 @@ mod auto_gpu_tests {
                 {"protocol": "hashwx", "payload": {}}
             ]
         });
+        let mixed_rsw = serde_json::json!({
+            "format": 2,
+            "challenges": [
+                {"protocol": "rsw", "payload": {}},
+                {"protocol": "sha256-pow", "payload": {}}
+            ]
+        });
+        let only_hashwx = serde_json::json!({
+            "format": 2,
+            "challenges": [{"protocol": "hashwx", "payload": {}}]
+        });
+        let only_rsw = serde_json::json!({
+            "format": 2,
+            "challenges": [{"protocol": "rsw", "payload": {}}]
+        });
         assert!(prefers_auto_gpu("capjs", &sha256_only, None));
-        assert!(!prefers_auto_gpu("capjs", &mixed, None));
+        assert!(prefers_auto_gpu("capjs", &mixed, None));
+        assert!(prefers_auto_gpu("capjs", &mixed_rsw, None));
+        assert!(!prefers_auto_gpu("capjs", &only_hashwx, None));
+        assert!(!prefers_auto_gpu("capjs", &only_rsw, None));
+        assert!(!prefers_auto_gpu("capjs", &mixed, Some("safe")));
         assert!(!prefers_auto_gpu("goaway", &substantial, Some("sha-ni")));
+    }
+
+    #[test]
+    fn mixed_capjs_split_and_rejoin_preserves_order_and_attempts() -> anyhow::Result<()> {
+        let challenge = serde_json::json!({
+            "token": "ordered",
+            "format": 2,
+            "challenges": [
+                {"protocol": "rsw", "payload": {}},
+                {"protocol": "sha256-pow", "payload": {}},
+                {"protocol": "hashwx", "payload": {}},
+                {"protocol": "sha256-pow", "payload": {}}
+            ]
+        });
+        let parts = split_mixed_capjs(&challenge).context("mixed Cap.js must split")?;
+        assert_eq!(parts.sha["challenges"].as_array().map(Vec::len), Some(2));
+        assert_eq!(parts.cpu["challenges"].as_array().map(Vec::len), Some(2));
+        assert_eq!(parts.sha["token"], "ordered");
+        assert_eq!(parts.cpu["token"], "ordered");
+        let response = |answer: Value, backend: &str, name: &str| SolveResponse {
+            solver: "capjs".to_owned(),
+            backend: backend.to_owned(),
+            implementation: Some(name.to_owned()),
+            answer,
+            nonce_workers: None,
+            queue_ms: 0.0,
+            solve_ms: 1.0,
+            total_ms: 1.0,
+        };
+        let gpu = response(
+            serde_json::json!({
+                "token": "ordered",
+                "solutions": [{"nonce": 2}, {"nonce": 4}],
+                "attempted_nonces_total": 5
+            }),
+            "gpu",
+            "wgpu",
+        );
+        let cpu = response(
+            serde_json::json!({
+                "token": "ordered",
+                "solutions": [{"y": "1"}, {"nonce": "0"}],
+                "attempted_nonces_total": 7
+            }),
+            "cpu",
+            "hashwx-native+rsw",
+        );
+        let merged = merge_mixed_capjs(&parts, gpu, &cpu, Instant::now())?;
+        assert_eq!(merged.backend, "gpu+cpu");
+        assert_eq!(
+            merged.implementation.as_deref(),
+            Some("wgpu+hashwx-native+rsw")
+        );
+        assert_eq!(
+            merged.answer["solutions"],
+            serde_json::json!([
+                {"y": "1"}, {"nonce": 2}, {"nonce": "0"}, {"nonce": 4}
+            ])
+        );
+        assert_eq!(merged.answer["attempted_nonces_total"], 12);
+        assert_eq!(merged.answer["token"], "ordered");
+        assert!(
+            split_mixed_capjs(&serde_json::json!({
+                "format": 2,
+                "challenges": [{"protocol": "sha256-pow"}]
+            }))
+            .is_none()
+        );
+        Ok(())
     }
 }
