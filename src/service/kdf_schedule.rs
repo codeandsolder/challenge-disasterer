@@ -1,4 +1,4 @@
-//! Adaptive ALTCHA Argon2id scheduling with CPU and memory reservations.
+//! Shared CPU and memory reservations for memory-hard `PoW`, with ALTCHA Argon2id fanout.
 use anyhow::{Context, ensure};
 use clap::ValueEnum;
 use serde_json::Value;
@@ -59,11 +59,6 @@ impl Work {
             prefix_nibbles: prefix.len(),
             counter_bits,
         })
-    }
-
-    pub(super) fn memory_mib(self) -> anyhow::Result<u32> {
-        u32::try_from(self.memory_kib.div_ceil(1024))
-            .context("Argon2 memoryCost exceeds memory accounting range")
     }
 
     pub(super) fn target_workers(
@@ -131,18 +126,22 @@ impl Reservation {
         cpu_slots: &Arc<Semaphore>,
         memory_slots: Option<&Arc<Semaphore>>,
         memory_capacity_mib: Option<usize>,
-        work: Option<Work>,
+        memory_bytes: Option<u64>,
         desired: usize,
     ) -> anyhow::Result<Self> {
+        ensure!(desired > 0, "KDF reservation requires at least one worker");
+        let memory_mib = memory_bytes
+            .map(|bytes| u32::try_from(bytes.div_ceil(1024 * 1024)))
+            .transpose()
+            .context("KDF memory requirement exceeds semaphore accounting range")?;
         ensure!(
-            desired > 0,
-            "Argon2 reservation requires at least one worker"
+            memory_mib != Some(0),
+            "KDF memory requirement cannot be zero"
         );
-        let memory_mib = work.map(Work::memory_mib).transpose()?;
         if let (Some(mib), Some(capacity)) = (memory_mib, memory_capacity_mib) {
             ensure!(
                 usize::try_from(mib)? <= capacity,
-                "ALTCHA Argon2id requires {mib} MiB per worker, exceeding the configured {capacity} MiB budget"
+                "KDF requires {mib} MiB per worker, exceeding the configured {capacity} MiB budget"
             );
         }
         // Always acquire memory before CPU and only await the first worker.
@@ -243,8 +242,8 @@ mod tests {
     async fn memory_and_cpu_are_reserved_for_every_worker() -> anyhow::Result<()> {
         let cpu = Arc::new(Semaphore::new(8));
         let memory = Arc::new(Semaphore::new(192));
-        let work = Work::from_challenge("altcha", &challenge(65_536, 3, "aa"));
-        let first = Reservation::acquire(&cpu, Some(&memory), Some(192), work, 8).await?;
+        let first =
+            Reservation::acquire(&cpu, Some(&memory), Some(192), Some(64 * 1024 * 1024), 8).await?;
         assert_eq!(first.workers(), 3);
         assert_eq!(first.reserved_memory_mib(), 192);
         assert_eq!(cpu.available_permits(), 5);
@@ -255,12 +254,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn argon2_and_scrypt_share_one_memory_budget() -> anyhow::Result<()> {
+        const MIB: u64 = 1024 * 1024;
+        let cpu = Arc::new(Semaphore::new(8));
+        let memory = Arc::new(Semaphore::new(70));
+        // Argon2 consumes 64 MiB; the second requested worker cannot
+        // reserve another arena even when CPU slots are free.
+        let argon2 = Reservation::acquire(&cpu, Some(&memory), Some(70), Some(64 * MIB), 2).await?;
+        assert_eq!(argon2.workers(), 1);
+        let scrypt =
+            Reservation::acquire(&cpu, Some(&memory), Some(70), Some(4 * MIB + 1), 4).await?;
+        assert_eq!(scrypt.workers(), 1);
+        assert_eq!(memory.available_permits(), 1);
+        assert_eq!(cpu.available_permits(), 6);
+        drop(argon2);
+        assert_eq!(memory.available_permits(), 65);
+        drop(scrypt);
+        assert_eq!(memory.available_permits(), 70);
+        assert_eq!(cpu.available_permits(), 8);
+
+        assert!(
+            Reservation::acquire(&cpu, Some(&memory), Some(70), Some(71 * MIB), 1,)
+                .await
+                .is_err()
+        );
+        assert_eq!(memory.available_permits(), 70);
+        assert_eq!(cpu.available_permits(), 8);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn parallel_requests_can_share_both_budgets() -> anyhow::Result<()> {
         let cpu = Arc::new(Semaphore::new(8));
         let memory = Arc::new(Semaphore::new(512));
-        let work = Work::from_challenge("altcha", &challenge(65_536, 3, "aa"));
-        let first = Reservation::acquire(&cpu, Some(&memory), Some(512), work, 4).await?;
-        let second = Reservation::acquire(&cpu, Some(&memory), Some(512), work, 4).await?;
+        let first =
+            Reservation::acquire(&cpu, Some(&memory), Some(512), Some(64 * 1024 * 1024), 4).await?;
+        let second =
+            Reservation::acquire(&cpu, Some(&memory), Some(512), Some(64 * 1024 * 1024), 4).await?;
         assert_eq!((first.workers(), second.workers()), (4, 4));
         assert_eq!(memory.available_permits(), 0);
         drop(first);

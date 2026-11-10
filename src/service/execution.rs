@@ -11,7 +11,7 @@ use tokio::sync::{OwnedSemaphorePermit, oneshot};
 
 use super::{
     AppState, ExternalSolveResponse, SolveResponse,
-    argon2_schedule::{Reservation, Work},
+    kdf_schedule::{Reservation, Work},
 };
 #[cfg(feature = "gpu")]
 use super::{GeneralGpuJob, GpuJob, HashxGpuJob};
@@ -258,25 +258,35 @@ impl AppState {
                 }
             }
         }
-        let worker_count = if solver == "anubis-argon2id" {
+        let memory_bytes =
+            (solver == "anubis-argon2id").then_some(anubis_wasm::ARGON2_MEMORY_BYTES);
+        let desired = if memory_bytes.is_some() {
             self.config.argon2_workers
         } else {
             1
         };
-        let permits = u32::try_from(worker_count).context("too many CPU workers")?;
-        let permit = self.cpu_slots.clone().acquire_many_owned(permits).await?;
+        let reservation = Reservation::acquire(
+            &self.cpu_slots,
+            self.kdf_memory_slots.as_ref(),
+            self.kdf_memory_capacity_mib,
+            memory_bytes,
+            desired,
+        )
+        .await?;
         let started = Instant::now();
         let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
         let response_solver = solver.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            match solver.as_str() {
+        let (result, workers) = tokio::task::spawn_blocking(move || {
+            let workers = reservation.workers();
+            let result = match solver.as_str() {
                 "anubis-sha256" => anubis_wasm::solve_sha256(&challenge, implementation.as_deref()),
                 "anubis-argon2id" => {
-                    anubis_wasm::solve_argon2id(&challenge, implementation.as_deref(), worker_count)
+                    anubis_wasm::solve_argon2id(&challenge, implementation.as_deref(), workers)
                 }
                 _ => anyhow::bail!("unsupported Anubis WASM solver: {solver}"),
-            }
+            };
+            drop(reservation);
+            result.map(|value| (value, workers))
         })
         .await??;
         Ok(SolveResponse {
@@ -284,7 +294,7 @@ impl AppState {
             backend: "cpu".to_owned(),
             implementation: Some(result.implementation),
             answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
-            nonce_workers: None,
+            nonce_workers: memory_bytes.map(|_| workers),
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -535,6 +545,7 @@ impl AppState {
         implementation: Option<String>,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
+        let memory_bytes = classic_pow::memory_hard_requirement(&solver, &challenge).transpose()?;
         let work = Work::from_challenge(&solver, &challenge);
         let friendly = solver == "friendlycaptcha";
         let tor_equix = solver == "tor-hs-v1";
@@ -555,9 +566,9 @@ impl AppState {
         };
         let reservation = Reservation::acquire(
             &self.cpu_slots,
-            self.argon2_memory_slots.as_ref(),
-            self.argon2_memory_capacity_mib,
-            work,
+            self.kdf_memory_slots.as_ref(),
+            self.kdf_memory_capacity_mib,
+            memory_bytes,
             desired,
         )
         .await?;
