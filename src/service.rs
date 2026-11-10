@@ -29,9 +29,9 @@ use crate::{
     hashx_gpu::{GpuResult as HashxGpuResult, GpuSolver as HashxGpuSolver},
 };
 
-mod argon2_schedule;
 mod execution;
-pub use argon2_schedule::WorkerPolicy;
+mod kdf_schedule;
+pub use kdf_schedule::WorkerPolicy;
 mod routing;
 mod telemetry;
 pub use telemetry::stats;
@@ -63,7 +63,7 @@ pub struct Config {
     pub cpu_workers: usize,
     pub argon2_workers: usize,
     pub altcha_worker_policy: WorkerPolicy,
-    pub argon2_memory_budget_mib: Option<usize>,
+    pub kdf_memory_budget_mib: Option<usize>,
     pub cpu_calibration_hashes: u64,
     #[cfg(feature = "gpu")]
     pub gpu_calibration_hashes: u64,
@@ -120,8 +120,8 @@ pub struct AppState {
     gpu_queue_depth: Arc<AtomicU64>,
     gpu_active_work: Arc<AtomicU64>,
     cpu_slots: Arc<Semaphore>,
-    argon2_memory_slots: Option<Arc<Semaphore>>,
-    argon2_memory_capacity_mib: Option<usize>,
+    kdf_memory_slots: Option<Arc<Semaphore>>,
+    kdf_memory_capacity_mib: Option<usize>,
     stats: RwLock<StatsStore>,
     routing: Option<RoutingCalibration>,
     http: reqwest::Client,
@@ -243,18 +243,18 @@ impl AppState {
             "argon2_workers must be in 1..=cpu_workers"
         );
 
-        let argon2_memory_capacity_mib = config.argon2_memory_budget_mib.or_else(|| {
-            argon2_schedule::available_memory_mib().map(|available| (available / 2).max(1))
+        let kdf_memory_capacity_mib = config.kdf_memory_budget_mib.or_else(|| {
+            kdf_schedule::available_memory_mib().map(|available| (available / 2).max(1))
         });
-        if let Some(capacity) = argon2_memory_capacity_mib {
+        if let Some(capacity) = kdf_memory_capacity_mib {
             anyhow::ensure!(
                 capacity > 0 && capacity <= Semaphore::MAX_PERMITS,
-                "Argon2 memory budget must be within 1..={} MiB",
+                "KDF memory budget must be within 1..={} MiB",
                 Semaphore::MAX_PERMITS
             );
             info!(
                 capacity_mib = capacity,
-                "Argon2 shared memory budget configured"
+                "Shared KDF memory budget configured"
             );
         }
 
@@ -432,9 +432,9 @@ impl AppState {
             gpu_queue_depth: queue_depth,
             gpu_active_work: active_work,
             cpu_slots: Arc::new(Semaphore::new(config.cpu_workers)),
-            argon2_memory_slots: argon2_memory_capacity_mib
+            kdf_memory_slots: kdf_memory_capacity_mib
                 .map(|capacity| Arc::new(Semaphore::new(capacity))),
-            argon2_memory_capacity_mib,
+            kdf_memory_capacity_mib,
             stats: RwLock::new(StatsStore::default()),
             routing,
             http: reqwest::Client::new(),
@@ -745,7 +745,7 @@ mod tests {
                 cpu_workers: 2,
                 argon2_workers: 1,
                 altcha_worker_policy: WorkerPolicy::Adaptive,
-                argon2_memory_budget_mib: Some(128),
+                kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
                 gpu_calibration_hashes: 8_192,
@@ -845,7 +845,7 @@ mod tests {
                 cpu_workers: 4,
                 argon2_workers: 1,
                 altcha_worker_policy: WorkerPolicy::Adaptive,
-                argon2_memory_budget_mib: Some(128),
+                kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
                 gpu_calibration_hashes: 8_192,
@@ -922,7 +922,7 @@ mod tests {
                 cpu_workers: 4,
                 argon2_workers: 1,
                 altcha_worker_policy: WorkerPolicy::Adaptive,
-                argon2_memory_budget_mib: Some(128),
+                kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
                 gpu_calibration_hashes: 8_192,
@@ -1063,7 +1063,7 @@ mod tests {
                 cpu_workers: 8,
                 argon2_workers: 1,
                 altcha_worker_policy: WorkerPolicy::Adaptive,
-                argon2_memory_budget_mib: Some(128),
+                kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
                 gpu_calibration_hashes: 8_192,
@@ -1151,7 +1151,7 @@ mod tests {
                 cpu_workers: 2,
                 argon2_workers: 1,
                 altcha_worker_policy: WorkerPolicy::Adaptive,
-                argon2_memory_budget_mib: Some(128),
+                kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
                 gpu_calibration_hashes: 8_192,
@@ -1262,7 +1262,7 @@ mod tests {
             cpu_workers: 2,
             argon2_workers: 1,
             altcha_worker_policy: WorkerPolicy::Adaptive,
-            argon2_memory_budget_mib: Some(128),
+            kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
             gpu_enabled: true,
@@ -1399,7 +1399,7 @@ mod tests {
             cpu_workers: 2,
             argon2_workers: 1,
             altcha_worker_policy: WorkerPolicy::Adaptive,
-            argon2_memory_budget_mib: Some(128),
+            kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
             gpu_enabled: true,
@@ -1475,7 +1475,7 @@ mod tests {
             cpu_workers: 2,
             argon2_workers: 1,
             altcha_worker_policy: WorkerPolicy::Adaptive,
-            argon2_memory_budget_mib: Some(128),
+            kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
             gpu_enabled: true,
@@ -1552,7 +1552,7 @@ mod tests {
             cpu_workers: 2,
             argon2_workers: 1,
             altcha_worker_policy: WorkerPolicy::Adaptive,
-            argon2_memory_budget_mib: Some(128),
+            kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
             gpu_enabled: true,
@@ -1618,7 +1618,7 @@ mod tests {
             cpu_workers: 2,
             argon2_workers: 1,
             altcha_worker_policy: WorkerPolicy::Adaptive,
-            argon2_memory_budget_mib: Some(128),
+            kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
             gpu_enabled: true,
