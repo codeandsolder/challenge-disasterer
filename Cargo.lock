@@ -85,7 +85,7 @@ dependencies = [
 [[package]]
 name = "anubis-argon2"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=d427dae538a91cc55d26fb313e4aaa973f9d6f83#d427dae538a91cc55d26fb313e4aaa973f9d6f83"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=c479753b9e65cca68a782804fb9bb39385787703#c479753b9e65cca68a782804fb9bb39385787703"
 dependencies = [
  "blake2 0.11.0",
 ]
@@ -99,7 +99,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "argon2"
 version = "0.6.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=d427dae538a91cc55d26fb313e4aaa973f9d6f83#d427dae538a91cc55d26fb313e4aaa973f9d6f83"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=c479753b9e65cca68a782804fb9bb39385787703#c479753b9e65cca68a782804fb9bb39385787703"
 dependencies = [
  "base64ct",
  "blake2 0.11.0",
@@ -220,6 +220,12 @@ dependencies = [
  "tower-service",
  "tracing",
 ]
+
+[[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "base64"
@@ -482,7 +488,7 @@ dependencies = [
 [[package]]
 name = "challenge-hashx"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=d427dae538a91cc55d26fb313e4aaa973f9d6f83#d427dae538a91cc55d26fb313e4aaa973f9d6f83"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=c479753b9e65cca68a782804fb9bb39385787703#c479753b9e65cca68a782804fb9bb39385787703"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -497,16 +503,19 @@ dependencies = [
 [[package]]
 name = "challenge-protocols"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=d427dae538a91cc55d26fb313e4aaa973f9d6f83#d427dae538a91cc55d26fb313e4aaa973f9d6f83"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=c479753b9e65cca68a782804fb9bb39385787703#c479753b9e65cca68a782804fb9bb39385787703"
 dependencies = [
  "anubis-argon2",
  "anyhow",
  "argon2",
+ "base64 0.22.1",
+ "blake2 0.11.0",
  "challenge-solvers",
  "hashwx",
  "hex",
  "itoa",
  "num-bigint 0.5.1",
+ "num-traits",
  "pbkdf2",
  "scrypt",
  "serde",
@@ -518,7 +527,7 @@ dependencies = [
 [[package]]
 name = "challenge-solvers"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=d427dae538a91cc55d26fb313e4aaa973f9d6f83#d427dae538a91cc55d26fb313e4aaa973f9d6f83"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=c479753b9e65cca68a782804fb9bb39385787703#c479753b9e65cca68a782804fb9bb39385787703"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -1332,7 +1341,7 @@ version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddc03d96684f9226b8a787cdb71488417b53ab5ea8fdb1dac946cb9431cc8bff"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "bytes",
  "futures-channel",
  "futures-util",
@@ -2351,7 +2360,7 @@ version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "bytes",
  "cookie",
  "cookie_store",

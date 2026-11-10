@@ -642,7 +642,18 @@ pub async fn solve(
             };
             (difficulty, result)
         }
-        "cerberus" | "goaway" | "capjs" | "mcaptcha" | "haphash" | "altcha" | "linear" => {
+        "cerberus" | "goaway" | "capjs" | "mcaptcha" | "haphash" | "altcha" | "linear"
+        | "friendlycaptcha" => {
+            if request.solver == "friendlycaptcha"
+                && request.implementation.as_deref() == Some("wgpu")
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Friendly Captcha v1 supports only CPU implementations".to_owned(),
+                    }),
+                ));
+            }
             if request.solver == "linear"
                 && matches!(
                     request.implementation.as_deref(),
@@ -720,6 +731,68 @@ pub async fn solve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn friendlycaptcha_v1_http_dispatch_and_cpu_only_policy() -> anyhow::Result<()> {
+        // v1, two subpuzzles, difficulty zero, otherwise zeroed 32-byte header.
+        const PUZZLE: &str = "testing.AAAAAAAAAAAAAQACAAAAAAAAAAAAAAAAAAAAAAA=";
+        let state = Arc::new(
+            AppState::initialize(Config {
+                cpu_workers: 2,
+                argon2_workers: 1,
+                altcha_worker_policy: WorkerPolicy::Adaptive,
+                argon2_memory_budget_mib: Some(128),
+                cpu_calibration_hashes: 8_192,
+                #[cfg(feature = "gpu")]
+                gpu_calibration_hashes: 8_192,
+                gpu_enabled: false,
+                gpu_policy: GpuPolicy::CpuOnly,
+                routing_calibration: None,
+            })
+            .await?,
+        );
+        for implementation in [None, Some("safe".to_owned())] {
+            let request = SolveRequest {
+                solver: "friendlycaptcha".to_owned(),
+                algorithm: None,
+                implementation,
+                batch_size_hint: 1,
+                challenge: serde_json::json!({"puzzle": PUZZLE}),
+            };
+            let Json(response) = solve(State(state.clone()), Json(request)).await.map_err(
+                |(status, Json(err))| {
+                    anyhow::anyhow!(
+                        "Friendly Captcha v1 HTTP dispatch returned {status}: {}",
+                        err.error
+                    )
+                },
+            )?;
+            assert_eq!(response.solver, "friendlycaptcha");
+            assert_eq!(response.backend, "cpu");
+            assert_eq!(
+                response.implementation.as_deref(),
+                Some("rustcrypto-blake2b")
+            );
+            assert_eq!(response.answer["solution_count"], 2);
+            assert!(response.answer["attempted_nonces"].as_u64().is_some());
+            let encoded = response.answer["response"]
+                .as_str()
+                .context("missing original Friendly Captcha response")?;
+            assert!(encoded.starts_with(&format!("{PUZZLE}.")));
+            assert_eq!(encoded.split('.').count(), 4);
+        }
+
+        let unsupported = SolveRequest {
+            solver: "friendlycaptcha".to_owned(),
+            algorithm: None,
+            implementation: Some("wgpu".to_owned()),
+            batch_size_hint: 1,
+            challenge: serde_json::json!({"puzzle": PUZZLE}),
+        };
+        let result = solve(State(state), Json(unsupported)).await;
+        assert!(matches!(result, Err((StatusCode::BAD_REQUEST, _))));
+        Ok(())
+    }
 
     /// Hardware-only route test: all automatic GPU policies honor the same
     /// GPU ownership, with verified CPU and GPU challenge solutions.
