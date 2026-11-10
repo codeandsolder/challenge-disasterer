@@ -506,6 +506,28 @@ impl AppState {
             .await
     }
 
+    /// Choose Tor v1 Equi-X nonce-search fanout from the client-requested effort.
+    ///
+    /// Fixed-work benchmarks on Ryzen 4700U/4900HS show that thread startup and
+    /// speculative work dominate effort 1-2; above that, wider fanout reduces
+    /// latency. These thresholds affect resource allocation, never proof validity.
+    /// Resource reservation may return fewer workers if CPU permits are occupied.
+    /// Malformed effort values are left to the protocol parser, using one worker
+    /// rather than speculatively reserving an arbitrary number of slots.
+    pub(super) fn tor_equix_suggested_workers(challenge: &Value, configured: usize) -> usize {
+        let effort = challenge
+            .get("effort")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok());
+        let desired = match effort {
+            Some(0..=2) | None => 1,
+            Some(3..=8) => 2,
+            Some(9..=63) => 4,
+            Some(64..) => configured,
+        };
+        desired.min(configured).max(1)
+    }
+
     async fn run_classic_cpu(
         &self,
         solver: String,
@@ -520,7 +542,7 @@ impl AppState {
             classic_pow::friendlycaptcha_suggested_workers(&challenge, self.config.cpu_workers)
                 .unwrap_or(1)
         } else if tor_equix {
-            self.config.cpu_workers.max(1)
+            Self::tor_equix_suggested_workers(&challenge, self.config.cpu_workers)
         } else {
             work.map_or(1, |profile| {
                 profile.target_workers(

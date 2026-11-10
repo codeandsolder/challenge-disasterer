@@ -906,6 +906,142 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn tor_hs_v1_fanout_thresholds_and_invalid_effort() {
+        // This policy chooses a target, not a hard reservation. The
+        // shared semaphore may reserve fewer actual workers at runtime.
+        for (effort, target) in [
+            (0_u32, 1_usize),
+            (1, 1),
+            (2, 1),
+            (3, 2),
+            (4, 2),
+            (8, 2),
+            (9, 4),
+            (16, 4),
+            (63, 4),
+            (64, 16),
+            (128, 16),
+            (u32::MAX, 16),
+        ] {
+            for configured in [1_usize, 2, 3, 4, 8, 16] {
+                let expected = target.min(configured);
+                assert_eq!(
+                    AppState::tor_equix_suggested_workers(
+                        &serde_json::json!({"effort": effort}),
+                        configured,
+                    ),
+                    expected,
+                    "effort={effort}, configured={configured}"
+                );
+            }
+        }
+        // Invalid numeric values are rejected by the Tor protocol parser,
+        // not allowed to trigger a large speculative worker reservation.
+        for challenge in [
+            serde_json::json!({}),
+            serde_json::json!({"effort": null}),
+            serde_json::json!({"effort": "64"}),
+            serde_json::json!({"effort": -1}),
+            serde_json::json!({"effort": 3.5}),
+            serde_json::json!({"effort": u64::from(u32::MAX) + 1}),
+        ] {
+            assert_eq!(AppState::tor_equix_suggested_workers(&challenge, 16), 1);
+        }
+        assert_eq!(
+            AppState::tor_equix_suggested_workers(&serde_json::json!({"effort": u32::MAX}), 0,),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn tor_hs_v1_adaptive_fanout_respects_live_permits() -> anyhow::Result<()> {
+        use anyhow::Context as _;
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        let id = "11".repeat(32);
+        let seed = STANDARD.encode([0xaa_u8; 32]);
+        let state = Arc::new(
+            AppState::initialize(Config {
+                cpu_workers: 8,
+                argon2_workers: 1,
+                altcha_worker_policy: WorkerPolicy::Adaptive,
+                argon2_memory_budget_mib: Some(128),
+                cpu_calibration_hashes: 8_192,
+                #[cfg(feature = "gpu")]
+                gpu_calibration_hashes: 8_192,
+                gpu_enabled: false,
+                gpu_policy: GpuPolicy::CpuOnly,
+                routing_calibration: None,
+            })
+            .await?,
+        );
+        for held_permits in [0_u32, 6_u32, 7_u32] {
+            let held = if held_permits == 0 {
+                None
+            } else {
+                Some(
+                    state
+                        .cpu_slots
+                        .clone()
+                        .acquire_many_owned(held_permits)
+                        .await?,
+                )
+            };
+            let free = usize::try_from(8_u32 - held_permits)?;
+            for (effort, target) in [
+                (1_u32, 1_usize),
+                (2, 1),
+                (4, 2),
+                (8, 2),
+                (9, 4),
+                (16, 4),
+                (63, 4),
+                (64, 8),
+                (128, 8),
+            ] {
+                let request = SolveRequest {
+                    solver: "tor-hs-v1".to_owned(),
+                    algorithm: None,
+                    implementation: None,
+                    batch_size_hint: 1,
+                    challenge: serde_json::json!({
+                        "blinded_id": id,
+                        "seed_b64": seed,
+                        "effort": effort,
+                        "nonce": "55555555555555555555555555555555",
+                    }),
+                };
+                let Json(response) = solve(State(state.clone()), Json(request)).await.map_err(
+                    |(status, Json(err))| {
+                        anyhow::anyhow!(
+                            "Tor effort {effort} with {free} free slots failed ({status}): {}",
+                            err.error
+                        )
+                    },
+                )?;
+                assert_eq!(response.backend, "cpu");
+                assert_eq!(response.solver, "tor-hs-v1");
+                assert_eq!(response.nonce_workers, Some(target.min(free)));
+                assert_eq!(response.answer["effort"], effort);
+                assert_eq!(response.answer["extension_type"], 2);
+                let bytes = hex::decode(
+                    response.answer["extension_body"]
+                        .as_str()
+                        .context("Tor proof extension_body")?,
+                )?;
+                assert_eq!(bytes.len(), 41);
+                assert!(challenge_protocols::classic_pow::verify_tor_hs_v1(
+                    &id, &seed, &bytes,
+                )?);
+                assert_eq!(state.cpu_slots.available_permits(), free);
+            }
+            drop(held);
+            assert_eq!(state.cpu_slots.available_permits(), 8);
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn tor_hs_v1_cpu_permits_and_c_tor_reference_roundtrip() -> anyhow::Result<()> {
         use anyhow::Context as _;
