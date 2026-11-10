@@ -780,7 +780,6 @@ mod tests {
         );
 
         for implementation in [None, Some("safe".to_owned())] {
-            let safe = implementation.is_some();
             let request = SolveRequest {
                 solver: "friendlycaptcha".to_owned(),
                 algorithm: None,
@@ -800,11 +799,7 @@ mod tests {
             assert_eq!(response.backend, "cpu");
             assert_eq!(
                 response.implementation.as_deref(),
-                Some(if safe {
-                    "rustcrypto-blake2b"
-                } else {
-                    "blake2b-single-block"
-                })
+                Some("rustcrypto-blake2b")
             );
             assert_eq!(response.answer["solution_count"], 2);
             assert!(response.answer["attempted_nonces"].as_u64().is_some());
@@ -888,7 +883,7 @@ mod tests {
             assert_eq!(response.nonce_workers, Some(available));
             assert_eq!(
                 response.implementation.as_deref(),
-                Some("blake2b-single-block")
+                Some("rustcrypto-blake2b")
             );
             assert_eq!(response.answer["solution_count"], 16);
             let response_text = response.answer["response"]
