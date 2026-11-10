@@ -1003,6 +1003,84 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn sequentialread_scrypt_fanout_respects_shared_cpu_and_ram() -> anyhow::Result<()> {
+        use anyhow::Context as _;
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        // The real verifier threshold requires about 32 attempts; metadata
+        // intentionally advertises difficulty 1 and must not govern routing.
+        let encoded = serde_json::json!({
+            "N": 4096, "r": 8, "p": 1, "klen": 16,
+            "i": STANDARD.encode([1_u8, 2, 3, 4, 5, 6, 7, 8]),
+            "d": "07", "dl": 1
+        });
+        let challenge = serde_json::Value::String(STANDARD.encode(serde_json::to_vec(&encoded)?));
+        let state = Arc::new(
+            AppState::initialize(Config {
+                cpu_workers: 4,
+                argon2_workers: 1,
+                altcha_worker_policy: WorkerPolicy::Adaptive,
+                // N=4096,r=8,p=1 needs slightly over 4 MiB per worker;
+                // only two of four suggested workers fit into 12 MiB.
+                kdf_memory_budget_mib: Some(12),
+                cpu_calibration_hashes: 8_192,
+                #[cfg(feature = "gpu")]
+                gpu_calibration_hashes: 8_192,
+                gpu_enabled: false,
+                gpu_policy: GpuPolicy::CpuOnly,
+                routing_calibration: None,
+            })
+            .await?,
+        );
+        let memory = state
+            .kdf_memory_slots
+            .as_ref()
+            .context("shared memory semaphore")?
+            .clone();
+        for (held_cpu, expected_workers) in [(0_u32, 2), (3, 1)] {
+            let held = if held_cpu > 0 {
+                Some(state.cpu_slots.clone().acquire_many_owned(held_cpu).await?)
+            } else {
+                None
+            };
+            let starting_memory = memory.available_permits();
+            let Json(response) = solve(
+                State(state.clone()),
+                Json(SolveRequest {
+                    solver: "pow-bot-deterrent".to_owned(),
+                    algorithm: None,
+                    implementation: None,
+                    batch_size_hint: 1,
+                    challenge: challenge.clone(),
+                }),
+            )
+            .await
+            .map_err(|(status, Json(err))| {
+                anyhow::anyhow!(
+                    "sequentialread parallel solve failed {status}: {}",
+                    err.error
+                )
+            })?;
+            assert_eq!(response.nonce_workers, Some(expected_workers));
+            assert!(challenge_protocols::classic_pow::verify_pow_bot_deterrent(
+                &challenge,
+                response.answer["nonce"]
+                    .as_str()
+                    .context("parallel nonce")?,
+            )?);
+            assert_eq!(memory.available_permits(), starting_memory);
+            assert_eq!(
+                state.cpu_slots.available_permits(),
+                4 - usize::try_from(held_cpu)?
+            );
+            drop(held);
+        }
+        assert_eq!(memory.available_permits(), 12);
+        assert_eq!(state.cpu_slots.available_permits(), 4);
+        Ok(())
+    }
+
     #[test]
     fn tor_hs_v1_fanout_thresholds_and_invalid_effort() {
         // This policy chooses a target, not a hard reservation. The
