@@ -753,6 +753,32 @@ mod tests {
             })
             .await?,
         );
+        let Json(snapshot) = stats(State(state.clone())).await;
+        let advertised = serde_json::to_value(snapshot)?;
+        assert!(
+            advertised["available_solvers"]
+                .as_array()
+                .context("available solvers are an array")?
+                .iter()
+                .any(|entry| entry == "friendlycaptcha")
+        );
+        let capabilities = advertised["solver_capabilities"]
+            .as_array()
+            .context("solver capabilities are an array")?;
+        let capability = capabilities
+            .iter()
+            .find(|entry| entry["solver"] == "friendlycaptcha")
+            .context("Friendly Captcha capability missing")?;
+        assert_eq!(capability["algorithms"], serde_json::json!(["blake2b-256"]));
+        assert_eq!(capability["difficulty_min"], 0);
+        assert_eq!(capability["difficulty_max"], 255);
+        assert_eq!(capability["counter_mode"], "indexed-u32-le");
+        assert_eq!(capability["counter_max"], u64::from(u32::MAX));
+        assert_eq!(
+            capability["implementations"],
+            serde_json::json!(["auto", "safe"])
+        );
+
         for implementation in [None, Some("safe".to_owned())] {
             let request = SolveRequest {
                 solver: "friendlycaptcha".to_owned(),

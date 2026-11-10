@@ -192,7 +192,13 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
     };
 
     for solver in [
-        "cerberus", "goaway", "capjs", "mcaptcha", "haphash", "altcha",
+        "cerberus",
+        "goaway",
+        "capjs",
+        "mcaptcha",
+        "haphash",
+        "altcha",
+        "friendlycaptcha",
     ] {
         available_solvers.push(solver);
     }
@@ -206,6 +212,16 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
     };
 
     solver_capabilities.extend([
+        SolverCapability {
+            solver: "friendlycaptcha",
+            algorithms: &["blake2b-256"],
+            difficulty_min: 0,
+            difficulty_max: 255,
+            router: false,
+            counter_mode: Some("indexed-u32-le"),
+            counter_max: Some(u64::from(u32::MAX)),
+            implementations: vec!["auto", "safe"],
+        },
         SolverCapability {
             solver: "cerberus",
             algorithms: &["blake3"],
