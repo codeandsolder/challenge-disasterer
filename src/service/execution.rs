@@ -555,6 +555,8 @@ impl AppState {
                 .unwrap_or(1)
         } else if tor_equix {
             Self::tor_equix_suggested_workers(&challenge, self.config.cpu_workers)
+        } else if sequentialread {
+            classic_pow::pow_bot_deterrent_suggested_workers(&challenge, self.config.cpu_workers)?
         } else {
             work.map_or(1, |profile| {
                 profile.target_workers(
