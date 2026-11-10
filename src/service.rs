@@ -799,7 +799,11 @@ mod tests {
             assert_eq!(response.backend, "cpu");
             assert_eq!(
                 response.implementation.as_deref(),
-                Some("rustcrypto-blake2b")
+                Some(if implementation.is_some() {
+                    "rustcrypto-blake2b"
+                } else {
+                    "blake2b-single-block"
+                })
             );
             assert_eq!(response.answer["solution_count"], 2);
             assert!(response.answer["attempted_nonces"].as_u64().is_some());

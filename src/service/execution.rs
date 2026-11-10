@@ -514,13 +514,19 @@ impl AppState {
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
         let work = Work::from_challenge(&solver, &challenge);
-        let desired = work.map_or(1, |profile| {
-            profile.target_workers(
-                self.config.argon2_workers,
-                self.config.cpu_workers,
-                self.config.altcha_worker_policy,
-            )
-        });
+        let friendly = solver == "friendlycaptcha";
+        let desired = if friendly {
+            classic_pow::friendlycaptcha_suggested_workers(&challenge, self.config.cpu_workers)
+                .unwrap_or(1)
+        } else {
+            work.map_or(1, |profile| {
+                profile.target_workers(
+                    self.config.argon2_workers,
+                    self.config.cpu_workers,
+                    self.config.altcha_worker_policy,
+                )
+            })
+        };
         let reservation = Reservation::acquire(
             &self.cpu_slots,
             self.argon2_memory_slots.as_ref(),
@@ -547,7 +553,11 @@ impl AppState {
             backend: "cpu".to_owned(),
             implementation: Some(result.implementation),
             answer: result.answer,
-            nonce_workers: work.map(|_| workers),
+            nonce_workers: if friendly || work.is_some() {
+                Some(workers)
+            } else {
+                None
+            },
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
