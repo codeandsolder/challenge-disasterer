@@ -2324,6 +2324,158 @@ mod tests {
         Ok(())
     }
 
+    /// Interleaved hardware timestamp comparison of merged vec4 and directed
+    /// `ROMix` revisions, with full `RustCrypto` RFC7914 key verification.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a GPU with TIMESTAMP_QUERY"]
+    async fn scrypt_romix_wgpu_phase_timestamps() -> Result<()> {
+        use challenge_solvers::gpu::{GpuContext, ScryptRomixGpu};
+
+        let gpu = GpuContext::create_with_timestamps().await?;
+        // Exact merged vec4 shader from challenge-solvers@fc56391.
+        // The two implementations use the same context, queue and timestamp clock.
+        let baseline = ScryptRomixGpu::new_from_wgsl(
+            &gpu,
+            include_str!("../fixtures/scrypt_romix_vec4_fc56391.wgsl"),
+        );
+        let directed = ScryptRomixGpu::new(&gpu);
+        let interleaved = ScryptRomixGpu::new_from_wgsl(
+            &gpu,
+            include_str!("../fixtures/scrypt_romix_interleaved_scratch.wgsl"),
+        );
+        let tiled32 = ScryptRomixGpu::new_from_wgsl(
+            &gpu,
+            include_str!("../fixtures/scrypt_romix_tiled_scratch_32.wgsl"),
+        );
+        let tiled64 = ScryptRomixGpu::new_from_wgsl(
+            &gpu,
+            include_str!("../fixtures/scrypt_romix_tiled_scratch_64.wgsl"),
+        );
+        let variants = [
+            ("merged-vec4-fc56391", &baseline),
+            ("directed", &directed),
+            ("interleaved-scratch", &interleaved),
+            ("tiled-scratch-32", &tiled32),
+            ("tiled-scratch-64", &tiled64),
+        ];
+        let pair_string = std::env::var("SCRYPT_PROFILE_AB_PAIR")
+            .unwrap_or_else(|_| "merged-vec4-fc56391,directed".to_owned());
+        let names: Vec<&str> = pair_string.split(',').collect();
+        anyhow::ensure!(
+            names.len() >= 2
+                && names
+                    .iter()
+                    .enumerate()
+                    .all(|(index, name)| !names[..index].contains(name)),
+            "SCRYPT_PROFILE_AB_PAIR must specify at least two distinct shader names"
+        );
+        let pair: Vec<_> = names
+            .into_iter()
+            .map(|name| {
+                variants
+                    .iter()
+                    .copied()
+                    .find(|variant| variant.0 == name)
+                    .ok_or_else(|| anyhow::anyhow!("unknown scrypt shader variant: {name}"))
+            })
+            .collect::<Result<_>>()?;
+        let trials = std::env::var("SCRYPT_PROFILE_TRIALS")
+            .ok()
+            .map(|value| value.parse::<u32>())
+            .transpose()?
+            .unwrap_or(5);
+        anyhow::ensure!(trials > 0, "SCRYPT_PROFILE_TRIALS must be positive");
+        let salt: Vec<u8> = (0_u8..53).map(|i| i.wrapping_mul(31)).collect();
+        let filter = std::env::var("SCRYPT_PROFILE_SHAPES").ok();
+        let mut selected = 0;
+        for (n, r, lanes) in [
+            (64_u32, 1_u32, 1_usize),
+            (64, 1, 64),
+            (256, 1, 64),
+            (256, 1, 256),
+            (256, 8, 1),
+            (256, 8, 64),
+            (256, 8, 256),
+            (1024, 8, 64),
+            (1024, 8, 256),
+        ] {
+            let shape = format!("{n}/{r}/{lanes}");
+            if filter
+                .as_deref()
+                .is_some_and(|value| !value.split(',').any(|part| part == shape))
+            {
+                continue;
+            }
+            selected += 1;
+            let block_bytes = usize::try_from(r)?
+                .checked_mul(128)
+                .context("scrypt profile block size overflow")?;
+            let passwords = (0..lanes)
+                .map(|i| format!("scrypt-profile-candidate-{i}").into_bytes())
+                .collect::<Vec<Vec<u8>>>();
+            let params = scrypt::Params::new(u8::try_from(n.ilog2())?, r, 1)
+                .map_err(|_| anyhow::anyhow!("invalid scrypt profiling parameters"))?;
+            let mut initial = Vec::with_capacity(lanes * block_bytes);
+            let mut expected = Vec::with_capacity(lanes);
+            for password in &passwords {
+                let mut block = vec![0_u8; block_bytes];
+                pbkdf2::pbkdf2_hmac::<Sha256>(password, &salt, 1, &mut block);
+                initial.extend_from_slice(&block);
+                let mut output = [0_u8; 32];
+                scrypt::scrypt(password, &salt, &params, &mut output)
+                    .map_err(|_| anyhow::anyhow!("independent scrypt profile reference failed"))?;
+                expected.push(output);
+            }
+            // Pre-compile and warm both pipelines before interleaved timing.
+            for (_, solver) in &pair {
+                let (mixed, _) = solver.mix_blocks_with_timestamps(&initial, n, r).await?;
+                assert_eq!(mixed.len(), initial.len());
+            }
+            for trial in 0..trials {
+                // Rotate execution order to keep every implementation equally
+                // likely to run first despite thermals and competing GPU work.
+                for position in 0..pair.len() {
+                    let (variant, romix) = pair[(trial as usize + position) % pair.len()];
+                    let wall_start = Instant::now();
+                    let (mixed, timestamps) =
+                        romix.mix_blocks_with_timestamps(&initial, n, r).await?;
+                    let wall_ns = wall_start.elapsed().as_nanos();
+                    assert_eq!(mixed.len(), initial.len());
+                    let mut actual = Vec::with_capacity(lanes);
+                    for (password, block) in passwords.iter().zip(mixed.chunks_exact(block_bytes)) {
+                        let mut output = [0_u8; 32];
+                        pbkdf2::pbkdf2_hmac::<Sha256>(password, block, 1, &mut output);
+                        actual.push(output);
+                    }
+                    assert_eq!(actual, expected, "ROMix profile: {shape}, {variant}");
+                    assert!(
+                        !timestamps.is_empty(),
+                        "GPU produced no ROMix phase timestamps"
+                    );
+                    for (batch, timing) in timestamps.iter().enumerate() {
+                        println!(
+                            "{}",
+                            json!({
+                                "variant":variant, "adapter":gpu.adapter(),
+                                "n":n, "r":r, "lanes":lanes, "trial":trial, "batch":batch,
+                                "fill_ticks":timing.fill_ticks,
+                                "mix_ticks":timing.mix_ticks,
+                                "timestamp_period_ns":timing.timestamp_period_ns,
+                                "wall_ns":wall_ns, "verified":true,
+                            })
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            selected > 0,
+            "SCRYPT_PROFILE_SHAPES selects no profile cases"
+        );
+        Ok(())
+    }
+
     /// Compare the entire on-device PBKDF2/ROMix/PBKDF2 pipeline with the
     /// independent RFC7914 RustCrypto reference, including multiblock keys,
     /// arbitrary salt/password lengths and cross-batch p lanes.
@@ -2450,6 +2602,548 @@ mod tests {
         Ok(())
     }
 
+    /// The fast Gray-code SHA kernel must never search past the caller's
+    /// exact budget, including single-candidate and partial-workgroup tails.
+    /// Both direct Anubis and the fast single-block route use the same kernel.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a real GPU"]
+    async fn sha256_fast_gpu_hard_limits_are_exact() -> Result<()> {
+        use challenge_solvers::{
+            gpu::{GpuContext, SingleBlockSolver},
+            message::SingleBlockMessage,
+        };
+        let gpu = GpuContext::create().await?;
+        let prefix = vec![0x58_u8; 64];
+        let difficulty = NonZeroU8::new(1).context("difficulty one is nonzero")?;
+        let mask = 0xf000_0000_0000_0000_u64;
+
+        let mut block = [0_u8; 64];
+        block[..10].copy_from_slice(b"1000000000");
+        block[19] = 0x80;
+        block[56..64].copy_from_slice(&(19_u64 * 8).to_be_bytes());
+        let template = SingleBlockMessage {
+            message: core::array::from_fn(|i| {
+                let chunk = &block[i * 4..i * 4 + 4];
+                u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+            }),
+            prefix_state: [
+                0x6a09_e667,
+                0xbb67_ae85,
+                0x3c6e_f372,
+                0xa54f_f53a,
+                0x510e_527f,
+                0x9b05_688c,
+                0x1f83_d9ab,
+                0x5be0_cd19,
+            ],
+            digit_index: 10,
+            nonce_addend: 1_000_000_000_000_000_000,
+            approx_working_set_count: NonZeroU32::new(1).context("working set")?,
+            no_trailing_zeros: false,
+        };
+        for limit in [0_u64, 1, 2, 7, 127, 128, 129, 8191, 8192, 8193, 16385] {
+            let mut direct_expected = false;
+            let mut fast_expected = false;
+            for counter in 0..limit {
+                let decimal = format!("1{counter:018o}");
+                let digest = Sha256::digest([prefix.as_slice(), decimal.as_bytes()].concat());
+                direct_expected |= digest[0] & 0xf0 == 0;
+                let digest = Sha256::digest(decimal.as_bytes());
+                fast_expected |= digest[0] & 0xf0 == 0;
+            }
+
+            let direct = gpu
+                .solve_anubis_with_limit(&prefix, difficulty, limit)
+                .await?;
+            assert_eq!(
+                direct.is_some(),
+                direct_expected,
+                "direct Anubis limit={limit}"
+            );
+            if let Some(found) = direct {
+                let decimal = found.nonce.to_string();
+                anyhow::ensure!(decimal.len() == 19 && decimal.starts_with('1'));
+                let counter = u64::from_str_radix(&decimal[1..], 8)?;
+                assert!(counter < limit, "direct searched outside limit {limit}");
+                let digest = Sha256::digest([prefix.as_slice(), decimal.as_bytes()].concat());
+                let actual: Vec<u8> = found
+                    .hash
+                    .iter()
+                    .flat_map(|word| word.to_be_bytes())
+                    .collect();
+                assert_eq!(actual.as_slice(), digest.as_slice());
+                assert!(found.dispatched_hashes <= limit);
+            }
+
+            let mut fast = SingleBlockSolver::from(template.clone());
+            fast.set_limit(limit);
+            let found = fast.solve::<SOLVE_TYPE_MASK>(&gpu, 0, mask).await?;
+            assert_eq!(
+                found.is_some(),
+                fast_expected,
+                "fast single-block limit={limit}"
+            );
+            assert!(fast.attempted_nonces() <= limit);
+            if let Some(found) = found {
+                let decimal = found.nonce.to_string();
+                anyhow::ensure!(decimal.len() == 19 && decimal.starts_with('1'));
+                let counter = u64::from_str_radix(&decimal[1..], 8)?;
+                assert!(
+                    counter < limit,
+                    "fast single-block searched outside limit {limit}"
+                );
+                let digest = Sha256::digest(decimal.as_bytes());
+                let actual: Vec<u8> = found
+                    .hash
+                    .iter()
+                    .flat_map(|word| word.to_be_bytes())
+                    .collect();
+                assert_eq!(actual.as_slice(), digest.as_slice());
+                assert!(found.dispatched_hashes <= limit);
+            }
+            println!(
+                "{}",
+                json!({"limit":limit,"direct_hit":direct_expected,"fast_hit":fast_expected,"verified":true})
+            );
+        }
+        Ok(())
+    }
+
+    /// Measure the real crossover between independent SHA-256 GPU requests
+    /// (serialized on one shared GPU context) and the same independent requests
+    /// on one CPU worker or a bounded Rayon CPU pool. All tasks do exact work.
+    ///
+    /// The measured CPU alternatives include their own solver construction.
+    /// The GPU includes real queue submissions and readbacks for each request.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a physical GPU; use --release for economics"]
+    async fn sha256_concurrent_cpu_gpu_crossover() -> Result<()> {
+        use rayon::prelude::*;
+
+        let threads = std::env::var("SHA256_CROSSOVER_THREADS")
+            .ok()
+            .map(|value| value.parse::<usize>())
+            .transpose()?
+            .unwrap_or(8);
+        let request_counts = std::env::var("SHA256_CROSSOVER_REQUEST_COUNTS")
+            .unwrap_or_else(|_| "1,2,4,8,16".to_owned());
+        let request_counts: Vec<usize> = request_counts
+            .split(',')
+            .map(str::parse)
+            .collect::<std::result::Result<_, _>>()?;
+        anyhow::ensure!(
+            !request_counts.is_empty() && request_counts.iter().all(|count| *count > 0),
+            "independent-request counts must be positive"
+        );
+        let max_requests = *request_counts
+            .iter()
+            .max()
+            .context("at least one request count required")?;
+        let trials = std::env::var("SHA256_CROSSOVER_TRIALS")
+            .ok()
+            .map(|value| value.parse::<u32>())
+            .transpose()?
+            .unwrap_or(5);
+        anyhow::ensure!(
+            threads > 0 && trials > 0,
+            "CPU threads and trials must be positive"
+        );
+        let budgets = std::env::var("SHA256_CROSSOVER_BUDGETS")
+            .unwrap_or_else(|_| "1,64,1024,8192,65536,262144,1048576".to_owned());
+        let budgets: Vec<u64> = budgets
+            .split(',')
+            .map(str::parse)
+            .collect::<std::result::Result<_, _>>()?;
+        anyhow::ensure!(
+            !budgets.is_empty() && budgets.iter().all(|budget| *budget > 0),
+            "crossover candidate budgets must be positive"
+        );
+
+        let gpu = challenge_solvers::gpu::GpuContext::create().await?;
+        gpu.warm_up().await?;
+        let cpu_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()?;
+        let prefixes: Vec<Vec<u8>> = (0..max_requests)
+            .map(|request| -> Result<Vec<u8>> {
+                let mut prefix = vec![b'a'; 96];
+                prefix[..8].copy_from_slice(&u64::try_from(request)?.to_le_bytes());
+                Ok(prefix)
+            })
+            .collect::<Result<_>>()?;
+
+        let cpu_solve = |prefix: &[u8], budget: u64| -> Result<()> {
+            let message = DecimalMessage::new(prefix, 0)
+                .context("construct matching CPU Anubis decimal challenge")?;
+            let mut solver = challenge_solvers::DecimalSolver::from(message);
+            solver.set_limit(budget);
+            let solution = solver.solve::<SOLVE_TYPE_MASK>(0, u64::MAX);
+            anyhow::ensure!(solution.is_none(), "unexpected 64-bit SHA CPU proof");
+            anyhow::ensure!(
+                solver.attempted_nonces() == budget,
+                "CPU did not exhaust exact search budget"
+            );
+            Ok(())
+        };
+        let gpu_solve = async |prefix: &[u8], budget: u64| {
+            let message = DecimalMessage::new(prefix, 0)
+                .context("construct matching GPU Anubis decimal challenge")?;
+            let mut solver = challenge_solvers::gpu::DecimalSolver::from(message);
+            solver.set_limit(budget);
+            let solution = solver.solve::<SOLVE_TYPE_MASK>(&gpu, 0, u64::MAX).await?;
+            anyhow::ensure!(solution.is_none(), "unexpected 64-bit SHA GPU proof");
+            anyhow::ensure!(
+                solver.attempted_nonces() == budget,
+                "GPU did not exhaust exact search budget"
+            );
+            Ok::<(), anyhow::Error>(())
+        };
+
+        // Warm actual protocol encoding, CPU SIMD initialization, Rayon
+        // workers, GPU pipeline and readback outside timed observations.
+        cpu_pool.install(|| {
+            prefixes
+                .par_iter()
+                .try_for_each(|prefix| cpu_solve(prefix, 8192))
+        })?;
+        for prefix in &prefixes {
+            gpu_solve(prefix, 8192).await?;
+        }
+        let adapter = gpu.adapter();
+        for requests in request_counts {
+            let prefixes = &prefixes[..requests];
+            for &budget in &budgets {
+                for trial in 0..trials {
+                    // Rotating order prevents systematic first-backend advantage.
+                    for phase in 0..3_u32 {
+                        let backend = (trial + phase) % 3;
+                        let started = Instant::now();
+                        match backend {
+                            0 => {
+                                for prefix in prefixes {
+                                    cpu_solve(prefix, budget)?;
+                                }
+                            }
+                            1 => {
+                                cpu_pool.install(|| {
+                                    prefixes
+                                        .par_iter()
+                                        .try_for_each(|prefix| cpu_solve(prefix, budget))
+                                })?;
+                            }
+                            2 => {
+                                for prefix in prefixes {
+                                    gpu_solve(prefix, budget).await?;
+                                }
+                            }
+                            _ => unreachable!("backend is always in 0..3"),
+                        }
+                        let elapsed_ns = started.elapsed().as_nanos();
+                        println!(
+                            "{}",
+                            json!({
+                                "benchmark": "sha256-independent-requests-crossover-v1",
+                                "host": read_trimmed("/proc/sys/kernel/hostname"),
+                                "cpu": cpu_model(),
+                                "gpu": adapter,
+                                "protocol": "anubis",
+                                "variant": "decimal",
+                                "backend": match backend {
+                                    0 => "cpu-serial-auto",
+                                    1 => "cpu-parallel-auto",
+                                    2 => "gpu-serial-wgpu",
+                                    _ => unreachable!("backend is always in 0..3"),
+                                },
+                                "threads": if backend == 1 { threads } else { 1 },
+                                "requests": requests,
+                                "budget_per_request": budget,
+                                "attempted_work": u64::try_from(requests)?.checked_mul(budget).context("total work overflow")?,
+                                "trial": trial,
+                                "elapsed_ns": elapsed_ns,
+                                "verified": true
+                            })
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Compare equivalent SHA-256 majority formulas across all GPU protocol
+    /// families with the same device, queue, work budget and live solver paths.
+    /// Each pair uses identical challenge bytes, rotating execution order.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a physical GPU; use --release for throughput comparisons"]
+    async fn sha256_gpu_majority_interleaved() -> Result<()> {
+        use challenge_solvers::gpu::GpuContext;
+
+        let baseline = GpuContext::create().await?;
+        let or_majority = baseline.with_alternative_majority();
+        let samples = std::env::var("SHA256_MAJORITY_AB_TRIALS")
+            .ok()
+            .map(|value| value.parse::<u32>())
+            .transpose()?
+            .unwrap_or(10);
+        anyhow::ensure!(samples > 0, "SHA256_MAJORITY_AB_TRIALS must be positive");
+        let limit = std::env::var("SHA256_MAJORITY_AB_LIMIT")
+            .ok()
+            .map(|value| value.parse::<u64>())
+            .transpose()?
+            .unwrap_or(1_048_576);
+        anyhow::ensure!(
+            limit > 0 && limit.is_multiple_of(8192),
+            "SHA256_MAJORITY_AB_LIMIT must be a positive multiple of 8192"
+        );
+        anyhow::ensure!(baseline.adapter() == or_majority.adapter());
+        baseline.warm_up().await?;
+        or_majority.warm_up().await?;
+        let mut args = Args {
+            samples: 1,
+            limit,
+            argon2_limit: 64,
+            cpu: false,
+            gpu: true,
+            list_gpu_adapters: false,
+            mode: Mode::Throughput,
+            commit: String::new(),
+            protocol: Vec::new(),
+        };
+        let host = read_trimmed("/proc/sys/kernel/hostname");
+        let cpu = cpu_model();
+        let protocols = [
+            Protocol::Anubis,
+            Protocol::Haphash,
+            Protocol::Mcaptcha,
+            Protocol::Capjs,
+            Protocol::GoAway,
+            Protocol::Cerberus,
+            Protocol::Altcha,
+        ];
+        // Warm actual challenge formats, not only the synthetic startup
+        // dispatch. Shader compilation and first-use driver work then occur
+        // outside the timed pairs.
+        args.limit = 8192;
+        for (variant, gpu) in [("xor-majority", &baseline), ("or-majority", &or_majority)] {
+            let meta = Meta {
+                host: host.clone(),
+                cpu_model: cpu.clone(),
+                commit: format!("warmup-{variant}"),
+            };
+            for protocol in protocols {
+                args.protocol = vec![protocol];
+                run_sha256_majority_case(&meta, &args, gpu, protocol, 0).await?;
+            }
+        }
+        args.limit = limit;
+        for trial in 0..samples {
+            let order = if trial.is_multiple_of(2) {
+                [("xor-majority", &baseline), ("or-majority", &or_majority)]
+            } else {
+                [("or-majority", &or_majority), ("xor-majority", &baseline)]
+            };
+            for protocol in protocols {
+                args.protocol = vec![protocol];
+                for (variant, gpu) in order {
+                    let meta = Meta {
+                        host: host.clone(),
+                        cpu_model: cpu.clone(),
+                        commit: variant.to_owned(),
+                    };
+                    run_sha256_majority_case(&meta, &args, gpu, protocol, trial).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "gpu")]
+    async fn run_sha256_majority_case(
+        meta: &Meta,
+        args: &Args,
+        gpu: &challenge_solvers::gpu::GpuContext,
+        protocol: Protocol,
+        sample: u32,
+    ) -> Result<()> {
+        match protocol {
+            Protocol::Anubis => {
+                run_gpu_anubis_haphash_cases(meta, args, gpu, gpu.adapter(), sample).await?;
+                run_gpu_wasm_mcaptcha_cases(meta, args, gpu, gpu.adapter(), sample).await
+            }
+            Protocol::Haphash => {
+                run_gpu_anubis_haphash_cases(meta, args, gpu, gpu.adapter(), sample).await
+            }
+            Protocol::Mcaptcha => {
+                run_gpu_wasm_mcaptcha_cases(meta, args, gpu, gpu.adapter(), sample).await
+            }
+            Protocol::Capjs => run_gpu_capjs_cases(meta, args, gpu, gpu.adapter(), sample).await,
+            Protocol::GoAway => run_gpu_goaway_case(meta, args, gpu, gpu.adapter(), sample).await,
+            Protocol::Cerberus => {
+                run_gpu_cerberus_cases(meta, args, gpu, gpu.adapter(), sample).await
+            }
+            Protocol::Altcha => run_gpu_altcha_cases(meta, args, gpu, gpu.adapter(), sample).await,
+            Protocol::Linear => anyhow::bail!("Linear.pub has no SHA-256 GPU solver"),
+        }
+    }
+
+    /// Same-device paired benchmark of complete GPU PBKDF2/ROMix/PBKDF2
+    /// using the exact merged vec4 shader and the directed candidate shader.
+    /// Every full derived key is checked against independent RustCrypto scrypt.
+    #[cfg(feature = "gpu")]
+    #[tokio::test]
+    #[ignore = "requires a real GPU; use --release for performance measurements"]
+    async fn scrypt_full_kdf_interleaved_ab() -> Result<()> {
+        use challenge_solvers::gpu::{GpuContext, ScryptKdfGpu};
+        use rayon::prelude::*;
+
+        let cpu_pool = rayon::ThreadPoolBuilder::new().build()?;
+        let cpu_threads = cpu_pool.current_num_threads();
+        let gpu = GpuContext::create().await?;
+        let baseline = ScryptKdfGpu::new_from_romix_wgsl(
+            &gpu,
+            include_str!("../fixtures/scrypt_romix_vec4_fc56391.wgsl"),
+        );
+        let directed = ScryptKdfGpu::new(&gpu);
+        let interleaved = ScryptKdfGpu::new_from_romix_wgsl(
+            &gpu,
+            include_str!("../fixtures/scrypt_romix_interleaved_scratch.wgsl"),
+        );
+        let tiled32 = ScryptKdfGpu::new_from_romix_wgsl(
+            &gpu,
+            include_str!("../fixtures/scrypt_romix_tiled_scratch_32.wgsl"),
+        );
+        let tiled64 = ScryptKdfGpu::new_from_romix_wgsl(
+            &gpu,
+            include_str!("../fixtures/scrypt_romix_tiled_scratch_64.wgsl"),
+        );
+        let variants = [
+            ("merged-vec4-fc56391", &baseline),
+            ("directed", &directed),
+            ("interleaved-scratch", &interleaved),
+            ("tiled-scratch-32", &tiled32),
+            ("tiled-scratch-64", &tiled64),
+        ];
+        let pair_string = std::env::var("SCRYPT_KDF_AB_PAIR")
+            .unwrap_or_else(|_| "merged-vec4-fc56391,directed".to_owned());
+        let names: Vec<&str> = pair_string.split(',').collect();
+        anyhow::ensure!(
+            names.len() == 2 && names[0] != names[1],
+            "SCRYPT_KDF_AB_PAIR must specify two distinct shader names"
+        );
+        let pair: Vec<_> = names
+            .into_iter()
+            .map(|name| {
+                variants
+                    .iter()
+                    .copied()
+                    .find(|variant| variant.0 == name)
+                    .ok_or_else(|| anyhow::anyhow!("unknown scrypt shader variant: {name}"))
+            })
+            .collect::<Result<_>>()?;
+        let salt: Vec<u8> = (0_u8..59).map(|i| i.wrapping_mul(23)).collect();
+        let filter = std::env::var("SCRYPT_KDF_AB_SHAPES").ok();
+        let mut selected = 0;
+        for (n, r, p, count) in [
+            (64_u32, 1_u32, 1_u32, 1_usize),
+            (64, 1, 1, 64),
+            (256, 1, 1, 64),
+            (256, 1, 1, 256),
+            (256, 8, 1, 1),
+            (256, 8, 1, 64),
+            (256, 8, 1, 256),
+            (1024, 8, 1, 64),
+            (256, 8, 4, 8),
+        ] {
+            let shape = format!("{n}/{r}/{p}/{count}");
+            if filter
+                .as_deref()
+                .is_some_and(|value| !value.split(',').any(|part| part == shape))
+            {
+                continue;
+            }
+            selected += 1;
+            let passwords: Vec<Vec<u8>> = (0..count)
+                .map(|index| {
+                    (0..(65 + index % 3))
+                        .map(|byte| (byte as u8).wrapping_mul(31).wrapping_add(index as u8))
+                        .collect()
+                })
+                .collect();
+            let refs: Vec<&[u8]> = passwords.iter().map(Vec::as_slice).collect();
+            let params = scrypt::Params::new(u8::try_from(n.ilog2())?, r, p)
+                .map_err(|_| anyhow::anyhow!("invalid RFC7914 parameters: {shape}"))?;
+            let cpu_start = Instant::now();
+            let mut expected = Vec::with_capacity(count);
+            for password in &passwords {
+                let mut derived = [0_u8; 32];
+                scrypt::scrypt(password, &salt, &params, &mut derived)
+                    .map_err(|_| anyhow::anyhow!("RustCrypto scrypt failed: {shape}"))?;
+                expected.push(derived.to_vec());
+            }
+            let cpu_serial_ns = cpu_start.elapsed().as_nanos();
+            for (_, solver) in &pair {
+                let warm = solver.derive_keys(&refs, &salt, n, r, p, 32).await?;
+                assert_eq!(warm, expected, "full KDF A/B warmup: {shape}");
+            }
+            for trial in 0..5_u32 {
+                // Compare against a warm, concurrently dispatched CPU
+                // reference rather than treating serial RustCrypto as the
+                // achievable CPU throughput on a multi-core machine.
+                let cpu_parallel_start = Instant::now();
+                let parallel_reference: Vec<Vec<u8>> = cpu_pool.install(|| {
+                    passwords
+                        .par_iter()
+                        .map(|password| -> Result<Vec<u8>> {
+                            let mut key = [0_u8; 32];
+                            scrypt::scrypt(password, &salt, &params, &mut key)
+                                .map_err(|_| anyhow::anyhow!("CPU reference failed: {shape}"))?;
+                            Ok(key.to_vec())
+                        })
+                        .collect::<Result<Vec<_>>>()
+                })?;
+                let cpu_parallel_ns = cpu_parallel_start.elapsed().as_nanos();
+                assert_eq!(
+                    parallel_reference, expected,
+                    "CPU parallel reference: {shape}"
+                );
+                let order = if trial.is_multiple_of(2) {
+                    [pair[0], pair[1]]
+                } else {
+                    [pair[1], pair[0]]
+                };
+                for (variant, solver) in order {
+                    let start = Instant::now();
+                    let actual = solver.derive_keys(&refs, &salt, n, r, p, 32).await?;
+                    let gpu_full_kdf_ns = start.elapsed().as_nanos();
+                    assert_eq!(
+                        actual, expected,
+                        "full RFC7914 KDF mismatch: {shape}, {variant}, trial={trial}"
+                    );
+                    println!(
+                        "{}",
+                        json!({
+                            "variant": variant, "adapter": gpu.adapter(),
+                            "n": n, "r": r, "p": p, "candidates": count,
+                            "trial": trial, "gpu_full_kdf_ns": gpu_full_kdf_ns,
+                            "cpu_serial_reference_ns": cpu_serial_ns,
+                            "cpu_parallel_ns": cpu_parallel_ns,
+                            "cpu_threads": cpu_threads,
+                            "verified": true,
+                        })
+                    );
+                }
+            }
+        }
+        assert!(
+            selected > 0,
+            "SCRYPT_KDF_AB_SHAPES selects no benchmark cases"
+        );
+        Ok(())
+    }
+
     /// Complete multi-password GPU KDF compared with independent CPU RFC7914.
     /// Separates independent candidate count from scrypt's internal p lanes.
     /// Exercise SHA256 HMAC key boundaries, arbitrary salt sizes, and
@@ -2529,7 +3223,7 @@ mod tests {
 
         let gpu = GpuContext::create().await?;
         let solver = ScryptKdfGpu::new(&gpu);
-        let salt: Vec<u8> = (0..53).map(|i| (i as u8).wrapping_mul(31)).collect();
+        let salt: Vec<u8> = (0_u8..53).map(|i| i.wrapping_mul(31)).collect();
         for (n, r, count) in [
             (64_u32, 1_u32, 1_usize),
             (64, 1, 64),
