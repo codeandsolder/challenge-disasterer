@@ -734,8 +734,10 @@ mod tests {
 
     #[tokio::test]
     async fn friendlycaptcha_v1_http_dispatch_and_cpu_only_policy() -> anyhow::Result<()> {
+        use anyhow::Context as _;
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
         // v1, two subpuzzles, difficulty zero, otherwise zeroed 32-byte header.
-        const PUZZLE: &str = "testing.AAAAAAAAAAAAAQACAAAAAAAAAAAAAAAAAAAAAAA=";
+        const PUZZLE: &str = "testing.AAAAAAAAAAAAAAAAAQACAAAAAAAAAAAAAAAAAAAAAAA=";
         let state = Arc::new(
             AppState::initialize(Config {
                 cpu_workers: 2,
@@ -779,7 +781,12 @@ mod tests {
                 .as_str()
                 .context("missing original Friendly Captcha response")?;
             assert!(encoded.starts_with(&format!("{PUZZLE}.")));
-            assert_eq!(encoded.split('.').count(), 4);
+            let fields: Vec<_> = encoded.split('.').collect();
+            assert_eq!(fields.len(), 4);
+            let solutions = STANDARD.decode(fields[2])?;
+            assert!(challenge_protocols::classic_pow::verify_friendlycaptcha_v1(
+                PUZZLE, &solutions,
+            )?);
         }
 
         let unsupported = SolveRequest {
