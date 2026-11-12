@@ -8,7 +8,6 @@ use super::gpu::{
     run_gpu_altcha_cases, run_gpu_anubis_haphash_cases, run_gpu_capjs_cases,
     run_gpu_cerberus_cases, run_gpu_goaway_case, run_gpu_wasm_mcaptcha_cases,
 };
-use super::*;
 
 #[test]
 fn protocol_selection_defaults_to_all_and_supports_multiple_families() -> Result<()> {
