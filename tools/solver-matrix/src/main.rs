@@ -576,14 +576,36 @@ fn cap_rsw_input(sample: u32) -> Result<(BigUint, BigUint)> {
     Ok((modulus, x))
 }
 
+/// Execute the same Cap format-2 RSW protocol path used by the actual
+/// service, rather than benchmarking a separate, out-of-date bigint loop.
+fn cap_rsw_solve(modulus: &BigUint, input: &BigUint) -> Result<BigUint> {
+    let challenge = json!({
+        "token": "benchmark-rsw",
+        "format": 2,
+        "challenges": [{
+            "protocol": "rsw",
+            "payload": {
+                "N": modulus.to_str_radix(16),
+                "x": input.to_str_radix(16),
+                "t": CAP_RSW_T,
+            }
+        }]
+    });
+    let result = challenge_protocols::classic_pow::solve("capjs", challenge, Some("safe"), 1)?;
+    anyhow::ensure!(result.implementation == "rsw", "unexpected Cap RSW backend");
+    let hex = result
+        .answer
+        .pointer("/solutions/0/y")
+        .and_then(Value::as_str)
+        .context("Cap RSW solver did not return format-2 solution")?;
+    BigUint::parse_bytes(hex.as_bytes(), 16).context("Cap RSW solver returned invalid hex")
+}
+
 fn run_cap_rsw_case(meta: &Meta, sample: u32, args: &Args) -> Result<()> {
-    let (modulus, mut y) = cap_rsw_input(sample)?;
+    let (modulus, x) = cap_rsw_input(sample)?;
     let started = Instant::now();
-    for _ in 0..CAP_RSW_T {
-        y = (&y * &y) % &modulus;
-    }
+    let y = cap_rsw_solve(&modulus, &x)?;
     let solve_ns = started.elapsed().as_nanos();
-    // Keep the final value observable so an optimizer can never erase the fixed-work loop.
     let final_low64 = y.to_u64_digits().first().copied().unwrap_or(0);
     emit(&Record {
         schema: 1,
@@ -594,7 +616,7 @@ fn run_cap_rsw_case(meta: &Meta, sample: u32, args: &Args) -> Result<()> {
         commit: meta.commit.clone(),
         protocol: "capjs",
         variant: "rsw-format2-2048-t75000",
-        implementation: "num-bigint-sequential-square".to_owned(),
+        implementation: "rug-gmp-modpow".to_owned(),
         accelerator: "cpu",
         sample,
         parameters: json!({
@@ -1783,10 +1805,8 @@ mod tests {
 
     #[test]
     fn cap_rsw_fixed_vector_matches_external_reference() -> Result<()> {
-        let (modulus, mut y) = cap_rsw_input(0)?;
-        for _ in 0..CAP_RSW_T {
-            y = (&y * &y) % &modulus;
-        }
+        let (modulus, x) = cap_rsw_input(0)?;
+        let y = cap_rsw_solve(&modulus, &x)?;
         assert_eq!(
             y.to_u64_digits().first().copied().unwrap_or(0),
             0x92a2_5a0a_9175_dee7
