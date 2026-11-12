@@ -6,6 +6,7 @@ pub(crate) use challenge_hashx::{hashx, hashx_cpu_jit};
 pub(crate) use challenge_protocols::{anubis, anubis_wasm, classic_pow};
 #[cfg(feature = "gpu")]
 mod gpu;
+mod metrics;
 mod routing;
 mod service;
 mod stats;
@@ -63,15 +64,6 @@ struct Args {
     routing_calibration: Option<std::path::PathBuf>,
 }
 
-#[cfg(feature = "gpu")]
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "benchmark work count is converted only to derive approximate throughput timing"
-)]
-const fn benchmark_work_as_f64(work: u64) -> f64 {
-    work as f64
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -114,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
         let adapter = solver.adapter().to_owned();
         let hashes_per_second = solver.calibrate(hashes)?;
         let solve_ns = std::time::Duration::try_from_secs_f64(
-            benchmark_work_as_f64(hashes) / hashes_per_second,
+            metrics::approximate_work_f64(hashes) / hashes_per_second,
         )
         .context("benchmark solve duration is not finite")?
         .as_nanos();
