@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup canonical sccache
         uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@c6fcb5f8920460c109ee87152506c3d97889ed4e # main
@@ -64,7 +64,7 @@ jobs:
       matrix:
         implementation: [auto, safe]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download exact-revision solver
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -77,7 +77,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
           echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
       - name: Verify against current ALTCHA (${{ matrix.implementation }})
@@ -95,7 +95,7 @@ jobs:
       matrix:
         implementation: [auto, safe]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download exact-revision solver
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -108,7 +108,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
           echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
       - name: Verify against current Cap.js (${{ matrix.implementation }})
@@ -127,7 +127,7 @@ jobs:
         implementation: [auto, safe]
         upstream_ref: [dist, v0.4.9, v0.4.8, v0.4.7, v0.4.6, v0.4.5]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download exact-revision solver
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -140,10 +140,10 @@ jobs:
           chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
           echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: "1.27.x"
       - name: Verify Cerberus ${{ matrix.upstream_ref }} (${{ matrix.implementation }})
@@ -162,7 +162,7 @@ jobs:
       matrix:
         implementation: [auto, safe]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download exact-revision solver
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -175,7 +175,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
           echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: "1.27.x"
       - name: Verify against current go-away (${{ matrix.implementation }})
@@ -194,7 +194,7 @@ jobs:
         implementation: [auto, safe]
         difficulty: [4, 0]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download exact-revision solver
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -207,7 +207,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
           echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
       - name: Install HAProxy 3.2
@@ -229,7 +229,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download exact-revision solver
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -259,7 +259,7 @@ jobs:
       matrix:
         implementation: [auto, safe]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download exact-revision solver
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
