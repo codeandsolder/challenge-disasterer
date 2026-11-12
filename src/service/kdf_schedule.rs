@@ -298,6 +298,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cpu_only_and_memory_hard_requests_share_the_same_cpu_slots() -> anyhow::Result<()> {
+        let cpu = Arc::new(Semaphore::new(4));
+        let memory = Arc::new(Semaphore::new(64));
+
+        // A HashX-like CPU-only search uses two of the same global slots.
+        let hashx = Reservation::acquire(&cpu, None, None, None, 2).await?;
+        assert_eq!(hashx.workers(), 2);
+        assert_eq!(cpu.available_permits(), 2);
+
+        // Argon2 can use the other two, but cannot exceed the total of four.
+        let argon2 =
+            Reservation::acquire(&cpu, Some(&memory), Some(64), Some(32 * 1024 * 1024), 2).await?;
+        assert_eq!(argon2.workers(), 2);
+        assert_eq!(cpu.available_permits(), 0);
+        assert_eq!(memory.available_permits(), 0);
+
+        drop(hashx);
+        assert_eq!(cpu.available_permits(), 2);
+        drop(argon2);
+        assert_eq!(cpu.available_permits(), 4);
+        assert_eq!(memory.available_permits(), 64);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn parallel_requests_can_share_both_budgets() -> anyhow::Result<()> {
         let cpu = Arc::new(Semaphore::new(8));
         let memory = Arc::new(Semaphore::new(512));

@@ -60,7 +60,7 @@ impl GpuPolicy {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub cpu_workers: usize,
-    pub argon2_workers: usize,
+    pub cpu_workers_per_request: usize,
     pub kdf_memory_budget_mib: Option<usize>,
     pub cpu_calibration_hashes: u64,
     #[cfg(feature = "gpu")]
@@ -238,8 +238,9 @@ impl AppState {
             "cpu_workers must be greater than zero"
         );
         anyhow::ensure!(
-            config.argon2_workers > 0 && config.argon2_workers <= config.cpu_workers,
-            "argon2_workers must be in 1..=cpu_workers"
+            config.cpu_workers_per_request > 0
+                && config.cpu_workers_per_request <= config.cpu_workers,
+            "cpu_workers_per_request must be in 1..=cpu_workers"
         );
 
         let kdf_memory_capacity_mib = config.kdf_memory_budget_mib.or_else(|| {
@@ -743,7 +744,7 @@ mod tests {
         let state = Arc::new(
             AppState::initialize(Config {
                 cpu_workers: 2,
-                argon2_workers: 1,
+                cpu_workers_per_request: 1,
                 kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
@@ -842,7 +843,7 @@ mod tests {
         let state = Arc::new(
             AppState::initialize(Config {
                 cpu_workers: 4,
-                argon2_workers: 1,
+                cpu_workers_per_request: 4,
                 kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
@@ -918,7 +919,7 @@ mod tests {
         let state = Arc::new(
             AppState::initialize(Config {
                 cpu_workers: 4,
-                argon2_workers: 1,
+                cpu_workers_per_request: 1,
                 kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
@@ -1016,7 +1017,7 @@ mod tests {
         let state = Arc::new(
             AppState::initialize(Config {
                 cpu_workers: 4,
-                argon2_workers: 1,
+                cpu_workers_per_request: 4,
                 // N=4096,r=8,p=1 needs slightly over 4 MiB per worker;
                 // only two of four suggested workers fit into 12 MiB.
                 kdf_memory_budget_mib: Some(12),
@@ -1135,7 +1136,7 @@ mod tests {
         let state = Arc::new(
             AppState::initialize(Config {
                 cpu_workers: 8,
-                argon2_workers: 1,
+                cpu_workers_per_request: 8,
                 kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
@@ -1222,7 +1223,7 @@ mod tests {
         let state = Arc::new(
             AppState::initialize(Config {
                 cpu_workers: 2,
-                argon2_workers: 1,
+                cpu_workers_per_request: 2,
                 kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
@@ -1332,7 +1333,7 @@ mod tests {
 
         let mut state = AppState::initialize(Config {
             cpu_workers: 2,
-            argon2_workers: 1,
+            cpu_workers_per_request: 1,
             kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
@@ -1468,7 +1469,7 @@ mod tests {
 
         let mut state = AppState::initialize(Config {
             cpu_workers: 2,
-            argon2_workers: 1,
+            cpu_workers_per_request: 1,
             kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
@@ -1543,7 +1544,7 @@ mod tests {
     async fn altcha_sha64_auto_gpu_and_policy_overrides_match_cpu() -> anyhow::Result<()> {
         let mut state = AppState::initialize(Config {
             cpu_workers: 2,
-            argon2_workers: 1,
+            cpu_workers_per_request: 1,
             kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
@@ -1619,7 +1620,7 @@ mod tests {
 
         let mut state = AppState::initialize(Config {
             cpu_workers: 2,
-            argon2_workers: 1,
+            cpu_workers_per_request: 1,
             kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
@@ -1684,7 +1685,7 @@ mod tests {
 
         let mut state = AppState::initialize(Config {
             cpu_workers: 2,
-            argon2_workers: 1,
+            cpu_workers_per_request: 1,
             kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
