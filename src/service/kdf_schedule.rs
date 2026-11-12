@@ -1,6 +1,5 @@
 //! Shared CPU and memory reservations for memory-hard `PoW`, with ALTCHA Argon2id fanout.
 use anyhow::{Context, ensure};
-use clap::ValueEnum;
 use serde_json::Value;
 use std::{
     fs,
@@ -8,21 +7,8 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
-pub enum WorkerPolicy {
-    #[default]
-    Adaptive,
-    Fixed,
-    /// Wait briefly for co-arriving KDF jobs, then divide CPU slots fairly
-    /// across all outstanding memory-hard requests before reserving workers.
-    Contended,
-}
-
-const KDF_ADMISSION_WINDOW: Duration = Duration::from_millis(1);
 
 /// Tracks memory-hard jobs from admission through completion of blocking work.
 /// The guard belongs to the blocking solver, not the cancelable HTTP future.
@@ -48,124 +34,29 @@ pub(super) struct KdfInFlight {
     count: Arc<AtomicUsize>,
 }
 
-impl KdfInFlight {
-    /// All waiting and executing KDF requests participate in the split.
-    pub(super) fn fair_workers(&self, cpu_slots: usize, desired: usize) -> usize {
-        let contenders = self.count.load(Ordering::Acquire).max(1);
-        desired.min((cpu_slots / contenders).max(1))
-    }
-
-    /// A bounded admission window makes a synchronized burst visible before
-    /// early arrivals take speculative extra worker permits.
-    pub(super) async fn coalesce(&self) {
-        tokio::time::sleep(KDF_ADMISSION_WINDOW).await;
-    }
-}
-
 impl Drop for KdfInFlight {
     fn drop(&mut self) {
         self.count.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
-const NS_PER_BLOCK_PASS: u128 = 300;
-const NS_PER_EXTRA_WORKER: u128 = 10_000_000;
-const CACHE_FRIENDLY_ARENA_KIB: u64 = 1024;
-
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Work {
-    memory_kib: u64,
-    passes: u64,
-    prefix_nibbles: usize,
-    counter_bits: usize,
-}
-
-impl Work {
-    /// Malformed or unrelated challenge metadata is left to the protocol parser.
-    pub(super) fn from_challenge(solver: &str, challenge: &Value) -> Option<Self> {
-        let p = challenge.get("parameters")?;
-        if solver != "altcha"
-            || !p
-                .get("algorithm")?
-                .as_str()?
-                .eq_ignore_ascii_case("ARGON2ID")
-        {
-            return None;
-        }
-        let memory_kib = p.get("memoryCost")?.as_u64()?;
-        let passes = p.get("cost")?.as_u64()?;
-        let prefix = p.get("keyPrefix")?.as_str()?;
-        if memory_kib == 0
-            || memory_kib > u64::from(u32::MAX)
-            || passes == 0
-            || passes > u64::from(u32::MAX)
-            || !prefix.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return None;
-        }
-        let counter_bits = if challenge.get("counterMode").and_then(Value::as_str) == Some("string")
-        {
-            53
-        } else {
-            32
-        };
-        Some(Self {
-            memory_kib,
-            passes,
-            prefix_nibbles: prefix.len(),
-            counter_bits,
-        })
+/// Protocol validation belongs to the solver. Only select how many
+/// independent nonce-search workers to request; shared permits enforce limits.
+pub(super) fn altcha_argon2_workers(
+    solver: &str,
+    challenge: &Value,
+    configured: usize,
+) -> Option<usize> {
+    if solver != "altcha"
+        || !challenge
+            .pointer("/parameters/algorithm")?
+            .as_str()?
+            .eq_ignore_ascii_case("ARGON2ID")
+    {
+        return None;
     }
-
-    pub(super) fn target_workers(
-        self,
-        configured: usize,
-        total_cpu_slots: usize,
-        policy: WorkerPolicy,
-    ) -> usize {
-        if self.prefix_nibbles == 0 || configured <= 1 {
-            return 1;
-        }
-        if policy == WorkerPolicy::Fixed {
-            return configured;
-        }
-        // A prefix longer than the counter domain cannot be interpreted as
-        // random-prefix difficulty. Upstream may have precomputed a matching
-        // nonce anywhere in the domain; its position is not inferable here.
-        let prefix_bits = self.prefix_nibbles.saturating_mul(4);
-
-        // The cache-sized Argon2 workload benefits from full nonce fanout.
-        // Larger per-worker arenas saturate shared memory bandwidth earlier.
-        // The split is a measured initial policy, not a correctness limit.
-
-        let bandwidth_cap = configured
-            .div_ceil(2)
-            .max(2)
-            .min((total_cpu_slots / 2).max(2))
-            .min(configured);
-        let worker_cap =
-            if policy == WorkerPolicy::Contended || self.memory_kib <= CACHE_FRIENDLY_ARENA_KIB {
-                configured.min(total_cpu_slots)
-            } else {
-                bandwidth_cap
-            };
-
-        if prefix_bits > self.counter_bits {
-            // Unknown precomputed solution position: choose a fanout based
-            // on per-worker memory cost instead of fabricating one attempt.
-            return worker_cap;
-        }
-        let expected_tries = 1_u64 << prefix_bits;
-        // Ordinary random-prefix searches admit an estimated work budget.
-        let estimated_ns = u128::from(self.memory_kib)
-            .saturating_mul(u128::from(self.passes))
-            .saturating_mul(u128::from(expected_tries))
-            .saturating_mul(NS_PER_BLOCK_PASS);
-        let useful_workers = estimated_ns / NS_PER_EXTRA_WORKER + 1;
-        worker_cap
-            .min(usize::try_from(useful_workers).unwrap_or(usize::MAX))
-            .max(1)
-    }
+    let prefix = challenge.pointer("/parameters/keyPrefix")?.as_str()?;
+    Some(if prefix.is_empty() { 1 } else { configured })
 }
 
 /// Each permit remains held until all workers have joined in the blocking task.
@@ -266,35 +157,26 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn challenge(memory_kib: u64, passes: u64, prefix: &str) -> Value {
-        json!({"parameters": {"algorithm":"argon2id", "memoryCost":memory_kib, "cost":passes,"keyPrefix":prefix}})
-    }
-
     #[test]
-    fn selection_uses_protocol_and_work_cost() -> anyhow::Result<()> {
-        assert!(Work::from_challenge("altcha", &challenge(65_536, 3, "aBc")).is_some());
-        assert!(Work::from_challenge("goaway", &challenge(65_536, 3, "ab")).is_none());
-        assert!(Work::from_challenge("altcha", &json!({})).is_none());
-        assert!(Work::from_challenge("altcha", &challenge(65_536, 3, "not-hex")).is_none());
-        let tiny = Work::from_challenge("altcha", &challenge(64, 1, "a"))
-            .context("expected Argon2 profile")?;
-        let precomputed = Work::from_challenge("altcha", &challenge(64, 1, &"ab".repeat(16)))
-            .context("precomputed long-prefix challenge")?;
-        let large = Work::from_challenge("altcha", &challenge(65_536, 3, "abc"))
-            .context("expected Argon2 profile")?;
-        let trivial = Work::from_challenge("altcha", &challenge(65_536, 3, ""))
-            .context("expected Argon2 profile")?;
-        assert_eq!(tiny.target_workers(8, 8, WorkerPolicy::Adaptive), 1);
-        assert_eq!(precomputed.target_workers(8, 8, WorkerPolicy::Adaptive), 8);
-        assert_eq!(large.target_workers(8, 8, WorkerPolicy::Adaptive), 4);
-        assert_eq!(large.target_workers(8, 16, WorkerPolicy::Adaptive), 4);
-        assert_eq!(large.target_workers(2, 8, WorkerPolicy::Adaptive), 2);
-        assert_eq!(large.target_workers(4, 8, WorkerPolicy::Adaptive), 2);
-        assert_eq!(trivial.target_workers(8, 8, WorkerPolicy::Fixed), 1);
-        assert_eq!(large.target_workers(8, 8, WorkerPolicy::Fixed), 8);
-        assert_eq!(large.target_workers(8, 8, WorkerPolicy::Contended), 8);
-        assert_eq!(tiny.target_workers(8, 8, WorkerPolicy::Contended), 1);
-        Ok(())
+    fn only_parallelizes_nontrivial_altcha_argon2() {
+        let challenge = |algorithm: &str, prefix: &str| json!({"parameters": {"algorithm": algorithm, "keyPrefix": prefix}});
+        assert_eq!(
+            altcha_argon2_workers("altcha", &challenge("ARGON2ID", "abc"), 8),
+            Some(8)
+        );
+        assert_eq!(
+            altcha_argon2_workers("altcha", &challenge("argon2id", ""), 8),
+            Some(1)
+        );
+        assert_eq!(
+            altcha_argon2_workers("altcha", &challenge("SHA-256", "abc"), 8),
+            None
+        );
+        assert_eq!(
+            altcha_argon2_workers("other", &challenge("ARGON2ID", "abc"), 8),
+            None
+        );
+        assert_eq!(altcha_argon2_workers("altcha", &json!({}), 8), None);
     }
 
     #[tokio::test]
@@ -303,10 +185,7 @@ mod tests {
         let first = admission.enter();
         let second = admission.enter();
         assert_eq!(admission.count(), 2);
-        assert_eq!(first.fair_workers(8, 8), 4);
-        assert_eq!(second.fair_workers(3, 3), 1);
         drop(first);
-        assert_eq!(second.fair_workers(8, 8), 8);
         drop(second);
         assert_eq!(admission.count(), 0);
         Ok(())
