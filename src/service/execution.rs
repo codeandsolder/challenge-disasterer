@@ -82,17 +82,24 @@ struct MixedCapJs {
 }
 
 #[cfg(feature = "gpu")]
-fn split_mixed_capjs(challenge: &Value) -> Option<MixedCapJs> {
+fn split_mixed_capjs(challenge: &Value) -> anyhow::Result<Option<MixedCapJs>> {
     if challenge.get("format").and_then(Value::as_u64) != Some(2) {
-        return None;
+        return Ok(None);
     }
-    let entries = challenge.get("challenges")?.as_array()?;
+    // Validate the entire envelope before any SHA-only GPU partition runs.
+    // Without this, browser-only instrumentation in the CPU partition could
+    // be detected only after a preceding GPU proof-of-work had completed.
+    classic_pow::preflight_capjs_format_two(challenge)?;
+    let entries = challenge
+        .get("challenges")
+        .and_then(Value::as_array)
+        .context("validated Cap.js format-2 envelope lacks challenges")?;
     let sha_positions: Vec<bool> = entries
         .iter()
         .map(|entry| entry.get("protocol").and_then(Value::as_str) == Some("sha256-pow"))
         .collect();
     if !sha_positions.iter().any(|is_sha| *is_sha) || sha_positions.iter().all(|is_sha| *is_sha) {
-        return None;
+        return Ok(None);
     }
     let mut sha = challenge.clone();
     let mut cpu = challenge.clone();
@@ -112,11 +119,11 @@ fn split_mixed_capjs(challenge: &Value) -> Option<MixedCapJs> {
             .map(|(entry, _)| entry.clone())
             .collect(),
     );
-    Some(MixedCapJs {
+    Ok(Some(MixedCapJs {
         sha,
         cpu,
         sha_positions,
-    })
+    }))
 }
 
 #[cfg(feature = "gpu")]
@@ -491,9 +498,11 @@ impl AppState {
             && (!requires_native_u64(&solver, &challenge) || self.general_gpu_has_native_u64())
             && prefers_auto_gpu(&solver, &challenge, implementation.as_deref())
         {
-            let mixed = (solver == "capjs")
-                .then(|| split_mixed_capjs(&challenge))
-                .flatten();
+            let mixed = if solver == "capjs" {
+                split_mixed_capjs(&challenge)?
+            } else {
+                None
+            };
             let gpu_challenge = mixed
                 .as_ref()
                 .map_or_else(|| challenge.clone(), |parts| parts.sha.clone());
@@ -623,9 +632,12 @@ impl AppState {
         challenge: Value,
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
-        if solver == "capjs"
-            && let Some(parts) = split_mixed_capjs(&challenge)
-        {
+        let mixed = if solver == "capjs" {
+            split_mixed_capjs(&challenge)?
+        } else {
+            None
+        };
+        if let Some(parts) = mixed {
             let gpu = self
                 .dispatch_general_gpu(solver.clone(), parts.sha.clone(), queued_at, false)
                 .await?
@@ -860,13 +872,13 @@ mod auto_gpu_tests {
             "token": "ordered",
             "format": 2,
             "challenges": [
-                {"protocol": "rsw", "payload": {}},
-                {"protocol": "sha256-pow", "payload": {}},
-                {"protocol": "hashwx", "payload": {}},
-                {"protocol": "sha256-pow", "payload": {}}
+                {"protocol": "rsw", "payload": {"N": "11", "x": "2", "t": 3}},
+                {"protocol": "sha256-pow", "payload": {"salt": "first", "target": "0"}},
+                {"protocol": "hashwx", "payload": {"c": "00".repeat(32), "d": 1, "n": 1}},
+                {"protocol": "sha256-pow", "payload": {"salt": "second", "target": "0"}}
             ]
         });
-        let parts = split_mixed_capjs(&challenge).context("mixed Cap.js must split")?;
+        let parts = split_mixed_capjs(&challenge)?.context("mixed Cap.js must split")?;
         assert_eq!(parts.sha["challenges"].as_array().map(Vec::len), Some(2));
         assert_eq!(parts.cpu["challenges"].as_array().map(Vec::len), Some(2));
         assert_eq!(parts.sha["token"], "ordered");
@@ -915,11 +927,30 @@ mod auto_gpu_tests {
         assert_eq!(merged.answer["token"], "ordered");
         assert!(
             split_mixed_capjs(&serde_json::json!({
+                "token": "single",
                 "format": 2,
-                "challenges": [{"protocol": "sha256-pow"}]
-            }))
+                "challenges": [{"protocol": "sha256-pow", "payload": {"salt": "only", "target": "0"}}]
+            }))?
             .is_none()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_capjs_rejects_unsupported_work_before_gpu_split() -> anyhow::Result<()> {
+        let challenge = serde_json::json!({
+            "token": "mixed-unsupported",
+            "format": 2,
+            "challenges": [
+                {"protocol": "sha256-pow", "payload": {"salt": "some", "target": "0"}},
+                {"protocol": "instrumentation", "payload": {}},
+                {"protocol": "rsw", "payload": {"N": "11", "x": "2", "t": 3}}
+            ]
+        });
+        let error = split_mixed_capjs(&challenge)
+            .err()
+            .context("unsupported format-2 work must fail before GPU splitting")?;
+        assert!(error.to_string().contains("browser-environment probe"));
         Ok(())
     }
 }

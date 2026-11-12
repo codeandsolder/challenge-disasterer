@@ -41,14 +41,6 @@ pub struct StatsResponse {
     general: crate::stats::GeneralStats,
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "queue ETA is approximate telemetry and does not require integer-exact f64 representation"
-)]
-const fn telemetry_work_as_f64(work: u64) -> f64 {
-    work as f64
-}
-
 #[derive(Serialize)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -101,10 +93,11 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
     let work_ahead = queued_work.saturating_add(active_work);
     let mut expected = BTreeMap::new();
     for difficulty in 1..=16_u8 {
-        let work = telemetry_work_as_f64(16_u64.saturating_pow(u32::from(difficulty)));
+        let work =
+            crate::metrics::approximate_work_f64(16_u64.saturating_pow(u32::from(difficulty)));
         let eta_ms = state.calibration.gpu_hashes_per_second.map_or_else(
             || work / state.calibration.cpu_hashes_per_second_per_worker * 1000.0,
-            |gpu| (telemetry_work_as_f64(work_ahead) + work) / gpu * 1000.0,
+            |gpu| (crate::metrics::approximate_work_f64(work_ahead) + work) / gpu * 1000.0,
         );
         expected.insert(difficulty, eta_ms);
     }
