@@ -1,7 +1,8 @@
+#[cfg(feature = "gpu")]
+use std::time::Instant;
 use std::{
     path::PathBuf,
     sync::{Arc, atomic::AtomicU64},
-    time::Instant,
 };
 
 #[cfg(feature = "gpu")]
@@ -16,15 +17,16 @@ use tokio::sync::{RwLock, Semaphore};
 use tracing::{info, warn};
 
 use crate::{
-    anubis::{self, Challenge},
-    anubis_wasm, hashx,
+    anubis,
     routing::RoutingCalibration,
     stats::{Calibration, StatsStore},
 };
 #[cfg(feature = "gpu")]
 use crate::{
-    classic_pow,
+    anubis::Challenge,
+    anubis_wasm, classic_pow,
     gpu::GpuSolver,
+    hashx,
     hashx_gpu::{GpuResult as HashxGpuResult, GpuSolver as HashxGpuSolver},
 };
 
