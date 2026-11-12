@@ -34,7 +34,8 @@ struct Args {
     /// an independent Argon2 memory arena of the requested memoryCost.
     #[arg(long)]
     argon2_workers: Option<usize>,
-    /// Adaptive ALTCHA fanout or fixed worker count for benchmark comparison.
+    /// Choose adaptive, fixed, or contention-aware ALTCHA Argon2id fanout.
+    /// Contended batches co-arriving KDF requests before allocating extra workers.
     #[arg(long, value_enum, default_value_t = WorkerPolicy::Adaptive)]
     altcha_worker_policy: WorkerPolicy,
     /// Shared memory budget for all memory-hard KDF arenas, in MiB.

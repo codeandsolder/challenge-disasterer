@@ -34,6 +34,7 @@ pub struct StatsResponse {
     gpu_queue_expected_work: u64,
     gpu_active_expected_work: u64,
     cpu_workers_available: usize,
+    kdf_requests_in_flight: usize,
     kdf_memory_available_mib: Option<usize>,
     expected_new_solve_ms_by_difficulty: BTreeMap<u8, f64>,
     hashx_gpu_implementations: Vec<&'static str>,
@@ -460,6 +461,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             altcha_worker_policy: match state.config.altcha_worker_policy {
                 super::WorkerPolicy::Adaptive => "adaptive",
                 super::WorkerPolicy::Fixed => "fixed",
+                super::WorkerPolicy::Contended => "contended",
             },
             kdf_memory_budget_mib: state.kdf_memory_capacity_mib,
             gpu_compiled: cfg!(feature = "gpu"),
@@ -473,6 +475,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         gpu_queue_expected_work: queued_work,
         gpu_active_expected_work: active_work,
         cpu_workers_available: state.cpu_slots.available_permits(),
+        kdf_requests_in_flight: state.kdf_admission.count(),
         kdf_memory_available_mib: state
             .kdf_memory_slots
             .as_ref()
