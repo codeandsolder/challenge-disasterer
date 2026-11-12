@@ -126,7 +126,7 @@ impl Work {
         if self.prefix_nibbles == 0 || configured <= 1 {
             return 1;
         }
-        if matches!(policy, WorkerPolicy::Fixed | WorkerPolicy::Contended) {
+        if policy == WorkerPolicy::Fixed {
             return configured;
         }
         // A prefix longer than the counter domain cannot be interpreted as
@@ -143,11 +143,12 @@ impl Work {
             .max(2)
             .min((total_cpu_slots / 2).max(2))
             .min(configured);
-        let worker_cap = if self.memory_kib <= CACHE_FRIENDLY_ARENA_KIB {
-            configured.min(total_cpu_slots)
-        } else {
-            bandwidth_cap
-        };
+        let worker_cap =
+            if policy == WorkerPolicy::Contended || self.memory_kib <= CACHE_FRIENDLY_ARENA_KIB {
+                configured.min(total_cpu_slots)
+            } else {
+                bandwidth_cap
+            };
 
         if prefix_bits > self.counter_bits {
             // Unknown precomputed solution position: choose a fanout based
@@ -292,6 +293,7 @@ mod tests {
         assert_eq!(trivial.target_workers(8, 8, WorkerPolicy::Fixed), 1);
         assert_eq!(large.target_workers(8, 8, WorkerPolicy::Fixed), 8);
         assert_eq!(large.target_workers(8, 8, WorkerPolicy::Contended), 8);
+        assert_eq!(tiny.target_workers(8, 8, WorkerPolicy::Contended), 1);
         Ok(())
     }
 

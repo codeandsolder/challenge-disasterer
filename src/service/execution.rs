@@ -549,12 +549,6 @@ impl AppState {
         let work = Work::from_challenge(&solver, &challenge);
         // All memory-hard protocols participate, including Scrypt.
         let in_flight = memory_bytes.map(|_| self.kdf_admission.enter());
-        if work.is_some()
-            && self.config.altcha_worker_policy == super::WorkerPolicy::Contended
-            && let Some(guard) = in_flight.as_ref()
-        {
-            guard.coalesce().await;
-        }
         let friendly = solver == "friendlycaptcha";
         let tor_equix = solver == "tor-hs-v1";
         let sequentialread = solver == "pow-bot-deterrent";
@@ -574,6 +568,13 @@ impl AppState {
                 )
             })
         };
+        if work.is_some()
+            && desired > 1
+            && self.config.altcha_worker_policy == super::WorkerPolicy::Contended
+            && let Some(guard) = in_flight.as_ref()
+        {
+            guard.coalesce().await;
+        }
         let desired = if work.is_some()
             && self.config.altcha_worker_policy == super::WorkerPolicy::Contended
         {
