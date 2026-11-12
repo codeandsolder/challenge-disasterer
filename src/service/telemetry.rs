@@ -56,7 +56,7 @@ const fn telemetry_work_as_f64(work: u64) -> f64 {
 )]
 pub struct StatsConfig {
     cpu_workers: usize,
-    argon2_workers: usize,
+    cpu_workers_per_request: usize,
     kdf_memory_budget_mib: Option<usize>,
     gpu_compiled: bool,
     gpu_enabled: bool,
@@ -456,7 +456,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         calibration: state.calibration.clone(),
         config: StatsConfig {
             cpu_workers: state.config.cpu_workers,
-            argon2_workers: state.config.argon2_workers,
+            cpu_workers_per_request: state.config.cpu_workers_per_request,
             kdf_memory_budget_mib: state.kdf_memory_capacity_mib,
             gpu_compiled: cfg!(feature = "gpu"),
             gpu_enabled: state.config.gpu_enabled,

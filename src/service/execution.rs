@@ -261,7 +261,7 @@ impl AppState {
         let memory_bytes =
             (solver == "anubis-argon2id").then_some(anubis_wasm::ARGON2_MEMORY_BYTES);
         let desired = if memory_bytes.is_some() {
-            self.config.argon2_workers
+            self.config.cpu_workers_per_request
         } else {
             1
         };
@@ -270,7 +270,7 @@ impl AppState {
             self.kdf_memory_slots.as_ref(),
             self.kdf_memory_capacity_mib,
             memory_bytes,
-            desired,
+            desired.min(self.config.cpu_workers_per_request),
         )
         .await?;
         let started = Instant::now();
@@ -407,14 +407,21 @@ impl AppState {
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
         challenge.validate()?;
-        let worker_count = self.config.cpu_workers;
-        let permits = u32::try_from(worker_count).context("too many CPU workers")?;
-        let permit = self.cpu_slots.clone().acquire_many_owned(permits).await?;
+        let reservation = Reservation::acquire(
+            &self.cpu_slots,
+            None,
+            None,
+            None,
+            self.config.cpu_workers_per_request,
+        )
+        .await?;
         let start = Instant::now();
         let queue_ms = start.duration_since(queued_at).as_secs_f64() * 1000.0;
-        let result = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            hashx_cpu_jit::solve(&challenge, worker_count)
+        let (result, worker_count) = tokio::task::spawn_blocking(move || {
+            let worker_count = reservation.workers();
+            let result = hashx_cpu_jit::solve(&challenge, worker_count);
+            drop(reservation);
+            result.map(|value| (value, worker_count))
         })
         .await??;
         Ok(SolveResponse {
@@ -422,7 +429,7 @@ impl AppState {
             backend: "cpu-jit".to_owned(),
             implementation: None,
             answer: serde_json::to_value(result.answer).context("serialize solver answer")?,
-            nonce_workers: None,
+            nonce_workers: Some(worker_count),
             queue_ms,
             solve_ms: result.solve_ms,
             total_ms: queued_at.elapsed().as_secs_f64() * 1000.0,
@@ -546,19 +553,26 @@ impl AppState {
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
         let memory_bytes = classic_pow::memory_hard_requirement(&solver, &challenge).transpose()?;
-        let altcha_workers = altcha_argon2_workers(&solver, &challenge, self.config.argon2_workers);
+        let altcha_workers =
+            altcha_argon2_workers(&solver, &challenge, self.config.cpu_workers_per_request);
         // All memory-hard protocols participate, including Scrypt.
         let in_flight = memory_bytes.map(|_| self.kdf_admission.enter());
         let friendly = solver == "friendlycaptcha";
         let tor_equix = solver == "tor-hs-v1";
         let sequentialread = solver == "pow-bot-deterrent";
         let desired = if friendly {
-            classic_pow::friendlycaptcha_suggested_workers(&challenge, self.config.cpu_workers)
-                .unwrap_or(1)
+            classic_pow::friendlycaptcha_suggested_workers(
+                &challenge,
+                self.config.cpu_workers_per_request,
+            )
+            .unwrap_or(1)
         } else if tor_equix {
-            Self::tor_equix_suggested_workers(&challenge, self.config.cpu_workers)
+            Self::tor_equix_suggested_workers(&challenge, self.config.cpu_workers_per_request)
         } else if sequentialread {
-            classic_pow::pow_bot_deterrent_suggested_workers(&challenge, self.config.cpu_workers)?
+            classic_pow::pow_bot_deterrent_suggested_workers(
+                &challenge,
+                self.config.cpu_workers_per_request,
+            )?
         } else {
             altcha_workers.unwrap_or(1)
         };
@@ -567,7 +581,7 @@ impl AppState {
             self.kdf_memory_slots.as_ref(),
             self.kdf_memory_capacity_mib,
             memory_bytes,
-            desired,
+            desired.min(self.config.cpu_workers_per_request),
         )
         .await?;
         let started = Instant::now();

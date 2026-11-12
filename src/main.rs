@@ -26,14 +26,12 @@ use tracing::info;
 struct Args {
     #[arg(long, default_value = "127.0.0.1:17417")]
     listen: SocketAddr,
+    /// Shared CPU worker budget across all requests and solver types.
     #[arg(long, default_value_t = 4)]
     cpu_workers: usize,
-    /// Workers used by one Anubis or ALTCHA Argon2id nonce search.
-    /// Defaults to the smaller of the configured CPU worker budget and
-    /// the machine's available physical cores. Each ALTCHA worker owns
-    /// an independent Argon2 memory arena of the requested memoryCost.
+    /// Per-request worker limit, defaulting to the total CPU worker budget.
     #[arg(long)]
-    argon2_workers: Option<usize>,
+    cpu_workers_per_request: Option<usize>,
     /// Shared memory budget for all memory-hard KDF arenas, in MiB.
     /// Defaults to half the host/cgroup available RAM on Linux when readable.
     #[arg(long)]
@@ -65,17 +63,6 @@ struct Args {
     routing_calibration: Option<std::path::PathBuf>,
 }
 
-fn default_argon2_workers(
-    cpu_workers: usize,
-    available_workers: usize,
-    physical_workers: usize,
-) -> usize {
-    cpu_workers
-        .min(available_workers)
-        .min(physical_workers)
-        .max(1)
-}
-
 #[cfg(feature = "gpu")]
 #[expect(
     clippy::cast_precision_loss,
@@ -99,21 +86,10 @@ async fn main() -> anyhow::Result<()> {
         args.cpu_workers > 0,
         "cpu-workers must be greater than zero"
     );
-    let available_workers = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-    let default_argon2_workers = default_argon2_workers(
-        args.cpu_workers,
-        available_workers,
-        num_cpus::get_physical(),
-    );
-    let argon2_workers = args.argon2_workers.unwrap_or(default_argon2_workers);
+    let cpu_workers_per_request = args.cpu_workers_per_request.unwrap_or(args.cpu_workers);
     anyhow::ensure!(
-        argon2_workers > 0,
-        "argon2-workers must be greater than zero"
-    );
-    anyhow::ensure!(
-        argon2_workers <= args.cpu_workers,
-        "argon2-workers ({argon2_workers}) cannot exceed cpu-workers ({})",
-        args.cpu_workers
+        cpu_workers_per_request > 0 && cpu_workers_per_request <= args.cpu_workers,
+        "cpu-workers-per-request must be in 1..=cpu-workers"
     );
     #[cfg(feature = "gpu")]
     if args.list_hashx_gpu_adapters {
@@ -161,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let config = Config {
         cpu_workers: args.cpu_workers,
-        argon2_workers,
+        cpu_workers_per_request,
         kdf_memory_budget_mib: args.kdf_memory_budget_mib,
         cpu_calibration_hashes: args.cpu_calibration_hashes,
         #[cfg(feature = "gpu")]
@@ -184,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, GpuPolicy, default_argon2_workers};
+    use super::{Args, GpuPolicy};
     use clap::Parser;
 
     #[test]
@@ -213,17 +189,30 @@ mod tests {
     }
 
     #[test]
-    fn argon2_defaults_to_physical_cores_on_smt_hosts() {
-        assert_eq!(default_argon2_workers(16, 16, 8), 8);
-    }
-
-    #[test]
-    fn argon2_respects_smaller_configured_cpu_budget() {
-        assert_eq!(default_argon2_workers(4, 16, 8), 4);
-    }
-
-    #[test]
-    fn argon2_respects_smaller_available_parallelism() {
-        assert_eq!(default_argon2_workers(16, 4, 8), 4);
+    fn cpu_worker_limits_parse_independently() {
+        let parsed = Args::try_parse_from([
+            "challenge-disasterer",
+            "--cpu-workers",
+            "8",
+            "--cpu-workers-per-request",
+            "3",
+        ]);
+        assert!(matches!(
+            parsed,
+            Ok(Args {
+                cpu_workers: 8,
+                cpu_workers_per_request: Some(3),
+                ..
+            })
+        ));
+        let defaults = Args::try_parse_from(["challenge-disasterer"]);
+        assert!(matches!(
+            defaults,
+            Ok(Args {
+                cpu_workers: 4,
+                cpu_workers_per_request: None,
+                ..
+            })
+        ));
     }
 }
