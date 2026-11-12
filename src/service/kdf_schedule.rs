@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum WorkerPolicy {
@@ -20,6 +20,10 @@ pub enum WorkerPolicy {
 }
 
 const KDF_ADMISSION_WINDOW: Duration = Duration::from_millis(1);
+// A base worker has already been reserved. Give other registered requests
+// a bounded chance to reserve their base worker before borrowing idle CPU/RAM.
+// A job blocked on insufficient memory cannot stall unrelated work forever.
+const KDF_FIRST_WORKER_HANDOFF: Duration = Duration::from_millis(1);
 
 /// Tracks memory-hard jobs from admission through the end of blocking work.
 ///
@@ -29,6 +33,7 @@ const KDF_ADMISSION_WINDOW: Duration = Duration::from_millis(1);
 #[derive(Default)]
 pub(super) struct KdfAdmission {
     state: Arc<Mutex<AdmissionState>>,
+    base_ready: Arc<Notify>,
 }
 
 #[derive(Default)]
@@ -50,6 +55,7 @@ impl KdfAdmission {
         drop(state);
         KdfInFlight {
             state: Arc::clone(&self.state),
+            base_ready: Arc::clone(&self.base_ready),
             awaiting_first: true,
         }
     }
@@ -61,6 +67,7 @@ impl KdfAdmission {
 
 pub(super) struct KdfInFlight {
     state: Arc<Mutex<AdmissionState>>,
+    base_ready: Arc<Notify>,
     awaiting_first: bool,
 }
 
@@ -77,8 +84,27 @@ impl KdfInFlight {
         if self.awaiting_first {
             let mut state = lock_admission(&self.state);
             state.waiting_first -= 1;
+            let all_admitted = state.waiting_first == 0;
             drop(state);
             self.awaiting_first = false;
+            if all_admitted {
+                self.base_ready.notify_waiters();
+            }
+        }
+    }
+
+    /// Give other registered requests time to claim their first worker.
+    ///
+    /// Register the notification before examining the queue, preventing a
+    /// lost wakeup when the final queued job is admitted concurrently.
+    /// The post-wait reservation gate performs the definitive queue check.
+    async fn wait_for_base_admissions(&self) {
+        let notified = self.base_ready.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let waiting = lock_admission(&self.state).waiting_first;
+        if waiting != 0 {
+            let _ = tokio::time::timeout(KDF_FIRST_WORKER_HANDOFF, notified).await;
         }
     }
 
@@ -92,10 +118,17 @@ impl KdfInFlight {
 impl Drop for KdfInFlight {
     fn drop(&mut self) {
         let mut state = lock_admission(&self.state);
-        if self.awaiting_first {
+        let notify = if self.awaiting_first {
             state.waiting_first -= 1;
-        }
+            state.waiting_first == 0
+        } else {
+            false
+        };
         state.in_flight -= 1;
+        drop(state);
+        if notify {
+            self.base_ready.notify_waiters();
+        }
     }
 }
 
@@ -282,6 +315,9 @@ impl Reservation {
         let mut cpu = vec![cpu_slots.clone().acquire_owned().await?];
         if let Some(admission) = &mut admission {
             admission.first_worker_reserved();
+            if desired > 1 {
+                admission.wait_for_base_admissions().await;
+            }
         }
         for _ in 1..desired {
             // Hold the short admission lock only during the nonblocking
@@ -496,6 +532,55 @@ mod tests {
         assert_eq!(memory.available_permits(), 0);
         drop(reserved);
         drop(next);
+        drop(first);
+        drop(second);
+        assert_eq!(admission.count(), 0);
+        assert_eq!(cpu.available_permits(), 4);
+        assert_eq!(memory.available_permits(), 80);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn two_admitted_jobs_fill_four_cpu_and_ram_slots() -> anyhow::Result<()> {
+        let admission = KdfAdmission::default();
+        let cpu = Arc::new(Semaphore::new(4));
+        let memory = Arc::new(Semaphore::new(80));
+        let mut first = admission.enter();
+        let mut second = admission.enter();
+
+        let first_job = tokio::spawn({
+            let cpu = Arc::clone(&cpu);
+            let memory = Arc::clone(&memory);
+            async move {
+                let reservation = Reservation::acquire_fair(
+                    &cpu,
+                    Some(&memory),
+                    Some(80),
+                    Some(20 * 1024 * 1024),
+                    2,
+                    &mut first,
+                )
+                .await?;
+                Ok::<_, anyhow::Error>((reservation, first))
+            }
+        });
+        tokio::task::yield_now().await;
+        let second_reservation = Reservation::acquire_fair(
+            &cpu,
+            Some(&memory),
+            Some(80),
+            Some(20 * 1024 * 1024),
+            2,
+            &mut second,
+        )
+        .await?;
+        let (first_reservation, first) = first_job.await??;
+        assert_eq!(first_reservation.workers(), 2);
+        assert_eq!(second_reservation.workers(), 2);
+        assert_eq!(cpu.available_permits(), 0);
+        assert_eq!(memory.available_permits(), 0);
+        drop(first_reservation);
+        drop(second_reservation);
         drop(first);
         drop(second);
         assert_eq!(admission.count(), 0);
