@@ -6,8 +6,6 @@ use super::http::SolveRequest;
 use super::*;
 use axum::{Json, extract::State, http::StatusCode};
 
-use super::*;
-
 #[tokio::test]
 async fn friendlycaptcha_v1_http_dispatch_and_cpu_only_policy() -> anyhow::Result<()> {
     use anyhow::Context as _;

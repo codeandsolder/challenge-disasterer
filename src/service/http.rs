@@ -30,7 +30,7 @@ const fn default_batch_size_hint() -> usize {
 
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
-    error: String,
+    pub(super) error: String,
 }
 
 type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
