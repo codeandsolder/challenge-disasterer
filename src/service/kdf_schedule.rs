@@ -47,6 +47,7 @@ impl KdfAdmission {
         let mut state = lock_admission(&self.state);
         state.in_flight += 1;
         state.waiting_first += 1;
+        drop(state);
         KdfInFlight {
             state: Arc::clone(&self.state),
             awaiting_first: true,
@@ -76,6 +77,7 @@ impl KdfInFlight {
         if self.awaiting_first {
             let mut state = lock_admission(&self.state);
             state.waiting_first -= 1;
+            drop(state);
             self.awaiting_first = false;
         }
     }
