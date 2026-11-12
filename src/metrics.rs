@@ -6,6 +6,6 @@
     clippy::cast_precision_loss,
     reason = "work counts are converted only for approximate timing and throughput metrics"
 )]
-pub(crate) const fn approximate_work_f64(work: u64) -> f64 {
+pub const fn approximate_work_f64(work: u64) -> f64 {
     work as f64
 }
