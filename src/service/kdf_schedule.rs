@@ -4,10 +4,7 @@ use clap::ValueEnum;
 use serde_json::Value;
 use std::{
     fs,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -24,35 +21,63 @@ pub enum WorkerPolicy {
 
 const KDF_ADMISSION_WINDOW: Duration = Duration::from_millis(1);
 
-/// Tracks memory-hard jobs from admission through completion of blocking work.
-/// The guard belongs to the blocking solver, not the cancelable HTTP future.
+/// Tracks memory-hard jobs from admission through the end of blocking work.
+///
+/// The synchronous lock makes registering a new first-worker waiter atomic
+/// with testing the queue before speculative extra reservations. It is never
+/// held across a semaphore await or expensive computation.
 #[derive(Default)]
 pub(super) struct KdfAdmission {
-    in_flight: Arc<AtomicUsize>,
+    state: Arc<Mutex<AdmissionState>>,
+}
+
+#[derive(Default)]
+struct AdmissionState {
+    in_flight: usize,
+    waiting_first: usize,
+}
+
+/// A panic outside the lock must not make KDF admission counters unusable.
+fn lock_admission(state: &Mutex<AdmissionState>) -> MutexGuard<'_, AdmissionState> {
+    state.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl KdfAdmission {
     pub(super) fn enter(&self) -> KdfInFlight {
-        self.in_flight.fetch_add(1, Ordering::AcqRel);
+        let mut state = lock_admission(&self.state);
+        state.in_flight += 1;
+        state.waiting_first += 1;
         KdfInFlight {
-            count: self.in_flight.clone(),
+            state: Arc::clone(&self.state),
+            awaiting_first: true,
         }
     }
 
     pub(super) fn count(&self) -> usize {
-        self.in_flight.load(Ordering::Acquire)
+        lock_admission(&self.state).in_flight
     }
 }
 
 pub(super) struct KdfInFlight {
-    count: Arc<AtomicUsize>,
+    state: Arc<Mutex<AdmissionState>>,
+    awaiting_first: bool,
 }
 
 impl KdfInFlight {
     /// All waiting and executing KDF requests participate in the split.
     pub(super) fn fair_workers(&self, cpu_slots: usize, desired: usize) -> usize {
-        let contenders = self.count.load(Ordering::Acquire).max(1);
+        let contenders = lock_admission(&self.state).in_flight.max(1);
         desired.min((cpu_slots / contenders).max(1))
+    }
+
+    /// Mark a request admitted only after both its first CPU permit and
+    /// first arena of memory have been reserved.
+    fn first_worker_reserved(&mut self) {
+        if self.awaiting_first {
+            let mut state = lock_admission(&self.state);
+            state.waiting_first -= 1;
+            self.awaiting_first = false;
+        }
     }
 
     /// A bounded admission window makes a synchronized burst visible before
@@ -64,7 +89,11 @@ impl KdfInFlight {
 
 impl Drop for KdfInFlight {
     fn drop(&mut self) {
-        self.count.fetch_sub(1, Ordering::AcqRel);
+        let mut state = lock_admission(&self.state);
+        if self.awaiting_first {
+            state.waiting_first -= 1;
+        }
+        state.in_flight -= 1;
     }
 }
 
@@ -186,6 +215,47 @@ impl Reservation {
         memory_bytes: Option<u64>,
         desired: usize,
     ) -> anyhow::Result<Self> {
+        Self::acquire_inner(
+            cpu_slots,
+            memory_slots,
+            memory_capacity_mib,
+            memory_bytes,
+            desired,
+            None,
+        )
+        .await
+    }
+
+    /// The base worker goes first. Additional CPU and memory permits are
+    /// borrowed only when no admitted KDF request still awaits its base
+    /// worker. Cancellation before admission drops the waiter's guard.
+    pub(super) async fn acquire_fair(
+        cpu_slots: &Arc<Semaphore>,
+        memory_slots: Option<&Arc<Semaphore>>,
+        memory_capacity_mib: Option<usize>,
+        memory_bytes: Option<u64>,
+        desired: usize,
+        admission: &mut KdfInFlight,
+    ) -> anyhow::Result<Self> {
+        Self::acquire_inner(
+            cpu_slots,
+            memory_slots,
+            memory_capacity_mib,
+            memory_bytes,
+            desired,
+            Some(admission),
+        )
+        .await
+    }
+
+    async fn acquire_inner(
+        cpu_slots: &Arc<Semaphore>,
+        memory_slots: Option<&Arc<Semaphore>>,
+        memory_capacity_mib: Option<usize>,
+        memory_bytes: Option<u64>,
+        desired: usize,
+        mut admission: Option<&mut KdfInFlight>,
+    ) -> anyhow::Result<Self> {
         ensure!(desired > 0, "KDF reservation requires at least one worker");
         let memory_mib = memory_bytes
             .map(|bytes| u32::try_from(bytes.div_ceil(1024 * 1024)))
@@ -208,7 +278,23 @@ impl Reservation {
             memory.push(slots.clone().acquire_many_owned(mib).await?);
         }
         let mut cpu = vec![cpu_slots.clone().acquire_owned().await?];
+        if let Some(admission) = &mut admission {
+            admission.first_worker_reserved();
+        }
         for _ in 1..desired {
+            // Hold the short admission lock only during the nonblocking
+            // attempt for one additional worker. A waiting request
+            // cannot be bypassed by speculative extras, nor can it register
+            // between the check and the extra reservation.
+            let _fair_first = if let Some(admission) = &admission {
+                let gate = lock_admission(&admission.state);
+                if gate.waiting_first != 0 {
+                    break;
+                }
+                Some(gate)
+            } else {
+                None
+            };
             let extra_memory = match (memory_slots, memory_mib) {
                 (Some(slots), Some(mib)) => match slots.clone().try_acquire_many_owned(mib) {
                     Ok(permit) => Some(permit),
@@ -370,6 +456,109 @@ mod tests {
         assert_eq!(admission.count(), 0);
         assert_eq!(cpu.available_permits(), 2);
         assert_eq!(memory.available_permits(), 64);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fair_first_leaves_idle_permits_for_an_existing_waiter() -> anyhow::Result<()> {
+        let admission = KdfAdmission::default();
+        let cpu = Arc::new(Semaphore::new(4));
+        let memory = Arc::new(Semaphore::new(80));
+
+        let mut first = admission.enter();
+        let mut second = admission.enter();
+        let reserved = Reservation::acquire_fair(
+            &cpu,
+            Some(&memory),
+            Some(80),
+            Some(20 * 1024 * 1024),
+            4,
+            &mut first,
+        )
+        .await?;
+        assert_eq!(reserved.workers(), 1);
+        assert_eq!(cpu.available_permits(), 3);
+        assert_eq!(memory.available_permits(), 60);
+
+        let next = Reservation::acquire_fair(
+            &cpu,
+            Some(&memory),
+            Some(80),
+            Some(20 * 1024 * 1024),
+            4,
+            &mut second,
+        )
+        .await?;
+        assert_eq!(next.workers(), 3);
+        assert_eq!(cpu.available_permits(), 0);
+        assert_eq!(memory.available_permits(), 0);
+        drop(reserved);
+        drop(next);
+        drop(first);
+        drop(second);
+        assert_eq!(admission.count(), 0);
+        assert_eq!(cpu.available_permits(), 4);
+        assert_eq!(memory.available_permits(), 80);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn canceled_memory_waiter_stops_blocking_worker_lending() -> anyhow::Result<()> {
+        let admission = Arc::new(KdfAdmission::default());
+        let cpu = Arc::new(Semaphore::new(4));
+        let memory = Arc::new(Semaphore::new(80));
+        // An active memory-heavy job uses one arena. It must not borrow
+        // extras while another job is awaiting its first memory arena.
+        let mut first = admission.enter();
+        let reserved = Reservation::acquire_fair(
+            &cpu,
+            Some(&memory),
+            Some(80),
+            Some(40 * 1024 * 1024),
+            1,
+            &mut first,
+        )
+        .await?;
+        let holding = memory.clone().acquire_many_owned(40).await?;
+        let (registered_tx, registered_rx) = tokio::sync::oneshot::channel();
+        let waiter = tokio::spawn({
+            let admission = Arc::clone(&admission);
+            let cpu = Arc::clone(&cpu);
+            let memory = Arc::clone(&memory);
+            async move {
+                let mut second = admission.enter();
+                registered_tx
+                    .send(())
+                    .map_err(|_| anyhow::anyhow!("receiver closed"))?;
+                Reservation::acquire_fair(
+                    &cpu,
+                    Some(&memory),
+                    Some(80),
+                    Some(40 * 1024 * 1024),
+                    2,
+                    &mut second,
+                )
+                .await
+            }
+        });
+        registered_rx.await?;
+        // No permit is available for second's first arena. Even though
+        // three CPUs are idle, extras cannot bypass the first-worker queue.
+        let mut borrowing = admission.enter();
+        let fair =
+            Reservation::acquire_fair(&cpu, Some(&memory), Some(80), None, 4, &mut borrowing)
+                .await?;
+        assert_eq!(fair.workers(), 1);
+        drop(fair);
+        waiter.abort();
+        assert!(waiter.await.is_err());
+        drop(borrowing);
+        drop(holding);
+        drop(reserved);
+        drop(first);
+        assert_eq!(admission.count(), 0);
+        assert_eq!(memory.available_permits(), 80);
+        assert_eq!(cpu.available_permits(), 4);
         Ok(())
     }
 

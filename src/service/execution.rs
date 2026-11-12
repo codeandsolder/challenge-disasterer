@@ -548,7 +548,7 @@ impl AppState {
         let memory_bytes = classic_pow::memory_hard_requirement(&solver, &challenge).transpose()?;
         let work = Work::from_challenge(&solver, &challenge);
         // All memory-hard protocols participate, including Scrypt.
-        let in_flight = memory_bytes.map(|_| self.kdf_admission.enter());
+        let mut in_flight = memory_bytes.map(|_| self.kdf_admission.enter());
         let friendly = solver == "friendlycaptcha";
         let tor_equix = solver == "tor-hs-v1";
         let sequentialread = solver == "pow-bot-deterrent";
@@ -584,14 +584,28 @@ impl AppState {
         } else {
             desired
         };
-        let reservation = Reservation::acquire(
-            &self.cpu_slots,
-            self.kdf_memory_slots.as_ref(),
-            self.kdf_memory_capacity_mib,
-            memory_bytes,
-            desired,
-        )
-        .await?;
+        let reservation = if self.config.altcha_worker_policy == super::WorkerPolicy::Contended
+            && let Some(guard) = in_flight.as_mut()
+        {
+            Reservation::acquire_fair(
+                &self.cpu_slots,
+                self.kdf_memory_slots.as_ref(),
+                self.kdf_memory_capacity_mib,
+                memory_bytes,
+                desired,
+                guard,
+            )
+            .await?
+        } else {
+            Reservation::acquire(
+                &self.cpu_slots,
+                self.kdf_memory_slots.as_ref(),
+                self.kdf_memory_capacity_mib,
+                memory_bytes,
+                desired,
+            )
+            .await?
+        };
         let started = Instant::now();
         let queue_ms = started.duration_since(queued_at).as_secs_f64() * 1000.0;
         let response_solver = solver.clone();
