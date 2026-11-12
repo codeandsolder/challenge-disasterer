@@ -11,7 +11,7 @@ use tokio::sync::{OwnedSemaphorePermit, oneshot};
 
 use super::{
     AppState, ExternalSolveResponse, SolveResponse,
-    kdf_schedule::{Reservation, Work},
+    kdf_schedule::{Reservation, altcha_argon2_workers},
 };
 #[cfg(feature = "gpu")]
 use super::{GeneralGpuJob, GpuJob, HashxGpuJob};
@@ -546,7 +546,7 @@ impl AppState {
         queued_at: Instant,
     ) -> anyhow::Result<SolveResponse> {
         let memory_bytes = classic_pow::memory_hard_requirement(&solver, &challenge).transpose()?;
-        let work = Work::from_challenge(&solver, &challenge);
+        let altcha_workers = altcha_argon2_workers(&solver, &challenge, self.config.argon2_workers);
         // All memory-hard protocols participate, including Scrypt.
         let in_flight = memory_bytes.map(|_| self.kdf_admission.enter());
         let friendly = solver == "friendlycaptcha";
@@ -560,29 +560,7 @@ impl AppState {
         } else if sequentialread {
             classic_pow::pow_bot_deterrent_suggested_workers(&challenge, self.config.cpu_workers)?
         } else {
-            work.map_or(1, |profile| {
-                profile.target_workers(
-                    self.config.argon2_workers,
-                    self.config.cpu_workers,
-                    self.config.altcha_worker_policy,
-                )
-            })
-        };
-        if work.is_some()
-            && desired > 1
-            && self.config.altcha_worker_policy == super::WorkerPolicy::Contended
-            && let Some(guard) = in_flight.as_ref()
-        {
-            guard.coalesce().await;
-        }
-        let desired = if work.is_some()
-            && self.config.altcha_worker_policy == super::WorkerPolicy::Contended
-        {
-            in_flight.as_ref().map_or(desired, |guard| {
-                guard.fair_workers(self.config.cpu_workers, desired)
-            })
-        } else {
-            desired
+            altcha_workers.unwrap_or(1)
         };
         let reservation = Reservation::acquire(
             &self.cpu_slots,
@@ -612,7 +590,7 @@ impl AppState {
             backend: "cpu".to_owned(),
             implementation: Some(result.implementation),
             answer: result.answer,
-            nonce_workers: if friendly || tor_equix || sequentialread || work.is_some() {
+            nonce_workers: if friendly || tor_equix || sequentialread || altcha_workers.is_some() {
                 Some(workers)
             } else {
                 None

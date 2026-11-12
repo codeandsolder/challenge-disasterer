@@ -31,7 +31,6 @@ use crate::{
 
 mod execution;
 mod kdf_schedule;
-pub use kdf_schedule::WorkerPolicy;
 mod routing;
 mod telemetry;
 pub use telemetry::stats;
@@ -62,7 +61,6 @@ impl GpuPolicy {
 pub struct Config {
     pub cpu_workers: usize,
     pub argon2_workers: usize,
-    pub altcha_worker_policy: WorkerPolicy,
     pub kdf_memory_budget_mib: Option<usize>,
     pub cpu_calibration_hashes: u64,
     #[cfg(feature = "gpu")]
@@ -746,7 +744,6 @@ mod tests {
             AppState::initialize(Config {
                 cpu_workers: 2,
                 argon2_workers: 1,
-                altcha_worker_policy: WorkerPolicy::Adaptive,
                 kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
@@ -846,7 +843,6 @@ mod tests {
             AppState::initialize(Config {
                 cpu_workers: 4,
                 argon2_workers: 1,
-                altcha_worker_policy: WorkerPolicy::Adaptive,
                 kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
@@ -923,7 +919,6 @@ mod tests {
             AppState::initialize(Config {
                 cpu_workers: 4,
                 argon2_workers: 1,
-                altcha_worker_policy: WorkerPolicy::Adaptive,
                 kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
@@ -1022,7 +1017,6 @@ mod tests {
             AppState::initialize(Config {
                 cpu_workers: 4,
                 argon2_workers: 1,
-                altcha_worker_policy: WorkerPolicy::Adaptive,
                 // N=4096,r=8,p=1 needs slightly over 4 MiB per worker;
                 // only two of four suggested workers fit into 12 MiB.
                 kdf_memory_budget_mib: Some(12),
@@ -1142,7 +1136,6 @@ mod tests {
             AppState::initialize(Config {
                 cpu_workers: 8,
                 argon2_workers: 1,
-                altcha_worker_policy: WorkerPolicy::Adaptive,
                 kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
@@ -1230,7 +1223,6 @@ mod tests {
             AppState::initialize(Config {
                 cpu_workers: 2,
                 argon2_workers: 1,
-                altcha_worker_policy: WorkerPolicy::Adaptive,
                 kdf_memory_budget_mib: Some(128),
                 cpu_calibration_hashes: 8_192,
                 #[cfg(feature = "gpu")]
@@ -1341,7 +1333,6 @@ mod tests {
         let mut state = AppState::initialize(Config {
             cpu_workers: 2,
             argon2_workers: 1,
-            altcha_worker_policy: WorkerPolicy::Adaptive,
             kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
@@ -1478,7 +1469,6 @@ mod tests {
         let mut state = AppState::initialize(Config {
             cpu_workers: 2,
             argon2_workers: 1,
-            altcha_worker_policy: WorkerPolicy::Adaptive,
             kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
@@ -1554,7 +1544,6 @@ mod tests {
         let mut state = AppState::initialize(Config {
             cpu_workers: 2,
             argon2_workers: 1,
-            altcha_worker_policy: WorkerPolicy::Adaptive,
             kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
@@ -1631,7 +1620,6 @@ mod tests {
         let mut state = AppState::initialize(Config {
             cpu_workers: 2,
             argon2_workers: 1,
-            altcha_worker_policy: WorkerPolicy::Adaptive,
             kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
@@ -1697,7 +1685,6 @@ mod tests {
         let mut state = AppState::initialize(Config {
             cpu_workers: 2,
             argon2_workers: 1,
-            altcha_worker_policy: WorkerPolicy::Adaptive,
             kdf_memory_budget_mib: Some(128),
             cpu_calibration_hashes: 8_192,
             gpu_calibration_hashes: 8_192,
