@@ -122,6 +122,7 @@ pub struct AppState {
     cpu_slots: Arc<Semaphore>,
     kdf_memory_slots: Option<Arc<Semaphore>>,
     kdf_memory_capacity_mib: Option<usize>,
+    kdf_admission: kdf_schedule::KdfAdmission,
     stats: RwLock<StatsStore>,
     routing: Option<RoutingCalibration>,
     http: reqwest::Client,
@@ -435,6 +436,7 @@ impl AppState {
             kdf_memory_slots: kdf_memory_capacity_mib
                 .map(|capacity| Arc::new(Semaphore::new(capacity))),
             kdf_memory_capacity_mib,
+            kdf_admission: kdf_schedule::KdfAdmission::default(),
             stats: RwLock::new(StatsStore::default()),
             routing,
             http: reqwest::Client::new(),

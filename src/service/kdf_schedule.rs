@@ -2,7 +2,14 @@
 use anyhow::{Context, ensure};
 use clap::ValueEnum;
 use serde_json::Value;
-use std::{fs, sync::Arc};
+use std::{
+    fs,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -10,6 +17,55 @@ pub enum WorkerPolicy {
     #[default]
     Adaptive,
     Fixed,
+    /// Wait briefly for co-arriving KDF jobs, then divide CPU slots fairly
+    /// across all outstanding memory-hard requests before reserving workers.
+    Contended,
+}
+
+const KDF_ADMISSION_WINDOW: Duration = Duration::from_millis(1);
+
+/// Tracks memory-hard jobs from admission through completion of blocking work.
+/// The guard belongs to the blocking solver, not the cancelable HTTP future.
+#[derive(Default)]
+pub(super) struct KdfAdmission {
+    in_flight: Arc<AtomicUsize>,
+}
+
+impl KdfAdmission {
+    pub(super) fn enter(&self) -> KdfInFlight {
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+        KdfInFlight {
+            count: self.in_flight.clone(),
+        }
+    }
+
+    pub(super) fn count(&self) -> usize {
+        self.in_flight.load(Ordering::Acquire)
+    }
+}
+
+pub(super) struct KdfInFlight {
+    count: Arc<AtomicUsize>,
+}
+
+impl KdfInFlight {
+    /// All waiting and executing KDF requests participate in the split.
+    pub(super) fn fair_workers(&self, cpu_slots: usize, desired: usize) -> usize {
+        let contenders = self.count.load(Ordering::Acquire).max(1);
+        desired.min((cpu_slots / contenders).max(1))
+    }
+
+    /// A bounded admission window makes a synchronized burst visible before
+    /// early arrivals take speculative extra worker permits.
+    pub(super) async fn coalesce(&self) {
+        tokio::time::sleep(KDF_ADMISSION_WINDOW).await;
+    }
+}
+
+impl Drop for KdfInFlight {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 const NS_PER_BLOCK_PASS: u128 = 300;
@@ -87,11 +143,12 @@ impl Work {
             .max(2)
             .min((total_cpu_slots / 2).max(2))
             .min(configured);
-        let worker_cap = if self.memory_kib <= CACHE_FRIENDLY_ARENA_KIB {
-            configured.min(total_cpu_slots)
-        } else {
-            bandwidth_cap
-        };
+        let worker_cap =
+            if policy == WorkerPolicy::Contended || self.memory_kib <= CACHE_FRIENDLY_ARENA_KIB {
+                configured.min(total_cpu_slots)
+            } else {
+                bandwidth_cap
+            };
 
         if prefix_bits > self.counter_bits {
             // Unknown precomputed solution position: choose a fanout based
@@ -235,6 +292,84 @@ mod tests {
         assert_eq!(large.target_workers(4, 8, WorkerPolicy::Adaptive), 2);
         assert_eq!(trivial.target_workers(8, 8, WorkerPolicy::Fixed), 1);
         assert_eq!(large.target_workers(8, 8, WorkerPolicy::Fixed), 8);
+        assert_eq!(large.target_workers(8, 8, WorkerPolicy::Contended), 8);
+        assert_eq!(tiny.target_workers(8, 8, WorkerPolicy::Contended), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn in_flight_tracks_waiting_and_completed_jobs() -> anyhow::Result<()> {
+        let admission = KdfAdmission::default();
+        let first = admission.enter();
+        let second = admission.enter();
+        assert_eq!(admission.count(), 2);
+        assert_eq!(first.fair_workers(8, 8), 4);
+        assert_eq!(second.fair_workers(3, 3), 1);
+        drop(first);
+        assert_eq!(second.fair_workers(8, 8), 8);
+        drop(second);
+        assert_eq!(admission.count(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn canceling_a_waiter_releases_its_count_and_memory() -> anyhow::Result<()> {
+        let admission = Arc::new(KdfAdmission::default());
+        let cpu = Arc::new(Semaphore::new(0));
+        let memory = Arc::new(Semaphore::new(16));
+        let (registered, ready) = tokio::sync::oneshot::channel();
+        let job = tokio::spawn({
+            let admission = Arc::clone(&admission);
+            let cpu = Arc::clone(&cpu);
+            let memory = Arc::clone(&memory);
+            async move {
+                let _in_flight = admission.enter();
+                let _ = registered.send(());
+                Reservation::acquire(&cpu, Some(&memory), Some(16), Some(8 * 1024 * 1024), 2).await
+            }
+        });
+        ready.await?;
+        assert_eq!(admission.count(), 1);
+        job.abort();
+        assert!(job.await.is_err());
+        assert_eq!(admission.count(), 0);
+        assert_eq!(memory.available_permits(), 16);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_spawn_keeps_job_and_reservations_alive() -> anyhow::Result<()> {
+        let admission = KdfAdmission::default();
+        let cpu = Arc::new(Semaphore::new(2));
+        let memory = Arc::new(Semaphore::new(64));
+        let guard = admission.enter();
+        let reservation =
+            Reservation::acquire(&cpu, Some(&memory), Some(64), Some(32 * 1024 * 1024), 2).await?;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let job = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            let _reservation = reservation;
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+            drop(_reservation);
+            drop(_guard);
+            let _ = finished_tx.send(());
+        });
+        started_rx.await?;
+        job.abort();
+        assert_eq!(admission.count(), 1);
+        assert_eq!(cpu.available_permits(), 0);
+        assert_eq!(memory.available_permits(), 0);
+        release_tx.send(())?;
+        finished_rx.await?;
+        // The blocking closure can drop its owned resources only on completion.
+        // Waiting for a different blocker's read confirms the worker has exited.
+        tokio::task::spawn_blocking(move || {}).await?;
+        assert_eq!(admission.count(), 0);
+        assert_eq!(cpu.available_permits(), 2);
+        assert_eq!(memory.available_permits(), 64);
         Ok(())
     }
 

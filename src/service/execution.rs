@@ -547,6 +547,8 @@ impl AppState {
     ) -> anyhow::Result<SolveResponse> {
         let memory_bytes = classic_pow::memory_hard_requirement(&solver, &challenge).transpose()?;
         let work = Work::from_challenge(&solver, &challenge);
+        // All memory-hard protocols participate, including Scrypt.
+        let in_flight = memory_bytes.map(|_| self.kdf_admission.enter());
         let friendly = solver == "friendlycaptcha";
         let tor_equix = solver == "tor-hs-v1";
         let sequentialread = solver == "pow-bot-deterrent";
@@ -566,6 +568,22 @@ impl AppState {
                 )
             })
         };
+        if work.is_some()
+            && desired > 1
+            && self.config.altcha_worker_policy == super::WorkerPolicy::Contended
+            && let Some(guard) = in_flight.as_ref()
+        {
+            guard.coalesce().await;
+        }
+        let desired = if work.is_some()
+            && self.config.altcha_worker_policy == super::WorkerPolicy::Contended
+        {
+            in_flight.as_ref().map_or(desired, |guard| {
+                guard.fair_workers(self.config.cpu_workers, desired)
+            })
+        } else {
+            desired
+        };
         let reservation = Reservation::acquire(
             &self.cpu_slots,
             self.kdf_memory_slots.as_ref(),
@@ -580,8 +598,10 @@ impl AppState {
         let (result, workers) = tokio::task::spawn_blocking(move || {
             let workers = reservation.workers();
             let result = classic_pow::solve(&solver, challenge, implementation.as_deref(), workers);
-            // Explicitly release CPU and memory only after the search completes.
+            // HTTP cancellation must not release resources while
+            // the spawned blocking KDF is still executing.
             drop(reservation);
+            drop(in_flight);
             (result, workers)
         })
         .await?;
