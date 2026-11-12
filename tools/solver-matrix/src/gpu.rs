@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn run_gpu_matrix<'a>(
+pub fn run_gpu_matrix<'a>(
     meta: &'a Meta,
     args: &'a Args,
 ) -> core::pin::Pin<Box<dyn core::future::Future<Output = Result<()>> + 'a>> {
@@ -39,7 +39,7 @@ pub(super) fn run_gpu_matrix<'a>(
     })
 }
 
-pub(super) async fn run_gpu_anubis_haphash_cases(
+pub async fn run_gpu_anubis_haphash_cases(
     meta: &Meta,
     args: &Args,
     gpu: &challenge_solvers::gpu::GpuContext,
@@ -124,7 +124,7 @@ pub(super) async fn run_gpu_anubis_haphash_cases(
     Ok(())
 }
 
-pub(super) async fn run_gpu_wasm_mcaptcha_cases(
+pub async fn run_gpu_wasm_mcaptcha_cases(
     meta: &Meta,
     args: &Args,
     gpu: &challenge_solvers::gpu::GpuContext,
@@ -217,7 +217,7 @@ pub(super) async fn run_gpu_wasm_mcaptcha_cases(
     Ok(())
 }
 
-pub(super) async fn run_gpu_capjs_cases(
+pub async fn run_gpu_capjs_cases(
     meta: &Meta,
     args: &Args,
     gpu: &challenge_solvers::gpu::GpuContext,
@@ -296,7 +296,7 @@ pub(super) async fn run_gpu_capjs_cases(
     Ok(())
 }
 
-pub(super) async fn run_gpu_goaway_case(
+pub async fn run_gpu_goaway_case(
     meta: &Meta,
     args: &Args,
     gpu: &challenge_solvers::gpu::GpuContext,
@@ -338,7 +338,7 @@ pub(super) async fn run_gpu_goaway_case(
     Ok(())
 }
 
-pub(super) async fn run_gpu_cerberus_cases(
+pub async fn run_gpu_cerberus_cases(
     meta: &Meta,
     args: &Args,
     gpu: &challenge_solvers::gpu::GpuContext,
@@ -410,7 +410,7 @@ pub(super) async fn run_gpu_cerberus_cases(
     Ok(())
 }
 
-pub(super) async fn run_gpu_altcha_cases(
+pub async fn run_gpu_altcha_cases(
     meta: &Meta,
     args: &Args,
     gpu: &challenge_solvers::gpu::GpuContext,

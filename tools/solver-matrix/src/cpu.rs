@@ -297,7 +297,7 @@ const CAP_RSW_MODULUS_HEX: &str = concat!(
     "2f16146ce27d8814951b87de48f03d9df639c950fafb2ad6807396b5741d",
 );
 
-pub(super) fn cap_rsw_input(sample: u32) -> Result<(BigUint, BigUint)> {
+pub fn cap_rsw_input(sample: u32) -> Result<(BigUint, BigUint)> {
     let modulus = BigUint::parse_bytes(CAP_RSW_MODULUS_HEX.as_bytes(), 16)
         .context("parse fixed Cap RSW modulus")?;
     let mut material = Vec::with_capacity(256);
@@ -313,7 +313,7 @@ pub(super) fn cap_rsw_input(sample: u32) -> Result<(BigUint, BigUint)> {
 
 /// Execute the same Cap format-2 RSW protocol path used by the actual
 /// service, rather than benchmarking a separate, out-of-date bigint loop.
-pub(super) fn cap_rsw_solve(modulus: &BigUint, input: &BigUint) -> Result<BigUint> {
+pub fn cap_rsw_solve(modulus: &BigUint, input: &BigUint) -> Result<BigUint> {
     let challenge = json!({
         "token": "benchmark-rsw",
         "format": 2,
@@ -926,7 +926,7 @@ fn run_cpu_altcha_cases(meta: &Meta, args: &Args, sample: u32) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn run_cpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
+pub fn run_cpu_matrix(meta: &Meta, args: &Args) -> Result<()> {
     for sample in 0..args.samples {
         if args.includes(Protocol::Anubis) || args.includes(Protocol::Haphash) {
             run_cpu_anubis_haphash_cases(meta, args, sample)?;
