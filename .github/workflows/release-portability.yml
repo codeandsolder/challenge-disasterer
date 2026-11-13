@@ -12,11 +12,12 @@ jobs:
     name: Pinned-nightly CPU-only service
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@e7e29ed9109c2450c2a9f1f0310de9bd0000de3d # main
     with:
-      rust-toolchain: "nightly-2026-11-03"
+      rust-toolchain: "nightly-2026-11-10"
       validation-tier: release
       rustflags: ""
       timeout-minutes: 25
       command: |
+        ./tools/ci/check-rust-toolchain.sh
         export CARGO_PROFILE_TEST_OPT_LEVEL=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_JOBS=2
         cargo test --locked -p challenge-disasterer --no-default-features
 
@@ -24,11 +25,12 @@ jobs:
     name: Standalone benchmark tools (release-only)
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@e7e29ed9109c2450c2a9f1f0310de9bd0000de3d # main
     with:
-      rust-toolchain: "nightly-2026-11-03"
+      rust-toolchain: "nightly-2026-11-10"
       validation-tier: release
       rustflags: ""
       timeout-minutes: 15
       command: |
+        ./tools/ci/check-rust-toolchain.sh
         export CARGO_BUILD_JOBS=2
         cargo test --locked --manifest-path tools/preexisting-baseline/Cargo.toml --all-targets
         # Compile each dispatch shape independently to catch conditional-codegen bugs.
