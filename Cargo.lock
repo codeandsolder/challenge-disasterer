@@ -85,7 +85,7 @@ dependencies = [
 [[package]]
 name = "anubis-argon2"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=7b1011daa3f8757a17764d040d1654c8d3a942f8#7b1011daa3f8757a17764d040d1654c8d3a942f8"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=78d293dba44d055834e29faf5d47fde6bdffa610#78d293dba44d055834e29faf5d47fde6bdffa610"
 dependencies = [
  "blake2 0.11.0",
 ]
@@ -99,12 +99,22 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "argon2"
 version = "0.6.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=7b1011daa3f8757a17764d040d1654c8d3a942f8#7b1011daa3f8757a17764d040d1654c8d3a942f8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "134c52ddac6d63c576bef8168db10c83c49c26444ecbc68060fef078925a901c"
 dependencies = [
  "base64ct",
  "blake2 0.11.0",
  "cpufeatures 0.3.1",
  "password-hash",
+]
+
+[[package]]
+name = "argon2-rust"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9116a9e4fd543b4e7ae219c3d7f1259b59615105c0c27b3d75939a8b8cf8af86"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -495,7 +505,7 @@ dependencies = [
 [[package]]
 name = "challenge-hashx"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=7b1011daa3f8757a17764d040d1654c8d3a942f8#7b1011daa3f8757a17764d040d1654c8d3a942f8"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=78d293dba44d055834e29faf5d47fde6bdffa610#78d293dba44d055834e29faf5d47fde6bdffa610"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -510,11 +520,11 @@ dependencies = [
 [[package]]
 name = "challenge-protocols"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=7b1011daa3f8757a17764d040d1654c8d3a942f8#7b1011daa3f8757a17764d040d1654c8d3a942f8"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=78d293dba44d055834e29faf5d47fde6bdffa610#78d293dba44d055834e29faf5d47fde6bdffa610"
 dependencies = [
  "anubis-argon2",
  "anyhow",
- "argon2",
+ "argon2-rust",
  "base64 0.22.1",
  "blake2 0.11.0",
  "challenge-solvers",
@@ -537,7 +547,7 @@ dependencies = [
 [[package]]
 name = "challenge-solvers"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=7b1011daa3f8757a17764d040d1654c8d3a942f8#7b1011daa3f8757a17764d040d1654c8d3a942f8"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=78d293dba44d055834e29faf5d47fde6bdffa610#78d293dba44d055834e29faf5d47fde6bdffa610"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -2660,7 +2670,7 @@ dependencies = [
 [[package]]
 name = "scrypt-fast"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=7b1011daa3f8757a17764d040d1654c8d3a942f8#7b1011daa3f8757a17764d040d1654c8d3a942f8"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=78d293dba44d055834e29faf5d47fde6bdffa610#78d293dba44d055834e29faf5d47fde6bdffa610"
 dependencies = [
  "pbkdf2",
  "scrypt",
