@@ -15,5 +15,5 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-current = { package = "challenge-solvers", git = "https://github.com/codeandsolder/challenge-solvers", rev = "78d293dba44d055834e29faf5d47fde6bdffa610", default-features = true, features = ["compare-64bit"] }
+current = { package = "challenge-solvers", git = "https://github.com/codeandsolder/challenge-solvers", rev = "d2a0355e0928b312318074827333a56a1935b5e4", default-features = true, features = ["compare-64bit"] }
 legacy = { package = "pow-buster", git = "https://github.com/eternal-flame-AD/pow-buster.git", rev = "d359adb3a692ba6be27fc5c1d5efdbbd7439434d", default-features = false, features = ["std", "runtime-dispatch", "compare-64bit"] }
