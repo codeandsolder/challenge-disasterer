@@ -235,7 +235,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             router: false,
             counter_mode: Some("indexed-u32-le"),
             counter_max: Some(u64::from(u32::MAX)),
-            implementations: vec!["auto", "safe"],
+            implementations: sha64_implementations(),
         },
         SolverCapability {
             solver: "cerberus",

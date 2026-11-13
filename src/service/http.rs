@@ -237,15 +237,25 @@ pub async fn solve(
         }
         "cerberus" | "goaway" | "capjs" | "mcaptcha" | "haphash" | "altcha" | "linear"
         | "friendlycaptcha" | "tor-hs-v1" | "pow-bot-deterrent" => {
-            if matches!(
-                request.solver.as_str(),
-                "friendlycaptcha" | "tor-hs-v1" | "pow-bot-deterrent"
-            ) && request.implementation.as_deref() == Some("wgpu")
+            if matches!(request.solver.as_str(), "tor-hs-v1" | "pow-bot-deterrent")
+                && request.implementation.as_deref() == Some("wgpu")
             {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
                         error: format!("{} supports only CPU implementations", request.solver),
+                    }),
+                ));
+            }
+            if request.solver == "friendlycaptcha"
+                && request.implementation.as_deref() == Some("wgpu")
+                && !state.general_gpu_has_native_u64()
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Friendly Captcha WGPU requires an active SHADER_INT64 GPU"
+                            .to_owned(),
                     }),
                 ));
             }
