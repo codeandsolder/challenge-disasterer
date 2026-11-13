@@ -352,7 +352,9 @@ impl AppState {
                             // of the single general GPU worker, rather than recompiling
                             // the first time each PoW family receives a challenge.
                             let preload_started = Instant::now();
-                            gpu.preload_protocol_pipelines();
+                            if let Err(err) = gpu.preload_and_warm_protocol_pipelines().await {
+                                warn!(%err, "optional WGPU protocol warm-up failed");
+                            }
                             let preload_ms = preload_started.elapsed().as_secs_f64() * 1e3;
                             info!(
                                 adapter = %adapter,
