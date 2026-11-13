@@ -18,19 +18,21 @@ jobs:
     name: Application Rust (shared sccache)
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@e7e29ed9109c2450c2a9f1f0310de9bd0000de3d # main
     with:
-      rust-toolchain: "nightly-2026-11-03"
+      rust-toolchain: "nightly-2026-11-10"
       timeout-minutes: 15
       command: |
+        ./tools/ci/check-rust-toolchain.sh
         cargo test --locked -p challenge-disasterer --all-features
 
   rust-tools:
     name: Rust tools (shared sccache)
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@e7e29ed9109c2450c2a9f1f0310de9bd0000de3d # main
     with:
-      rust-toolchain: "nightly-2026-11-03"
+      rust-toolchain: "nightly-2026-11-10"
       rust-components: "rustfmt"
       timeout-minutes: 15
       command: |
+        ./tools/ci/check-rust-toolchain.sh
         cargo fmt --check
         cargo test --locked -p challenge-disasterer-anubis-e2e
         cargo test --locked -p challenge-disasterer-mcaptcha-e2e
@@ -41,7 +43,8 @@ jobs:
     name: Solver matrix Rust (shared sccache)
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@e7e29ed9109c2450c2a9f1f0310de9bd0000de3d # main
     with:
-      rust-toolchain: "nightly-2026-11-03"
+      rust-toolchain: "nightly-2026-11-10"
       timeout-minutes: 15
       command: |
+        ./tools/ci/check-rust-toolchain.sh
         cargo test --locked -p challenge-disasterer-solver-matrix --all-features
