@@ -14,8 +14,8 @@ hashwx = { workspace = true }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 num-bigint = "0.5"
-challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "204f88562cb035fcb308ed76e0d30bde2db0b561", features = ["all-challenges", "compare-64bit", "internals"] }
-challenge-protocols = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "204f88562cb035fcb308ed76e0d30bde2db0b561", default-features = false }
+challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "aadf90162f09ddc1c4ab62d5db0b7f0be4f6fdc5", features = ["all-challenges", "compare-64bit", "internals"] }
+challenge-protocols = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "aadf90162f09ddc1c4ab62d5db0b7f0be4f6fdc5", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = { version = "0.11", default-features = false }

@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "204f88562cb035fcb308ed76e0d30bde2db0b561", default-features = false, features = ["std", "compare-64bit"] }
+challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "aadf90162f09ddc1c4ab62d5db0b7f0be4f6fdc5", default-features = false, features = ["std", "compare-64bit"] }
 serde_json = "1"
 
 [lints]
