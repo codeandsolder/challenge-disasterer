@@ -348,7 +348,17 @@ impl AppState {
                     let enabled_features = gpu.features();
                     match gpu.warm_up().await {
                         Ok(()) => {
-                            info!(adapter = %adapter, "general WGPU backend ready");
+                            // Keep optional protocol pipelines compiled for the lifetime
+                            // of the single general GPU worker, rather than recompiling
+                            // the first time each PoW family receives a challenge.
+                            let preload_started = Instant::now();
+                            gpu.preload_protocol_pipelines();
+                            let preload_ms = preload_started.elapsed().as_secs_f64() * 1e3;
+                            info!(
+                                adapter = %adapter,
+                                preload_ms,
+                                "general WGPU backend and all supported pipelines ready"
+                            );
                             let (tx, mut rx) = mpsc::channel::<GeneralGpuJob>(128);
                             tokio::spawn(async move {
                                 while let Some(job) = rx.recv().await {

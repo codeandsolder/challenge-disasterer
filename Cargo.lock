@@ -85,7 +85,7 @@ dependencies = [
 [[package]]
 name = "anubis-argon2"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=b866f32a727d0ead929cbee7b1e7f48741344b3f#b866f32a727d0ead929cbee7b1e7f48741344b3f"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=329a69efe6ae3d2d6e71fd204c8e8f0528e97b33#329a69efe6ae3d2d6e71fd204c8e8f0528e97b33"
 dependencies = [
  "blake2 0.11.0",
 ]
@@ -505,7 +505,7 @@ dependencies = [
 [[package]]
 name = "challenge-hashx"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=b866f32a727d0ead929cbee7b1e7f48741344b3f#b866f32a727d0ead929cbee7b1e7f48741344b3f"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=329a69efe6ae3d2d6e71fd204c8e8f0528e97b33#329a69efe6ae3d2d6e71fd204c8e8f0528e97b33"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -520,7 +520,7 @@ dependencies = [
 [[package]]
 name = "challenge-protocols"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=b866f32a727d0ead929cbee7b1e7f48741344b3f#b866f32a727d0ead929cbee7b1e7f48741344b3f"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=329a69efe6ae3d2d6e71fd204c8e8f0528e97b33#329a69efe6ae3d2d6e71fd204c8e8f0528e97b33"
 dependencies = [
  "anubis-argon2",
  "anyhow",
@@ -547,7 +547,7 @@ dependencies = [
 [[package]]
 name = "challenge-solvers"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=b866f32a727d0ead929cbee7b1e7f48741344b3f#b866f32a727d0ead929cbee7b1e7f48741344b3f"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=329a69efe6ae3d2d6e71fd204c8e8f0528e97b33#329a69efe6ae3d2d6e71fd204c8e8f0528e97b33"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -2670,7 +2670,7 @@ dependencies = [
 [[package]]
 name = "scrypt-fast"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=b866f32a727d0ead929cbee7b1e7f48741344b3f#b866f32a727d0ead929cbee7b1e7f48741344b3f"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=329a69efe6ae3d2d6e71fd204c8e8f0528e97b33#329a69efe6ae3d2d6e71fd204c8e8f0528e97b33"
 dependencies = [
  "pbkdf2",
  "scrypt",
