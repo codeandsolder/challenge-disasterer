@@ -144,6 +144,33 @@ async fn friendlycaptcha_gpu_auto_forced_and_cpu_fallback_http() -> anyhow::Resu
         friendly["implementations"],
         serde_json::json!(["auto", "safe", "wgpu"])
     );
+    // Dedicated Anubis and general Friendly GPU workers must coexist on the
+    // same live WGPU device, not merely pass isolated kernel tests.
+    let anubis_challenge = anubis::Challenge {
+        data: "x".repeat(128),
+        difficulty: 2,
+    };
+    let Json(anubis_before) = solve(
+        State(state.clone()),
+        Json(SolveRequest {
+            solver: "anubis-gpu".to_owned(),
+            algorithm: None,
+            implementation: None,
+            batch_size_hint: 1,
+            challenge: serde_json::json!({
+                "data": anubis_challenge.data.clone(),
+                "difficulty": anubis_challenge.difficulty,
+            }),
+        }),
+    )
+    .await
+    .map_err(|(status, Json(err))| {
+        anyhow::anyhow!("shared Anubis GPU HTTP {status}: {}", err.error)
+    })?;
+    assert_eq!(anubis_before.backend, "gpu");
+    let first_answer: anubis::Answer = serde_json::from_value(anubis_before.answer)?;
+    assert!(anubis::verify(&anubis_challenge, &first_answer));
+
     for implementation in [None, Some("wgpu"), Some("safe")] {
         let request = SolveRequest {
             solver: "friendlycaptcha".to_owned(),
@@ -192,6 +219,33 @@ async fn friendlycaptcha_gpu_auto_forced_and_cpu_fallback_http() -> anyhow::Resu
             response.backend, response.total_ms
         );
     }
+    let Json(anubis_after) = solve(
+        State(state),
+        Json(SolveRequest {
+            solver: "anubis-gpu".to_owned(),
+            algorithm: None,
+            implementation: None,
+            batch_size_hint: 1,
+            challenge: serde_json::json!({
+                "data": anubis_challenge.data.clone(),
+                "difficulty": anubis_challenge.difficulty,
+            }),
+        }),
+    )
+    .await
+    .map_err(|(status, Json(err))| {
+        anyhow::anyhow!(
+            "shared Anubis GPU reuse after Friendly {status}: {}",
+            err.error
+        )
+    })?;
+    assert_eq!(anubis_after.backend, "gpu");
+    let final_answer: anubis::Answer = serde_json::from_value(anubis_after.answer)?;
+    assert!(anubis::verify(&anubis_challenge, &final_answer));
+    println!(
+        "SHARED_WGPU_HTTP anubis_before_ms={:.4} anubis_after_ms={:.4}",
+        anubis_before.total_ms, anubis_after.total_ms
+    );
     Ok(())
 }
 
