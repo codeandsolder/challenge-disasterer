@@ -101,6 +101,100 @@ async fn friendlycaptcha_v1_http_dispatch_and_cpu_only_policy() -> anyhow::Resul
     Ok(())
 }
 
+/// End-to-end Friendly v1 GPU routing, forced backend, and CPU policy parity.
+#[cfg(feature = "gpu")]
+#[tokio::test]
+#[ignore = "requires a physical GPU with SHADER_INT64"]
+async fn friendlycaptcha_gpu_auto_forced_and_cpu_fallback_http() -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let mut header = [0u8; 64];
+    header[12] = 1;
+    header[14] = 16;
+    header[15] = 128;
+    header[24..32].copy_from_slice(b"nonce123");
+    let puzzle = format!("fixture.{}", STANDARD.encode(header));
+    let state = Arc::new(
+        AppState::initialize(Config {
+            cpu_workers: 4,
+            cpu_workers_per_request: 4,
+            kdf_memory_budget_mib: Some(128),
+            cpu_calibration_hashes: 8_192,
+            gpu_calibration_hashes: 8_192,
+            gpu_enabled: true,
+            gpu_policy: GpuPolicy::PreferGpu,
+            routing_calibration: None,
+        })
+        .await?,
+    );
+    assert!(
+        state.general_gpu_has_native_u64(),
+        "Friendly v1 needs a Vulkan GPU with SHADER_INT64"
+    );
+    let Json(snapshot) = stats(State(state.clone())).await;
+    let capabilities = serde_json::to_value(snapshot)?;
+    let friendly = capabilities["solver_capabilities"]
+        .as_array()
+        .context("solver_capabilities")?
+        .iter()
+        .find(|capability| capability["solver"] == "friendlycaptcha")
+        .context("Friendly capability missing")?;
+    assert_eq!(
+        friendly["implementations"],
+        serde_json::json!(["auto", "safe", "wgpu"])
+    );
+    for implementation in [None, Some("wgpu"), Some("safe")] {
+        let request = SolveRequest {
+            solver: "friendlycaptcha".to_owned(),
+            algorithm: None,
+            implementation: implementation.map(str::to_owned),
+            batch_size_hint: 1,
+            challenge: serde_json::json!({"puzzle": puzzle}),
+        };
+        let Json(response) =
+            solve(State(state.clone()), Json(request))
+                .await
+                .map_err(|(status, Json(err))| {
+                    anyhow::anyhow!("Friendly GPU HTTP {status}: {}", err.error)
+                })?;
+        let expected_backend = if implementation == Some("safe") {
+            "cpu"
+        } else {
+            "gpu"
+        };
+        assert_eq!(response.backend, expected_backend);
+        if expected_backend == "gpu" {
+            assert_eq!(response.implementation.as_deref(), Some("wgpu-blake2b-256"));
+            assert_eq!(response.nonce_workers, None);
+        }
+        assert_eq!(response.answer["solution_count"], 16);
+        let encoded = response.answer["response"]
+            .as_str()
+            .context("Friendly response missing")?;
+        let parts: Vec<_> = encoded.split('.').collect();
+        assert_eq!(parts.len(), 4);
+        assert_eq!(parts[0], "fixture");
+        assert_eq!(
+            parts[1],
+            puzzle.split_once('.').context("puzzle separator")?.1
+        );
+        let proofs = STANDARD.decode(parts[2])?;
+        assert!(challenge_protocols::classic_pow::verify_friendlycaptcha_v1(
+            &puzzle, &proofs
+        )?);
+        for (bank, proof) in proofs.chunks_exact(8).enumerate() {
+            assert_eq!(usize::from(proof[0]), bank);
+        }
+        assert_eq!(STANDARD.decode(parts[3])?.len(), 3);
+        println!(
+            "FRIENDLY_HTTP_GPU_RESULT implementation={implementation:?} backend={} total_ms={:.3}",
+            response.backend, response.total_ms
+        );
+    }
+    Ok(())
+}
+
 /// Independently searched Friendly banks may consume only actually owned CPU permits.
 #[tokio::test]
 async fn friendlycaptcha_parallel_bank_workers_respect_cpu_permits() -> anyhow::Result<()> {

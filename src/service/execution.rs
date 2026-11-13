@@ -30,7 +30,9 @@ fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str
         return false;
     }
     match solver {
-        "altcha" | "linear" => classic_pow::auto_gpu_expected_work(solver, challenge).is_some(),
+        "altcha" | "linear" | "friendlycaptcha" => {
+            classic_pow::auto_gpu_expected_work(solver, challenge).is_some()
+        }
         // These classic families' GPU implementations compute SHA-256 work.
         // They validate the actual challenge with their existing parsers;
         // unsupported shapes transparently fall back to CPU.
@@ -58,6 +60,9 @@ fn prefers_auto_gpu(solver: &str, challenge: &Value, implementation: Option<&str
 /// GPU features, including the existing SHA-256 path.
 #[cfg(feature = "gpu")]
 fn requires_native_u64(solver: &str, challenge: &Value) -> bool {
+    if solver == "friendlycaptcha" {
+        return true;
+    }
     if solver != "altcha" {
         return false;
     }
@@ -825,6 +830,22 @@ mod auto_gpu_tests {
         assert!(!requires_native_u64("altcha", &expensive_pbkdf2));
         assert!(!requires_native_u64("altcha", &unsupported));
         assert!(!requires_native_u64("cerberus", &sha384));
+        let friendly = serde_json::json!({
+            "puzzle": "testing.AAAAAAAAAAAAAAAAAQACAAAAAAAAAAAAAAAAAAAAAAA="
+        });
+        assert!(prefers_auto_gpu("friendlycaptcha", &friendly, None));
+        assert!(prefers_auto_gpu("friendlycaptcha", &friendly, Some("auto")));
+        assert!(!prefers_auto_gpu(
+            "friendlycaptcha",
+            &friendly,
+            Some("safe")
+        ));
+        assert!(requires_native_u64("friendlycaptcha", &friendly));
+        assert!(!prefers_auto_gpu(
+            "friendlycaptcha",
+            &serde_json::json!({}),
+            None
+        ));
         assert!(prefers_auto_gpu("goaway", &substantial, None));
         assert!(prefers_auto_gpu("mcaptcha", &substantial, Some("auto")));
         assert!(prefers_auto_gpu("haphash", &substantial, None));
