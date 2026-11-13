@@ -254,45 +254,52 @@ impl AppState {
         let queue_depth = Arc::new(AtomicU64::new(0));
         let active_work = Arc::new(AtomicU64::new(0));
 
+        // Negotiate one logical WGPU device for the independent Anubis SHA
+        // and general protocol pipelines, rather than requesting it twice.
         #[cfg(feature = "gpu")]
-        let (gpu_tx, gpu_rate, gpu_adapter) = if config.gpu_enabled {
-            match GpuSolver::create().await {
-                Ok(gpu) => {
-                    let adapter = gpu.adapter().to_owned();
-                    match gpu.calibrate(config.gpu_calibration_hashes) {
-                        Ok(rate) => {
-                            info!(adapter = %adapter, mh_s = rate / 1e6, "GPU calibration complete");
-                            let (tx, mut rx) = mpsc::channel::<GpuJob>(1024);
-                            let worker_queue_work = queue_work.clone();
-                            let worker_queue_depth = queue_depth.clone();
-                            let worker_active_work = active_work.clone();
-                            tokio::spawn(async move {
-                                while let Some(job) = rx.recv().await {
-                                    worker_queue_depth.fetch_sub(1, Ordering::Relaxed);
-                                    worker_queue_work
-                                        .fetch_sub(job.expected_work, Ordering::Relaxed);
-                                    worker_active_work.store(job.expected_work, Ordering::Relaxed);
-                                    let _ = job.started.send(Instant::now());
-                                    let result = gpu.solve(&job.challenge);
-                                    worker_active_work.store(0, Ordering::Relaxed);
-                                    let _ = job.result.send(result);
-                                }
-                            });
-                            (Some(tx), Some(rate), Some(adapter))
-                        }
-                        Err(err) => {
-                            warn!(%err, "GPU calibration failed; using CPU");
-                            (None, None, Some(adapter))
-                        }
-                    }
-                }
+        let shared_wgpu = if config.gpu_enabled {
+            match challenge_solvers::gpu::GpuContext::create().await {
+                Ok(gpu) => Some(gpu),
                 Err(err) => {
-                    warn!(%err, "GPU unavailable; using CPU");
-                    (None, None, None)
+                    warn!(%err, "shared WGPU device unavailable; using CPU");
+                    None
                 }
             }
         } else {
             info!("GPU disabled; using CPU");
+            None
+        };
+
+        #[cfg(feature = "gpu")]
+        let (gpu_tx, gpu_rate, gpu_adapter) = if let Some(context) = shared_wgpu.as_ref() {
+            let gpu = GpuSolver::from_shared_context(context);
+            let adapter = gpu.adapter().to_owned();
+            match gpu.calibrate(config.gpu_calibration_hashes) {
+                Ok(rate) => {
+                    info!(adapter = %adapter, mh_s = rate / 1e6, "GPU calibration complete");
+                    let (tx, mut rx) = mpsc::channel::<GpuJob>(1024);
+                    let worker_queue_work = queue_work.clone();
+                    let worker_queue_depth = queue_depth.clone();
+                    let worker_active_work = active_work.clone();
+                    tokio::spawn(async move {
+                        while let Some(job) = rx.recv().await {
+                            worker_queue_depth.fetch_sub(1, Ordering::Relaxed);
+                            worker_queue_work.fetch_sub(job.expected_work, Ordering::Relaxed);
+                            worker_active_work.store(job.expected_work, Ordering::Relaxed);
+                            let _ = job.started.send(Instant::now());
+                            let result = gpu.solve(&job.challenge);
+                            worker_active_work.store(0, Ordering::Relaxed);
+                            let _ = job.result.send(result);
+                        }
+                    });
+                    (Some(tx), Some(rate), Some(adapter))
+                }
+                Err(err) => {
+                    warn!(%err, "GPU calibration failed; using CPU");
+                    (None, None, Some(adapter))
+                }
+            }
+        } else {
             (None, None, None)
         };
 
@@ -340,46 +347,38 @@ impl AppState {
         let (hashx_gpu_operational, hashx_gpu_implementations) = (false, Vec::new());
 
         #[cfg(feature = "gpu")]
-        let (general_gpu_tx, general_gpu_operational, general_gpu_features) = if config.gpu_enabled
+        let (general_gpu_tx, general_gpu_operational, general_gpu_features) = if let Some(gpu) =
+            shared_wgpu
         {
-            match challenge_solvers::gpu::GpuContext::create().await {
-                Ok(gpu) => {
-                    let adapter = gpu.adapter().to_owned();
-                    let enabled_features = gpu.features();
-                    match gpu.warm_up().await {
-                        Ok(()) => {
-                            // Keep optional protocol pipelines compiled for the lifetime
-                            // of the single general GPU worker, rather than recompiling
-                            // the first time each PoW family receives a challenge.
-                            let preload_started = Instant::now();
-                            if let Err(err) = gpu.preload_and_warm_protocol_pipelines().await {
-                                warn!(%err, "optional WGPU protocol warm-up failed");
-                            }
-                            let preload_ms = preload_started.elapsed().as_secs_f64() * 1e3;
-                            info!(
-                                adapter = %adapter,
-                                preload_ms,
-                                "general WGPU backend and all supported pipelines ready"
-                            );
-                            let (tx, mut rx) = mpsc::channel::<GeneralGpuJob>(128);
-                            tokio::spawn(async move {
-                                while let Some(job) = rx.recv().await {
-                                    let _ = job.started.send(Instant::now());
-                                    let result =
-                                        solve_general_gpu(&gpu, &job.solver, job.challenge).await;
-                                    let _ = job.result.send(result);
-                                }
-                            });
-                            (Some(tx), true, enabled_features)
-                        }
-                        Err(err) => {
-                            warn!(%err, "general WGPU warm-up failed");
-                            (None, false, wgpu::Features::empty())
-                        }
+            let adapter = gpu.adapter().to_owned();
+            let enabled_features = gpu.features();
+            match gpu.warm_up().await {
+                Ok(()) => {
+                    // Keep optional protocol pipelines compiled for the lifetime
+                    // of the single general GPU worker, rather than recompiling
+                    // the first time each PoW family receives a challenge.
+                    let preload_started = Instant::now();
+                    if let Err(err) = gpu.preload_and_warm_protocol_pipelines().await {
+                        warn!(%err, "optional WGPU protocol warm-up failed");
                     }
+                    let preload_ms = preload_started.elapsed().as_secs_f64() * 1e3;
+                    info!(
+                        adapter = %adapter,
+                        preload_ms,
+                        "general WGPU backend and all supported pipelines ready"
+                    );
+                    let (tx, mut rx) = mpsc::channel::<GeneralGpuJob>(128);
+                    tokio::spawn(async move {
+                        while let Some(job) = rx.recv().await {
+                            let _ = job.started.send(Instant::now());
+                            let result = solve_general_gpu(&gpu, &job.solver, job.challenge).await;
+                            let _ = job.result.send(result);
+                        }
+                    });
+                    (Some(tx), true, enabled_features)
                 }
                 Err(err) => {
-                    warn!(%err, "general WGPU unavailable");
+                    warn!(%err, "general WGPU warm-up failed");
                     (None, false, wgpu::Features::empty())
                 }
             }

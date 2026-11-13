@@ -9,7 +9,7 @@ const WG_SIZE: u32 = 64;
 const STEPS: u32 = 128;
 const HASHES_PER_WG: u64 = 64 * 128;
 const CANCEL_INTERVAL: u32 = 16;
-use challenge_solvers::SHA256_ROUND_CONSTANTS;
+use challenge_solvers::{SHA256_ROUND_CONSTANTS, gpu::GpuContext};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -42,6 +42,33 @@ impl GpuSolver {
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .context("request GPU device")?;
+        Ok(Self::from_device(
+            device,
+            queue,
+            limits.max_compute_workgroups_per_dimension,
+            adapter_name,
+        ))
+    }
+
+    /// Reuse the negotiated device and queue from the persistent general WGPU
+    /// context while retaining dedicated Anubis shader, input and readback
+    /// buffers. The service's GPU permit serializes both workers.
+    #[must_use]
+    pub fn from_shared_context(context: &GpuContext) -> Self {
+        Self::from_device(
+            context.device().clone(),
+            context.queue().clone(),
+            context.max_workgroups_per_dimension(),
+            context.adapter().to_owned(),
+        )
+    }
+
+    fn from_device(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        max_wgs: u32,
+        adapter: String,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("anubis"),
             source: wgpu::ShaderSource::Wgsl(Cow::Owned(shader_source())),
@@ -88,7 +115,7 @@ impl GpuSolver {
                 },
             ],
         });
-        Ok(Self {
+        Self {
             device,
             queue,
             pipeline,
@@ -96,9 +123,9 @@ impl GpuSolver {
             out_buf,
             staging,
             bind_group,
-            max_wgs: limits.max_compute_workgroups_per_dimension,
-            adapter: adapter_name,
-        })
+            max_wgs,
+            adapter,
+        }
     }
 
     pub fn adapter(&self) -> &str {
@@ -315,6 +342,59 @@ fn solve(@builtin(global_invocation_id) gid:vec3<u32>,@builtin(num_workgroups) n
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires physical Vulkan GPU"]
+    async fn shared_wgpu_device_runs_dedicated_and_general_anubis() -> anyhow::Result<()> {
+        use std::num::NonZeroU8;
+
+        let context = GpuContext::create().await?;
+        let dedicated = GpuSolver::from_shared_context(&context);
+        assert_eq!(dedicated.adapter(), context.adapter());
+
+        context.warm_up().await?;
+        context.preload_and_warm_protocol_pipelines().await?;
+
+        for (difficulty, fill) in [(2_u8, "a"), (3, "b"), (4, "c")] {
+            let challenge = Challenge {
+                data: fill.repeat(128),
+                difficulty,
+            };
+            let started = Instant::now();
+            let dedicated_result = dedicated.solve(&challenge)?;
+            let dedicated_ms = started.elapsed().as_secs_f64() * 1e3;
+            anyhow::ensure!(
+                verify(&challenge, &dedicated_result.answer),
+                "dedicated Anubis GPU proof invalid"
+            );
+            let started = Instant::now();
+            let general_result = context
+                .solve_anubis(
+                    challenge.data.as_bytes(),
+                    NonZeroU8::new(difficulty).context("zero test difficulty")?,
+                )
+                .await?;
+            let general_ms = started.elapsed().as_secs_f64() * 1e3;
+            let answer = Answer {
+                nonce: general_result.nonce.to_string(),
+                hash: hex::encode(
+                    general_result
+                        .hash
+                        .into_iter()
+                        .flat_map(u32::to_be_bytes)
+                        .collect::<Vec<_>>(),
+                ),
+            };
+            anyhow::ensure!(
+                verify(&challenge, &answer),
+                "shared general Anubis proof invalid"
+            );
+            println!(
+                "SHARED_WGPU_ANUBIS {{\"difficulty\":{difficulty},\"dedicated_ms\":{dedicated_ms:.5},\"general_ms\":{general_ms:.5}}}"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn gray_block_masks_cover_exactly_128_candidates() {
