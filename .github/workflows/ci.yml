@@ -16,7 +16,7 @@ permissions:
 jobs:
   rust-app:
     name: Application Rust (shared sccache)
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@e7e29ed9109c2450c2a9f1f0310de9bd0000de3d # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@835efeff3a1e617d8ecd40ed70b402a298d2481f # main
     with:
       rust-toolchain: "nightly-2026-11-03"
       timeout-minutes: 15
@@ -25,7 +25,7 @@ jobs:
 
   rust-tools:
     name: Rust tools (shared sccache)
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@e7e29ed9109c2450c2a9f1f0310de9bd0000de3d # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@835efeff3a1e617d8ecd40ed70b402a298d2481f # main
     with:
       rust-toolchain: "nightly-2026-11-03"
       rust-components: "rustfmt"
@@ -39,7 +39,7 @@ jobs:
 
   rust-matrix:
     name: Solver matrix Rust (shared sccache)
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@e7e29ed9109c2450c2a9f1f0310de9bd0000de3d # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@835efeff3a1e617d8ecd40ed70b402a298d2481f # main
     with:
       rust-toolchain: "nightly-2026-11-03"
       timeout-minutes: 15
