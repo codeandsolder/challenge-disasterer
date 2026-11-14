@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@835efeff3a1e617d8ecd40ed70b402a298d2481f # main
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@47a06568cde470da42ae67a93c8e63966cce1fce # main
 
       - name: Build one CPU-only release executable
         run: cargo build --locked --release --no-default-features --bin challenge-disasterer
@@ -52,7 +52,7 @@ jobs:
 
       - name: Finalize canonical sccache
         if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@835efeff3a1e617d8ecd40ed70b402a298d2481f # main
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@47a06568cde470da42ae67a93c8e63966cce1fce # main
 
   altcha:
     needs: solver-binary
@@ -273,7 +273,7 @@ jobs:
           echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
 
       - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@835efeff3a1e617d8ecd40ed70b402a298d2481f # main
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@47a06568cde470da42ae67a93c8e63966cce1fce # main
       - name: Set up Rust
         run: cargo --version
       - name: Install ripgrep
@@ -285,4 +285,4 @@ jobs:
 
       - name: Finalize canonical sccache
         if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@835efeff3a1e617d8ecd40ed70b402a298d2481f # main
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@47a06568cde470da42ae67a93c8e63966cce1fce # main
