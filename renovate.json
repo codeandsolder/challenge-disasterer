@@ -2,5 +2,33 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "github>codeandsolder/ci-workflows:renovate-fleet"
+  ],
+  "packageRules": [
+    {
+      "description": "The pinned mCaptcha reference harness uses bincode 1 wire bytes; bincode 3 is an intentionally unbuildable compile_error crate and bincode 2 is a distinct encoding",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchFileNames": [
+        "tools/mcaptcha-e2e/Cargo.toml"
+      ],
+      "matchPackageNames": [
+        "bincode"
+      ],
+      "allowedVersions": "<2"
+    },
+    {
+      "description": "mCaptcha 0.5 and 0.6 expose sha2 0.10 Sha256 in their dev::score API; sha2 0.11's distinct digest types cannot be supplied until upstream changes",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchFileNames": [
+        "tools/mcaptcha-e2e/Cargo.toml"
+      ],
+      "matchPackageNames": [
+        "sha2"
+      ],
+      "allowedVersions": "<0.11"
+    }
   ]
 }
