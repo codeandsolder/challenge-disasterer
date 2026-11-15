@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@bfade5fa936ccc3c68e562ae049602c85aa2f9ee # main
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@6db1c8a6d96604a1f2b62a994e8ee5bc38deb239 # main
 
       - name: Check out live Anubis main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -82,4 +82,4 @@ jobs:
 
       - name: Finalize canonical sccache
         if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@bfade5fa936ccc3c68e562ae049602c85aa2f9ee # main
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@6db1c8a6d96604a1f2b62a994e8ee5bc38deb239 # main
