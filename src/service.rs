@@ -178,6 +178,16 @@ async fn solve_general_gpu(
     classic_pow::gpu::solve(gpu, solver, challenge).await
 }
 
+/// WGPU readbacks block the OS thread that polls the device. Keep those
+/// operations in Tokio's tracked blocking pool rather than its core executor,
+/// while allowing the async GPU workers to shut down with the runtime.
+#[cfg(feature = "gpu")]
+fn spawn_blocking_gpu<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> tokio::task::JoinHandle<T> {
+    tokio::task::spawn_blocking(work)
+}
+
 impl AppState {
     /// Whether the running general WGPU context can execute native-u64 shaders.
     /// The status reflects the negotiated device, not the adapter name or
@@ -272,10 +282,32 @@ impl AppState {
                     info!(adapter = %adapter, mh_s = rate / 1e6, "GPU calibration complete");
                     let (tx, mut rx) = mpsc::channel::<GpuJob>(1024);
                     tokio::spawn(async move {
+                        let mut gpu = gpu;
                         while let Some(job) = rx.recv().await {
-                            let _ = job.started.send(Instant::now());
-                            let result = gpu.solve(&job.challenge);
-                            let _ = job.result.send(result);
+                            // Return ownership of the persistent solver, so
+                            // readback stays off the core executor without
+                            // requiring Sync or a new GPU context per job.
+                            let executed = spawn_blocking_gpu(move || {
+                                let GpuJob {
+                                    _gpu_permit: gpu_permit,
+                                    challenge,
+                                    started,
+                                    result,
+                                } = job;
+                                let _ = started.send(Instant::now());
+                                let answer = gpu.solve(&challenge);
+                                // Response completion must imply the GPU slot
+                                // is free for an immediate idle-only request.
+                                drop(gpu_permit);
+                                let _ = result.send(answer);
+                                gpu
+                            })
+                            .await;
+                            let Ok(returned_gpu) = executed else {
+                                tracing::error!("Anubis GPU blocking task failed; stopping worker");
+                                break;
+                            };
+                            gpu = returned_gpu;
                         }
                     });
                     (Some(tx), Some(rate), Some(adapter))
@@ -333,44 +365,71 @@ impl AppState {
         let (hashx_gpu_operational, hashx_gpu_implementations) = (false, Vec::new());
 
         #[cfg(feature = "gpu")]
-        let (general_gpu_tx, general_gpu_operational, general_gpu_features) = if let Some(gpu) =
-            shared_wgpu
-        {
-            let adapter = gpu.adapter().to_owned();
-            let enabled_features = gpu.features();
-            match gpu.warm_up().await {
-                Ok(()) => {
-                    // Keep optional protocol pipelines compiled for the lifetime
-                    // of the single general GPU worker, rather than recompiling
-                    // the first time each PoW family receives a challenge.
-                    let preload_started = Instant::now();
-                    if let Err(err) = gpu.preload_and_warm_protocol_pipelines().await {
-                        warn!(%err, "optional WGPU protocol warm-up failed");
-                    }
-                    let preload_ms = preload_started.elapsed().as_secs_f64() * 1e3;
-                    info!(
-                        adapter = %adapter,
-                        preload_ms,
-                        "general WGPU backend and all supported pipelines ready"
-                    );
-                    let (tx, mut rx) = mpsc::channel::<GeneralGpuJob>(128);
-                    tokio::spawn(async move {
-                        while let Some(job) = rx.recv().await {
-                            let _ = job.started.send(Instant::now());
-                            let result = solve_general_gpu(&gpu, &job.solver, job.challenge).await;
-                            let _ = job.result.send(result);
+        let (general_gpu_tx, general_gpu_operational, general_gpu_features) =
+            if let Some(gpu) = shared_wgpu {
+                let adapter = gpu.adapter().to_owned();
+                let enabled_features = gpu.features();
+                match gpu.warm_up().await {
+                    Ok(()) => {
+                        // Keep optional protocol pipelines compiled for the lifetime
+                        // of the single general GPU worker, rather than recompiling
+                        // the first time each PoW family receives a challenge.
+                        let preload_started = Instant::now();
+                        if let Err(err) = gpu.preload_and_warm_protocol_pipelines().await {
+                            warn!(%err, "optional WGPU protocol warm-up failed");
                         }
-                    });
-                    (Some(tx), true, enabled_features)
+                        let preload_ms = preload_started.elapsed().as_secs_f64() * 1e3;
+                        info!(
+                            adapter = %adapter,
+                            preload_ms,
+                            "general WGPU backend and all supported pipelines ready"
+                        );
+                        let (tx, mut rx) = mpsc::channel::<GeneralGpuJob>(128);
+                        tokio::spawn(async move {
+                            let mut gpu = gpu;
+                            while let Some(job) = rx.recv().await {
+                                // The upstream async WGPU readback calls a
+                                // synchronous Device::poll. Drive its future on
+                                // a tracked blocking task, not a Tokio core
+                                // worker or a detached OS thread.
+                                let runtime = tokio::runtime::Handle::current();
+                                let executed = spawn_blocking_gpu(move || {
+                                    let GeneralGpuJob {
+                                        _gpu_permit: gpu_permit,
+                                        solver,
+                                        challenge,
+                                        started,
+                                        result,
+                                    } = job;
+                                    let _ = started.send(Instant::now());
+                                    let answer = runtime
+                                        .block_on(solve_general_gpu(&gpu, &solver, challenge));
+                                    // Complete GPU admission before waking the
+                                    // caller, including on failed solves.
+                                    drop(gpu_permit);
+                                    let _ = result.send(answer);
+                                    gpu
+                                })
+                                .await;
+                                let Ok(returned_gpu) = executed else {
+                                    tracing::error!(
+                                        "protocol WGPU blocking task failed; stopping worker"
+                                    );
+                                    break;
+                                };
+                                gpu = returned_gpu;
+                            }
+                        });
+                        (Some(tx), true, enabled_features)
+                    }
+                    Err(err) => {
+                        warn!(%err, "general WGPU warm-up failed");
+                        (None, false, wgpu::Features::empty())
+                    }
                 }
-                Err(err) => {
-                    warn!(%err, "general WGPU warm-up failed");
-                    (None, false, wgpu::Features::empty())
-                }
-            }
-        } else {
-            (None, false, wgpu::Features::empty())
-        };
+            } else {
+                (None, false, wgpu::Features::empty())
+            };
 
         #[cfg(not(feature = "gpu"))]
         let general_gpu_operational = false;
