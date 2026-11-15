@@ -6,6 +6,43 @@ use super::http::SolveRequest;
 use super::*;
 use axum::{Json, extract::State, http::StatusCode};
 
+/// GPU readbacks block their OS thread; a tracked blocking task must let a
+/// single-threaded Tokio runtime continue serving unrelated requests.
+#[cfg(feature = "gpu")]
+#[tokio::test(flavor = "current_thread")]
+async fn gpu_blocking_task_keeps_runtime_responsive() -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    let (tx, mut rx) = mpsc::channel::<oneshot::Sender<()>>(1);
+    let (entered_tx, entered_rx) = oneshot::channel();
+    // A tracked blocking task must be able to run while a single-threaded
+    // Tokio core runtime continues serving timers and requests.
+    tokio::spawn(async move {
+        if let Some(finished) = rx.recv().await {
+            let _ = spawn_blocking_gpu(move || {
+                let _ = entered_tx.send(());
+                std::thread::sleep(Duration::from_millis(350));
+                let _ = finished.send(());
+            })
+            .await;
+        }
+    });
+
+    let (finished_tx, finished_rx) = oneshot::channel();
+    tx.send(finished_tx).await?;
+    entered_rx.await?;
+    // This timer cannot fire until the callback exits if it executes on the
+    // Tokio core worker; it does fire on the blocking pool.
+    tokio::time::timeout(Duration::from_millis(200), async {
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    })
+    .await?;
+    finished_rx.await?;
+    drop(tx);
+    Ok(())
+}
+
 /// Queue visibility works without physical GPU initialization: tests the
 /// actual public /stats schema while a different GPU family holds the gate.
 #[cfg(feature = "gpu")]
@@ -857,6 +894,11 @@ async fn sha256_gpu_policy_idle_busy_queued_and_forced() -> anyhow::Result<()> {
     assert_eq!(idle.backend, "gpu");
     let answer: anubis::Answer = serde_json::from_value(idle.answer)?;
     assert!(anubis::verify(&classic, &answer));
+    assert_eq!(
+        state.gpu_admission.snapshot().running_requests,
+        0,
+        "a successful GPU response must release its admission permit"
+    );
 
     let idle = state
         .try_run_anubis_wasm_gpu(wasm.clone(), Instant::now())
