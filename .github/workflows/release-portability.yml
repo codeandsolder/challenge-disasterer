@@ -10,7 +10,7 @@ permissions:
 jobs:
   cpu-only:
     name: Pinned-nightly CPU-only service
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@39f1e45632ec74fa43ef9976962c26f692c22b6e # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@a79d5260eee1f40d6499e04c6f7999effe071831 # main
     with:
       rust-toolchain: "nightly-2026-11-03"
       validation-tier: release
@@ -22,7 +22,7 @@ jobs:
 
   historical-baseline:
     name: Standalone benchmark tools (release-only)
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@39f1e45632ec74fa43ef9976962c26f692c22b6e # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@a79d5260eee1f40d6499e04c6f7999effe071831 # main
     with:
       rust-toolchain: "nightly-2026-11-03"
       validation-tier: release
