@@ -89,7 +89,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         .calibration
         .gpu_hashes_per_second
         .filter(|rate| rate.is_finite() && *rate > 0.0)
-        .map(|rate| {
+        .map_or_else(BTreeMap::new, |rate| {
             (1..=16_u8)
                 .map(|difficulty| {
                     let work = crate::metrics::approximate_work_f64(
@@ -98,8 +98,7 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
                     (difficulty, work / rate * 1000.0)
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     let general = state.stats.read().await.snapshot();
     let mut anubis_sha_implementations = cpu_implementations(false);
     if state.general_gpu_operational {

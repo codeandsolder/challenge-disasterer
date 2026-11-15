@@ -234,14 +234,14 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    async fn wait_for_depth(gate: &GpuAdmission, depth: usize) {
+    async fn wait_for_depth(gate: &GpuAdmission, depth: usize) -> anyhow::Result<()> {
         tokio::time::timeout(Duration::from_secs(2), async {
             while gate.snapshot().waiting_requests != depth {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .unwrap_or_else(|err| panic!("wait for {depth} GPU queue depth: {err}"));
+        .await?;
+        Ok(())
     }
 
     #[tokio::test]
@@ -252,9 +252,9 @@ mod tests {
         let a = gate.clone();
         let b = gate.clone();
         let hashx = tokio::spawn(async move { a.acquire("anubis-hashx").await });
-        wait_for_depth(&gate, 1).await;
+        wait_for_depth(&gate, 1).await?;
         let friendly = tokio::spawn(async move { b.acquire("protocol:friendlycaptcha").await });
-        wait_for_depth(&gate, 2).await;
+        wait_for_depth(&gate, 2).await?;
         let snapshot = gate.snapshot();
         assert_eq!(snapshot.running_requests, 1);
         assert_eq!(snapshot.protocols["anubis-hashx"].waiting_requests, 1);
@@ -264,7 +264,7 @@ mod tests {
         );
         hashx.abort();
         let _ = hashx.await;
-        wait_for_depth(&gate, 1).await;
+        wait_for_depth(&gate, 1).await?;
         assert_eq!(gate.snapshot().protocols["anubis-hashx"].cancelled_waits, 1);
         drop(active);
         let friendly = friendly.await??;
@@ -298,14 +298,14 @@ mod tests {
             first_sender.send(1)?;
             Ok::<_, anyhow::Error>(())
         });
-        wait_for_depth(&gate, 1).await;
+        wait_for_depth(&gate, 1).await?;
         let second_gate = gate.clone();
         let second = tokio::spawn(async move {
             let _permit = second_gate.acquire("protocol:altcha").await?;
             order_tx.send(2)?;
             Ok::<_, anyhow::Error>(())
         });
-        wait_for_depth(&gate, 2).await;
+        wait_for_depth(&gate, 2).await?;
         drop(blocker);
         assert_eq!(order_rx.recv().await, Some(1));
         assert_eq!(order_rx.recv().await, Some(2));
