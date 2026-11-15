@@ -15,7 +15,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
 use axum::{
-    Router,
+    Router, middleware,
     routing::{get, post},
 };
 use clap::Parser;
@@ -139,7 +139,11 @@ async fn main() -> anyhow::Result<()> {
         routing_calibration: args.routing_calibration,
     };
     let app = Router::new()
-        .route("/solve", post(service::solve))
+        .route(
+            "/solve",
+            post(service::solve_instrumented)
+                .layer(middleware::from_fn(service::mark_request_ingress)),
+        )
         .route("/stats", get(service::stats))
         .with_state(Arc::new(AppState::initialize(config).await?));
     let listener = tokio::net::TcpListener::bind(args.listen)

@@ -5,7 +5,13 @@
 
 use std::{sync::Arc, time::Instant};
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Extension, Json,
+    extract::{Request, State},
+    http::{HeaderValue, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -34,6 +40,76 @@ pub struct ErrorResponse {
 }
 
 type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
+
+/// First point at which Axum exposes a /solve request to application code.
+/// It precedes body buffering, JSON deserialization, and handler scheduling,
+/// but not TCP accept or HTTP header parsing in hyper.
+#[derive(Clone, Copy)]
+pub struct RequestIngress(Instant);
+
+#[derive(Clone, Copy)]
+/// All durations are milliseconds, not absolute timestamps.
+struct HandlerStages {
+    pre_handler: f64,
+    handler: f64,
+    queue: Option<f64>,
+    solve: Option<f64>,
+}
+
+/// Attach the best available HTTP ingress timestamp before Axum extracts JSON.
+/// Every /solve response, including an extractor or routing error, gets an
+/// end-to-end server-side duration in the standard Server-Timing header.
+pub async fn mark_request_ingress(mut request: Request, next: Next) -> Response {
+    let received_at = Instant::now();
+    request.extensions_mut().insert(RequestIngress(received_at));
+    let mut response = next.run(request).await;
+    let server_ms = received_at.elapsed().as_secs_f64() * 1_000.0;
+    let phases = response.extensions_mut().remove::<HandlerStages>();
+    let header = phases.map_or_else(
+        || format!("server;dur={server_ms:.3}"),
+        |phases| {
+            let mut header = format!(
+                "pre_handler;dur={:.3}, handler;dur={:.3}, server;dur={server_ms:.3}",
+                phases.pre_handler, phases.handler,
+            );
+            if let (Some(queue_ms), Some(solve_ms)) = (phases.queue, phases.solve) {
+                use std::fmt::Write as _;
+                let _ = write!(header, ", queue;dur={queue_ms:.3}, solve;dur={solve_ms:.3}");
+            }
+            header
+        },
+    );
+    if let Ok(value) = HeaderValue::from_str(&header) {
+        response.headers_mut().insert("server-timing", value);
+    }
+    response
+}
+
+/// The production HTTP route; the original `solve` remains the one true
+/// protocol implementation used directly by the existing unit tests.
+/// The timing header does not change successful or error JSON schemas.
+pub async fn solve_instrumented(
+    State(state): State<Arc<AppState>>,
+    Extension(arrival): Extension<RequestIngress>,
+    Json(request): Json<SolveRequest>,
+) -> Response {
+    let pre_handler_ms = arrival.0.elapsed().as_secs_f64() * 1_000.0;
+    let handler_start = Instant::now();
+    let result = solve(State(state), Json(request)).await;
+    let handler_ms = handler_start.elapsed().as_secs_f64() * 1_000.0;
+    let (queue_ms, solve_ms) = match &result {
+        Ok(Json(reply)) => (Some(reply.queue_ms), Some(reply.solve_ms)),
+        Err(_) => (None, None),
+    };
+    let mut response = result.into_response();
+    response.extensions_mut().insert(HandlerStages {
+        pre_handler: pre_handler_ms,
+        handler: handler_ms,
+        queue: queue_ms,
+        solve: solve_ms,
+    });
+    response
+}
 
 #[expect(
     clippy::too_many_lines,
