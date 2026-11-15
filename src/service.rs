@@ -1,19 +1,14 @@
 #[cfg(feature = "gpu")]
 use std::time::Instant;
-use std::{
-    path::PathBuf,
-    sync::{Arc, atomic::AtomicU64},
-};
+use std::{path::PathBuf, sync::Arc};
 
 #[cfg(feature = "gpu")]
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(feature = "gpu")]
-use std::sync::atomic::Ordering;
-#[cfg(feature = "gpu")]
-use tokio::sync::{OwnedSemaphorePermit, mpsc, oneshot};
 use tokio::sync::{RwLock, Semaphore};
+#[cfg(feature = "gpu")]
+use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::{
@@ -29,6 +24,11 @@ use crate::{
     hashx,
     hashx_gpu::{GpuResult as HashxGpuResult, GpuSolver as HashxGpuSolver},
 };
+
+#[cfg(feature = "gpu")]
+mod gpu_admission;
+#[cfg(feature = "gpu")]
+use gpu_admission::{GpuAdmission, GpuPermit};
 
 mod execution;
 mod http;
@@ -75,16 +75,15 @@ pub struct Config {
 
 #[cfg(feature = "gpu")]
 struct GpuJob {
-    _gpu_permit: OwnedSemaphorePermit,
+    _gpu_permit: GpuPermit,
     challenge: Challenge,
-    expected_work: u64,
     started: oneshot::Sender<Instant>,
     result: oneshot::Sender<anyhow::Result<anubis::BackendResult>>,
 }
 
 #[cfg(feature = "gpu")]
 struct HashxGpuJob {
-    _gpu_permit: OwnedSemaphorePermit,
+    _gpu_permit: GpuPermit,
     challenge: hashx::Challenge,
     implementation: Option<String>,
     started: oneshot::Sender<Instant>,
@@ -93,7 +92,7 @@ struct HashxGpuJob {
 
 #[cfg(feature = "gpu")]
 struct GeneralGpuJob {
-    _gpu_permit: OwnedSemaphorePermit,
+    _gpu_permit: GpuPermit,
     solver: String,
     challenge: Value,
     started: oneshot::Sender<Instant>,
@@ -116,10 +115,7 @@ pub struct AppState {
     general_gpu_features: wgpu::Features,
     hashx_gpu_implementations: Vec<&'static str>,
     #[cfg(feature = "gpu")]
-    gpu_slots: Arc<Semaphore>,
-    gpu_queue_work: Arc<AtomicU64>,
-    gpu_queue_depth: Arc<AtomicU64>,
-    gpu_active_work: Arc<AtomicU64>,
+    gpu_admission: GpuAdmission,
     cpu_slots: Arc<Semaphore>,
     kdf_memory_slots: Option<Arc<Semaphore>>,
     kdf_memory_capacity_mib: Option<usize>,
@@ -249,10 +245,7 @@ impl AppState {
         );
 
         #[cfg(feature = "gpu")]
-        let gpu_slots = Arc::new(Semaphore::new(1));
-        let queue_work = Arc::new(AtomicU64::new(0));
-        let queue_depth = Arc::new(AtomicU64::new(0));
-        let active_work = Arc::new(AtomicU64::new(0));
+        let gpu_admission = GpuAdmission::new();
 
         // Negotiate one logical WGPU device for the independent Anubis SHA
         // and general protocol pipelines, rather than requesting it twice.
@@ -278,17 +271,10 @@ impl AppState {
                 Ok(rate) => {
                     info!(adapter = %adapter, mh_s = rate / 1e6, "GPU calibration complete");
                     let (tx, mut rx) = mpsc::channel::<GpuJob>(1024);
-                    let worker_queue_work = queue_work.clone();
-                    let worker_queue_depth = queue_depth.clone();
-                    let worker_active_work = active_work.clone();
                     tokio::spawn(async move {
                         while let Some(job) = rx.recv().await {
-                            worker_queue_depth.fetch_sub(1, Ordering::Relaxed);
-                            worker_queue_work.fetch_sub(job.expected_work, Ordering::Relaxed);
-                            worker_active_work.store(job.expected_work, Ordering::Relaxed);
                             let _ = job.started.send(Instant::now());
                             let result = gpu.solve(&job.challenge);
-                            worker_active_work.store(0, Ordering::Relaxed);
                             let _ = job.result.send(result);
                         }
                     });
@@ -418,10 +404,7 @@ impl AppState {
             general_gpu_features,
             hashx_gpu_implementations,
             #[cfg(feature = "gpu")]
-            gpu_slots,
-            gpu_queue_work: queue_work,
-            gpu_queue_depth: queue_depth,
-            gpu_active_work: active_work,
+            gpu_admission,
             cpu_slots: Arc::new(Semaphore::new(config.cpu_workers)),
             kdf_memory_slots: kdf_memory_capacity_mib
                 .map(|capacity| Arc::new(Semaphore::new(capacity))),

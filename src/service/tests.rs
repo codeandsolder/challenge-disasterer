@@ -6,6 +6,63 @@ use super::http::SolveRequest;
 use super::*;
 use axum::{Json, extract::State, http::StatusCode};
 
+/// Queue visibility works without physical GPU initialization: tests the
+/// actual public /stats schema while a different GPU family holds the gate.
+#[cfg(feature = "gpu")]
+#[tokio::test]
+async fn gpu_queue_stats_include_semaphore_waiters_and_cancellations() -> anyhow::Result<()> {
+    let state = Arc::new(
+        AppState::initialize(Config {
+            cpu_workers: 2,
+            cpu_workers_per_request: 1,
+            kdf_memory_budget_mib: Some(128),
+            cpu_calibration_hashes: 8_192,
+            gpu_calibration_hashes: 8_192,
+            gpu_enabled: false,
+            gpu_policy: GpuPolicy::PreferGpu,
+            routing_calibration: None,
+        })
+        .await?,
+    );
+    let active = state.gpu_admission.acquire("anubis-sha256").await?;
+    let gate = state.gpu_admission.clone();
+    let waiter = tokio::spawn(async move { gate.acquire("protocol:friendlycaptcha").await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while state.gpu_admission.snapshot().waiting_requests != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    let Json(stats) = stats(State(state.clone())).await;
+    let stats = serde_json::to_value(stats)?;
+    assert_eq!(stats["gpu"]["waiting_requests"], 1);
+    assert_eq!(stats["gpu"]["running_requests"], 1);
+    assert_eq!(
+        stats["gpu"]["protocols"]["protocol:friendlycaptcha"]["waiting_requests"],
+        1
+    );
+    assert_eq!(
+        stats["gpu"]["protocols"]["anubis-sha256"]["running_requests"],
+        1
+    );
+    assert_eq!(
+        stats["gpu_idle_anubis_sha256_solve_ms_by_difficulty"],
+        serde_json::json!({})
+    );
+    waiter.abort();
+    let _ = waiter.await;
+    assert_eq!(state.gpu_admission.snapshot().waiting_requests, 0);
+    drop(active);
+    let Json(stats) = stats(State(state)).await;
+    let stats = serde_json::to_value(stats)?;
+    assert_eq!(stats["gpu"]["running_requests"], 0);
+    assert_eq!(
+        stats["gpu"]["protocols"]["protocol:friendlycaptcha"]["cancelled_waits"],
+        1
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn friendlycaptcha_v1_http_dispatch_and_cpu_only_policy() -> anyhow::Result<()> {
     use anyhow::Context as _;
@@ -792,7 +849,7 @@ async fn sha256_gpu_policy_idle_busy_queued_and_forced() -> anyhow::Result<()> {
     let answer: anubis::Answer = serde_json::from_value(idle.answer)?;
     assert!(anubis_wasm::verify_sha256(&wasm, &answer));
 
-    let busy = state.gpu_slots.clone().acquire_owned().await?;
+    let busy = state.gpu_admission.acquire("test:busy").await?;
     let cpu = tokio::time::timeout(
         Duration::from_secs(10),
         state.route_anubis("fast", classic.clone(), 1, Instant::now()),
@@ -812,7 +869,7 @@ async fn sha256_gpu_policy_idle_busy_queued_and_forced() -> anyhow::Result<()> {
     // Default policy favors GPU even while occupied by another request.
     // The semaphore is owned by the GPU job, not released when enqueued.
     state.config.gpu_policy = GpuPolicy::PreferGpu;
-    let busy = state.gpu_slots.clone().acquire_owned().await?;
+    let busy = state.gpu_admission.acquire("test:busy").await?;
     {
         let pending = state.route_anubis("fast", classic.clone(), 1, Instant::now());
         tokio::pin!(pending);
