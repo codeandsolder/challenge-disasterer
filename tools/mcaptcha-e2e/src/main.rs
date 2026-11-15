@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, ensure};
 use mcaptcha_pow_sha256::{ConfigBuilder, PoW};
 use serde::Deserialize;
+use serde_wincode::SerdeCompat;
 use sha2::{Digest, Sha256};
 use std::{
     io::{self, Read},
@@ -29,11 +30,16 @@ fn proof(nonce: u64, result: &str) -> Result<PoW<String>> {
     .context("deserialize official PoW type")
 }
 
+fn serialize_phrase(phrase: &str) -> Result<Vec<u8>> {
+    <SerdeCompat<&str> as wincode::Serialize>::serialize(&phrase)
+        .context("serialize fixed mCaptcha phrase")
+}
+
 fn benchmark_fixed(sample: u32, limit: u64) -> Result<()> {
     ensure!(limit > 0, "fixed-work limit must be positive");
     let salt = format!("matrix-salt-{sample:08x}");
     let phrase = "challenge-disasterer-matrix";
-    let serialized = bincode::serialize(&phrase).context("serialize fixed mCaptcha phrase")?;
+    let serialized = serialize_phrase(phrase)?;
     let prefix = Sha256::new()
         .chain_update(salt.as_bytes())
         .chain_update(&serialized);
@@ -108,4 +114,22 @@ fn main() -> Result<()> {
         response.implementation, response.answer.nonce, response.solve_ms
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::serialize_phrase;
+
+    #[test]
+    fn string_wire_prefix_matches_official_legacy_layout() -> anyhow::Result<()> {
+        let phrase = "challenge-disasterer-matrix";
+        let bytes = serialize_phrase(phrase)?;
+        let mut expected = (phrase.len() as u64).to_le_bytes().to_vec();
+        expected.extend_from_slice(phrase.as_bytes());
+        assert_eq!(bytes, expected);
+
+        assert_eq!(serialize_phrase("")?, [0_u8; 8]);
+        assert_eq!(serialize_phrase("a")?, [1, 0, 0, 0, 0, 0, 0, 0, b'a']);
+        Ok(())
+    }
 }
