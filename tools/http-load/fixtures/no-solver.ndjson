@@ -1,0 +1,2 @@
+{"label":"invalid-json","raw_body":"{malformed","expected_status":400}
+{"label":"unknown-solver","body":{"solver":"definitely-not-a-solver","challenge":{}},"expected_status":400,"check":{"/error":"unknown solver: definitely-not-a-solver"}}
