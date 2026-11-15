@@ -6,6 +6,88 @@ use super::http::SolveRequest;
 use super::*;
 use axum::{Json, extract::State, http::StatusCode};
 
+/// HTTP ingress time starts before the body extractor. Successful responses
+/// expose both stages and solver queue/work; malformed bodies still expose
+/// total application-server time rather than silently losing the sample.
+#[tokio::test]
+async fn real_http_server_timing_covers_extraction_and_compute() -> anyhow::Result<()> {
+    use axum::{Router, middleware, routing::post};
+
+    let state = Arc::new(
+        AppState::initialize(Config {
+            cpu_workers: 2,
+            cpu_workers_per_request: 1,
+            kdf_memory_budget_mib: Some(128),
+            cpu_calibration_hashes: 8_192,
+            #[cfg(feature = "gpu")]
+            gpu_calibration_hashes: 8_192,
+            gpu_enabled: false,
+            gpu_policy: GpuPolicy::CpuOnly,
+            routing_calibration: None,
+        })
+        .await?,
+    );
+    let app = Router::new()
+        .route(
+            "/solve",
+            post(super::solve_instrumented).layer(middleware::from_fn(super::mark_request_ingress)),
+        )
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let client = reqwest::Client::new();
+    let url = format!("http://{address}/solve");
+    let valid = serde_json::json!({
+        "solver": "anubis",
+        "algorithm": "fast",
+        "challenge": {"data": "x".repeat(128), "difficulty": 1}
+    });
+    let result = client.post(&url).json(&valid).send().await?;
+    assert!(result.status().is_success());
+    let timing = result
+        .headers()
+        .get("server-timing")
+        .ok_or_else(|| anyhow::anyhow!("missing Server-Timing response header"))?
+        .to_str()?;
+    let metrics = timing
+        .split(", ")
+        .map(|metric| {
+            let (key, duration) = metric
+                .split_once(";dur=")
+                .ok_or_else(|| anyhow::anyhow!("invalid server timing metric: {metric}"))?;
+            Ok((key.to_owned(), duration.parse::<f64>()?))
+        })
+        .collect::<anyhow::Result<std::collections::BTreeMap<_, _>>>()?;
+    assert_eq!(metrics.len(), 5);
+    for name in ["server", "pre_handler", "handler", "queue", "solve"] {
+        assert!(metrics[name].is_finite() && metrics[name] >= 0.0, "{name}");
+    }
+    assert!(metrics["server"] + 0.002 >= metrics["pre_handler"] + metrics["handler"]);
+    assert!(metrics["handler"] + 0.002 >= metrics["queue"]);
+    let body: serde_json::Value = result.json().await?;
+    assert_eq!(body["backend"], "cpu");
+    assert_eq!(body["solver"], "anubis");
+
+    let malformed = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .body("{malformed")
+        .send()
+        .await?;
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    let header = malformed
+        .headers()
+        .get("server-timing")
+        .ok_or_else(|| anyhow::anyhow!("missing timing header on invalid JSON"))?
+        .to_str()?;
+    assert!(header.starts_with("server;dur="), "{header}");
+    assert!(!header.contains("pre_handler"));
+    server.abort();
+    let _ = server.await;
+    Ok(())
+}
+
 /// GPU readbacks block their OS thread; a tracked blocking task must let a
 /// single-threaded Tokio runtime continue serving unrelated requests.
 #[cfg(feature = "gpu")]

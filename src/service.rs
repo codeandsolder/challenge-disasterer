@@ -32,7 +32,9 @@ use gpu_admission::{GpuAdmission, GpuPermit};
 
 mod execution;
 mod http;
+#[cfg(test)]
 pub use http::solve;
+pub use http::{mark_request_ingress, solve_instrumented};
 mod kdf_schedule;
 mod routing;
 mod telemetry;
