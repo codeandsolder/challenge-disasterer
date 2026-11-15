@@ -16,6 +16,32 @@
         "sha2"
       ],
       "allowedVersions": "<0.11"
+    },
+    {
+      "description": "Upstream mcaptcha_pow_sha256 0.6 uses wincode 0.4 directly; serde-wincode 0.1.2 broadens its wincode range and can resolve 0.6, causing incompatible SchemaWrite traits. Keep official reference on known-consistent serde-wincode 0.1.0 until upstream fixes bound.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchFileNames": [
+        "tools/mcaptcha-e2e/Cargo.toml"
+      ],
+      "matchPackageNames": [
+        "serde-wincode"
+      ],
+      "allowedVersions": "=0.1.0"
+    },
+    {
+      "description": "The official mCaptcha 0.6 crate requires the wincode 0.4 SchemaWrite ABI. Do not independently bump this reference harness to the incompatible wincode 0.6 API.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchFileNames": [
+        "tools/mcaptcha-e2e/Cargo.toml"
+      ],
+      "matchPackageNames": [
+        "wincode"
+      ],
+      "allowedVersions": "<0.5"
     }
   ]
 }
