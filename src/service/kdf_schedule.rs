@@ -122,14 +122,6 @@ impl Reservation {
             _memory: memory,
         })
     }
-
-    #[cfg(test)]
-    pub(super) fn reserved_memory_mib(&self) -> usize {
-        self._memory
-            .iter()
-            .map(OwnedSemaphorePermit::num_permits)
-            .sum()
-    }
 }
 
 /// Linux memory availability including cgroup v2 constraints, if exposed.
@@ -228,12 +220,12 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
         let job = tokio::task::spawn_blocking(move || {
-            let _guard = guard;
-            let _reservation = reservation;
+            let admission_guard = guard;
+            let memory_reservation = reservation;
             let _ = started_tx.send(());
             let _ = release_rx.recv();
-            drop(_reservation);
-            drop(_guard);
+            drop(memory_reservation);
+            drop(admission_guard);
             let _ = finished_tx.send(());
         });
         started_rx.await?;
@@ -259,7 +251,7 @@ mod tests {
         let first =
             Reservation::acquire(&cpu, Some(&memory), Some(192), Some(64 * 1024 * 1024), 8).await?;
         assert_eq!(first.workers(), 3);
-        assert_eq!(first.reserved_memory_mib(), 192);
+        assert_eq!(memory.available_permits(), 0);
         assert_eq!(cpu.available_permits(), 5);
         drop(first);
         assert_eq!(memory.available_permits(), 192);

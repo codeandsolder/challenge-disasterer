@@ -1,20 +1,18 @@
 //! Local CPU/GPU execution and external-provider calls, independent of HTTP dispatch.
 
-#[cfg(feature = "gpu")]
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use serde_json::Value;
 #[cfg(feature = "gpu")]
-use tokio::sync::{OwnedSemaphorePermit, oneshot};
+use tokio::sync::oneshot;
 
 use super::{
     AppState, ExternalSolveResponse, SolveResponse,
     kdf_schedule::{Reservation, altcha_argon2_workers},
 };
 #[cfg(feature = "gpu")]
-use super::{GeneralGpuJob, GpuJob, HashxGpuJob};
+use super::{GeneralGpuJob, GpuJob, GpuPermit, HashxGpuJob};
 use crate::{
     anubis::{self, Challenge},
     anubis_wasm, classic_pow, hashx, hashx_cpu_jit,
@@ -212,10 +210,10 @@ impl AppState {
     /// isolated request latency. A single shared permit serializes this service's GPU
     /// worker families; the default waits rather than scheduling CPU work.
     #[cfg(feature = "gpu")]
-    pub(super) async fn reserve_auto_gpu(&self) -> Option<OwnedSemaphorePermit> {
+    pub(super) async fn reserve_auto_gpu(&self, protocol: &str) -> Option<GpuPermit> {
         match self.config.gpu_policy {
-            super::GpuPolicy::PreferGpu => self.gpu_slots.clone().acquire_owned().await.ok(),
-            super::GpuPolicy::IdleOnly => self.gpu_slots.clone().try_acquire_owned().ok(),
+            super::GpuPolicy::PreferGpu => self.gpu_admission.acquire(protocol).await.ok(),
+            super::GpuPolicy::IdleOnly => self.gpu_admission.try_acquire(protocol),
             super::GpuPolicy::CpuOnly => None,
         }
     }
@@ -355,7 +353,7 @@ impl AppState {
             challenge.gpu_compatible(),
             "challenge shape is not GPU-compatible"
         );
-        let permit = self.gpu_slots.clone().acquire_owned().await?;
+        let permit = self.gpu_admission.acquire("anubis-sha256").await?;
         self.run_gpu_with_permit(challenge, queued_at, permit).await
     }
 
@@ -366,34 +364,22 @@ impl AppState {
         &self,
         challenge: Challenge,
         queued_at: Instant,
-        gpu_permit: OwnedSemaphorePermit,
+        gpu_permit: GpuPermit,
     ) -> anyhow::Result<SolveResponse> {
         let tx = self
             .gpu_tx
             .as_ref()
             .context("SHA GPU backend unavailable")?;
-        let expected_work = challenge.expected_work();
         let (started_tx, started_rx) = oneshot::channel();
         let (result_tx, result_rx) = oneshot::channel();
-        self.gpu_queue_work
-            .fetch_add(expected_work, Ordering::Relaxed);
-        self.gpu_queue_depth.fetch_add(1, Ordering::Relaxed);
-        if tx
-            .send(GpuJob {
-                _gpu_permit: gpu_permit,
-                challenge,
-                expected_work,
-                started: started_tx,
-                result: result_tx,
-            })
-            .await
-            .is_err()
-        {
-            self.gpu_queue_work
-                .fetch_sub(expected_work, Ordering::Relaxed);
-            self.gpu_queue_depth.fetch_sub(1, Ordering::Relaxed);
-            anyhow::bail!("SHA GPU worker unavailable");
-        }
+        tx.send(GpuJob {
+            _gpu_permit: gpu_permit,
+            challenge,
+            started: started_tx,
+            result: result_tx,
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("SHA GPU worker unavailable"))?;
         let started = started_rx
             .await
             .map_err(|_| anyhow::anyhow!("SHA GPU worker dropped start signal"))?;
@@ -462,7 +448,7 @@ impl AppState {
             .context("HashX GPU backend unavailable")?;
         let (started_tx, started_rx) = oneshot::channel();
         let (result_tx, result_rx) = oneshot::channel();
-        let gpu_permit = self.gpu_slots.clone().acquire_owned().await?;
+        let gpu_permit = self.gpu_admission.acquire("anubis-hashx").await?;
         tx.send(HashxGpuJob {
             _gpu_permit: gpu_permit,
             challenge,
@@ -678,12 +664,15 @@ impl AppState {
         let (result_tx, result_rx) = oneshot::channel();
         let job = GeneralGpuJob {
             _gpu_permit: if opportunistic {
-                let Some(permit) = self.reserve_auto_gpu().await else {
+                let Some(permit) = self.reserve_auto_gpu(&format!("protocol:{solver}")).await
+                else {
                     return Ok(None);
                 };
                 permit
             } else {
-                self.gpu_slots.clone().acquire_owned().await?
+                self.gpu_admission
+                    .acquire(&format!("protocol:{solver}"))
+                    .await?
             },
             solver: solver.clone(),
             challenge,

@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, atomic::Ordering},
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use axum::{Json, extract::State};
 use serde::Serialize;
@@ -30,13 +27,12 @@ pub struct StatsResponse {
     solver_capabilities: Vec<SolverCapability>,
     calibration: Calibration,
     config: StatsConfig,
-    gpu_queue_depth: u64,
-    gpu_queue_expected_work: u64,
-    gpu_active_expected_work: u64,
+    #[cfg(feature = "gpu")]
+    gpu: super::gpu_admission::GpuAdmissionSnapshot,
     cpu_workers_available: usize,
     kdf_requests_in_flight: usize,
     kdf_memory_available_mib: Option<usize>,
-    expected_new_solve_ms_by_difficulty: BTreeMap<u8, f64>,
+    gpu_idle_anubis_sha256_solve_ms_by_difficulty: BTreeMap<u8, f64>,
     hashx_gpu_implementations: Vec<&'static str>,
     general: crate::stats::GeneralStats,
 }
@@ -87,20 +83,22 @@ fn cpu_implementations(_sha_ni: bool) -> Vec<&'static str> {
     reason = "stats response construction is a flat serialization map of solver capabilities"
 )]
 pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
-    let queued_work = state.gpu_queue_work.load(Ordering::Relaxed);
-    let gpu_queue_depth = state.gpu_queue_depth.load(Ordering::Relaxed);
-    let active_work = state.gpu_active_work.load(Ordering::Relaxed);
-    let work_ahead = queued_work.saturating_add(active_work);
-    let mut expected = BTreeMap::new();
-    for difficulty in 1..=16_u8 {
-        let work =
-            crate::metrics::approximate_work_f64(16_u64.saturating_pow(u32::from(difficulty)));
-        let eta_ms = state.calibration.gpu_hashes_per_second.map_or_else(
-            || work / state.calibration.cpu_hashes_per_second_per_worker * 1000.0,
-            |gpu| (crate::metrics::approximate_work_f64(work_ahead) + work) / gpu * 1000.0,
-        );
-        expected.insert(difficulty, eta_ms);
-    }
+    // This estimate is strictly the unloaded dedicated SHA-256 execution
+    // time, not a queue ETA. Other protocols have different work units.
+    let gpu_idle_anubis_sha256_solve_ms_by_difficulty = state
+        .calibration
+        .gpu_hashes_per_second
+        .filter(|rate| rate.is_finite() && *rate > 0.0)
+        .map_or_else(BTreeMap::new, |rate| {
+            (1..=16_u8)
+                .map(|difficulty| {
+                    let work = crate::metrics::approximate_work_f64(
+                        16_u64.saturating_pow(u32::from(difficulty)),
+                    );
+                    (difficulty, work / rate * 1000.0)
+                })
+                .collect()
+        });
     let general = state.stats.read().await.snapshot();
     let mut anubis_sha_implementations = cpu_implementations(false);
     if state.general_gpu_operational {
@@ -458,16 +456,15 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
             hashx_gpu_operational: state.hashx_gpu_operational,
             routing_calibration_loaded: state.routing.is_some(),
         },
-        gpu_queue_depth,
-        gpu_queue_expected_work: queued_work,
-        gpu_active_expected_work: active_work,
+        #[cfg(feature = "gpu")]
+        gpu: state.gpu_admission.snapshot(),
         cpu_workers_available: state.cpu_slots.available_permits(),
         kdf_requests_in_flight: state.kdf_admission.count(),
         kdf_memory_available_mib: state
             .kdf_memory_slots
             .as_ref()
             .map(|slots| slots.available_permits()),
-        expected_new_solve_ms_by_difficulty: expected,
+        gpu_idle_anubis_sha256_solve_ms_by_difficulty,
         hashx_gpu_implementations: state.hashx_gpu_implementations.clone(),
         general,
     })

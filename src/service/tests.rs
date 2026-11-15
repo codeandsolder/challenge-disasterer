@@ -6,6 +6,63 @@ use super::http::SolveRequest;
 use super::*;
 use axum::{Json, extract::State, http::StatusCode};
 
+/// Queue visibility works without physical GPU initialization: tests the
+/// actual public /stats schema while a different GPU family holds the gate.
+#[cfg(feature = "gpu")]
+#[tokio::test]
+async fn gpu_queue_stats_include_semaphore_waiters_and_cancellations() -> anyhow::Result<()> {
+    let state = Arc::new(
+        AppState::initialize(Config {
+            cpu_workers: 2,
+            cpu_workers_per_request: 1,
+            kdf_memory_budget_mib: Some(128),
+            cpu_calibration_hashes: 8_192,
+            gpu_calibration_hashes: 8_192,
+            gpu_enabled: false,
+            gpu_policy: GpuPolicy::PreferGpu,
+            routing_calibration: None,
+        })
+        .await?,
+    );
+    let active = state.gpu_admission.acquire("anubis-sha256").await?;
+    let gate = state.gpu_admission.clone();
+    let waiter = tokio::spawn(async move { gate.acquire("protocol:friendlycaptcha").await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while state.gpu_admission.snapshot().waiting_requests != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    let Json(response) = stats(State(state.clone())).await;
+    let snapshot = serde_json::to_value(response)?;
+    assert_eq!(snapshot["gpu"]["waiting_requests"], 1);
+    assert_eq!(snapshot["gpu"]["running_requests"], 1);
+    assert_eq!(
+        snapshot["gpu"]["protocols"]["protocol:friendlycaptcha"]["waiting_requests"],
+        1
+    );
+    assert_eq!(
+        snapshot["gpu"]["protocols"]["anubis-sha256"]["running_requests"],
+        1
+    );
+    assert_eq!(
+        snapshot["gpu_idle_anubis_sha256_solve_ms_by_difficulty"],
+        serde_json::json!({})
+    );
+    waiter.abort();
+    let _ = waiter.await;
+    assert_eq!(state.gpu_admission.snapshot().waiting_requests, 0);
+    drop(active);
+    let Json(response) = stats(State(state)).await;
+    let snapshot = serde_json::to_value(response)?;
+    assert_eq!(snapshot["gpu"]["running_requests"], 0);
+    assert_eq!(
+        snapshot["gpu"]["protocols"]["protocol:friendlycaptcha"]["cancelled_waits"],
+        1
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn friendlycaptcha_v1_http_dispatch_and_cpu_only_policy() -> anyhow::Result<()> {
     use anyhow::Context as _;
@@ -101,6 +158,62 @@ async fn friendlycaptcha_v1_http_dispatch_and_cpu_only_policy() -> anyhow::Resul
     Ok(())
 }
 
+#[cfg(feature = "gpu")]
+async fn verify_friendly_gpu_variants(state: Arc<AppState>, puzzle: &str) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    for implementation in [None, Some("wgpu"), Some("safe")] {
+        let request = SolveRequest {
+            solver: "friendlycaptcha".to_owned(),
+            algorithm: None,
+            implementation: implementation.map(str::to_owned),
+            batch_size_hint: 1,
+            challenge: serde_json::json!({"puzzle": puzzle}),
+        };
+        let Json(response) =
+            solve(State(state.clone()), Json(request))
+                .await
+                .map_err(|(status, Json(err))| {
+                    anyhow::anyhow!("Friendly GPU HTTP {status}: {}", err.error)
+                })?;
+        let expected_backend = if implementation == Some("safe") {
+            "cpu"
+        } else {
+            "gpu"
+        };
+        assert_eq!(response.backend, expected_backend);
+        if expected_backend == "gpu" {
+            assert_eq!(response.implementation.as_deref(), Some("wgpu-blake2b-256"));
+            assert_eq!(response.nonce_workers, None);
+        }
+        assert_eq!(response.answer["solution_count"], 16);
+        let encoded = response.answer["response"]
+            .as_str()
+            .context("Friendly response missing")?;
+        let parts: Vec<_> = encoded.split('.').collect();
+        assert_eq!(parts.len(), 4);
+        assert_eq!(parts[0], "fixture");
+        assert_eq!(
+            parts[1],
+            puzzle.split_once('.').context("puzzle separator")?.1
+        );
+        let proofs = STANDARD.decode(parts[2])?;
+        assert!(challenge_protocols::classic_pow::verify_friendlycaptcha_v1(
+            puzzle, &proofs
+        )?);
+        for (bank, proof) in proofs.as_chunks::<8>().0.iter().enumerate() {
+            assert_eq!(usize::from(proof[0]), bank);
+        }
+        assert_eq!(STANDARD.decode(parts[3])?.len(), 3);
+        println!(
+            "FRIENDLY_HTTP_GPU_RESULT implementation={implementation:?} backend={} total_ms={:.3}",
+            response.backend, response.total_ms
+        );
+    }
+    Ok(())
+}
+
 /// End-to-end Friendly v1 GPU routing, forced backend, and CPU policy parity.
 #[cfg(feature = "gpu")]
 #[tokio::test]
@@ -171,54 +284,7 @@ async fn friendlycaptcha_gpu_auto_forced_and_cpu_fallback_http() -> anyhow::Resu
     let first_answer: anubis::Answer = serde_json::from_value(anubis_before.answer)?;
     assert!(anubis::verify(&anubis_challenge, &first_answer));
 
-    for implementation in [None, Some("wgpu"), Some("safe")] {
-        let request = SolveRequest {
-            solver: "friendlycaptcha".to_owned(),
-            algorithm: None,
-            implementation: implementation.map(str::to_owned),
-            batch_size_hint: 1,
-            challenge: serde_json::json!({"puzzle": puzzle}),
-        };
-        let Json(response) =
-            solve(State(state.clone()), Json(request))
-                .await
-                .map_err(|(status, Json(err))| {
-                    anyhow::anyhow!("Friendly GPU HTTP {status}: {}", err.error)
-                })?;
-        let expected_backend = if implementation == Some("safe") {
-            "cpu"
-        } else {
-            "gpu"
-        };
-        assert_eq!(response.backend, expected_backend);
-        if expected_backend == "gpu" {
-            assert_eq!(response.implementation.as_deref(), Some("wgpu-blake2b-256"));
-            assert_eq!(response.nonce_workers, None);
-        }
-        assert_eq!(response.answer["solution_count"], 16);
-        let encoded = response.answer["response"]
-            .as_str()
-            .context("Friendly response missing")?;
-        let parts: Vec<_> = encoded.split('.').collect();
-        assert_eq!(parts.len(), 4);
-        assert_eq!(parts[0], "fixture");
-        assert_eq!(
-            parts[1],
-            puzzle.split_once('.').context("puzzle separator")?.1
-        );
-        let proofs = STANDARD.decode(parts[2])?;
-        assert!(challenge_protocols::classic_pow::verify_friendlycaptcha_v1(
-            &puzzle, &proofs
-        )?);
-        for (bank, proof) in proofs.chunks_exact(8).enumerate() {
-            assert_eq!(usize::from(proof[0]), bank);
-        }
-        assert_eq!(STANDARD.decode(parts[3])?.len(), 3);
-        println!(
-            "FRIENDLY_HTTP_GPU_RESULT implementation={implementation:?} backend={} total_ms={:.3}",
-            response.backend, response.total_ms
-        );
-    }
+    verify_friendly_gpu_variants(state.clone(), &puzzle).await?;
     let Json(anubis_after) = solve(
         State(state),
         Json(SolveRequest {
@@ -382,8 +448,8 @@ async fn sequentialread_scrypt_http_route_and_go_reference() -> anyhow::Result<(
     )?);
     assert_eq!(state.cpu_slots.available_permits(), before);
 
-    let Json(stats) = stats(State(state.clone())).await;
-    let advertised = serde_json::to_value(stats)?;
+    let Json(summary) = stats(State(state.clone())).await;
+    let advertised = serde_json::to_value(summary)?;
     assert!(
         advertised["available_solvers"]
             .as_array()
@@ -634,29 +700,9 @@ async fn tor_hs_v1_adaptive_fanout_respects_live_permits() -> anyhow::Result<()>
     Ok(())
 }
 
-#[tokio::test]
-async fn tor_hs_v1_cpu_permits_and_c_tor_reference_roundtrip() -> anyhow::Result<()> {
+fn verify_tor_hs_v1_capabilities(advertised: &Value) -> anyhow::Result<()> {
     use anyhow::Context as _;
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-    let id = "11".repeat(32);
-    let seed = STANDARD.encode([0xaa_u8; 32]);
-    let state = Arc::new(
-        AppState::initialize(Config {
-            cpu_workers: 2,
-            cpu_workers_per_request: 2,
-            kdf_memory_budget_mib: Some(128),
-            cpu_calibration_hashes: 8_192,
-            #[cfg(feature = "gpu")]
-            gpu_calibration_hashes: 8_192,
-            gpu_enabled: false,
-            gpu_policy: GpuPolicy::CpuOnly,
-            routing_calibration: None,
-        })
-        .await?,
-    );
-    let Json(snapshot) = stats(State(state.clone())).await;
-    let advertised = serde_json::to_value(snapshot)?;
     assert!(
         advertised["available_solvers"]
             .as_array()
@@ -680,6 +726,34 @@ async fn tor_hs_v1_cpu_permits_and_c_tor_reference_roundtrip() -> anyhow::Result
         capability["implementations"],
         serde_json::json!(["auto", "safe"])
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn tor_hs_v1_cpu_permits_and_c_tor_reference_roundtrip() -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let id = "11".repeat(32);
+    let seed = STANDARD.encode([0xaa_u8; 32]);
+    let state = Arc::new(
+        AppState::initialize(Config {
+            cpu_workers: 2,
+            cpu_workers_per_request: 2,
+            kdf_memory_budget_mib: Some(128),
+            cpu_calibration_hashes: 8_192,
+            #[cfg(feature = "gpu")]
+            gpu_calibration_hashes: 8_192,
+            gpu_enabled: false,
+            gpu_policy: GpuPolicy::CpuOnly,
+            routing_calibration: None,
+        })
+        .await?,
+    );
+    let Json(snapshot) = stats(State(state.clone())).await;
+    let advertised = serde_json::to_value(snapshot)?;
+    verify_tor_hs_v1_capabilities(&advertised)?;
 
     for held_permits in [1_u32, 0_u32] {
         let held = if held_permits == 0 {
@@ -792,7 +866,7 @@ async fn sha256_gpu_policy_idle_busy_queued_and_forced() -> anyhow::Result<()> {
     let answer: anubis::Answer = serde_json::from_value(idle.answer)?;
     assert!(anubis_wasm::verify_sha256(&wasm, &answer));
 
-    let busy = state.gpu_slots.clone().acquire_owned().await?;
+    let busy = state.gpu_admission.acquire("test:busy").await?;
     let cpu = tokio::time::timeout(
         Duration::from_secs(10),
         state.route_anubis("fast", classic.clone(), 1, Instant::now()),
@@ -812,7 +886,7 @@ async fn sha256_gpu_policy_idle_busy_queued_and_forced() -> anyhow::Result<()> {
     // Default policy favors GPU even while occupied by another request.
     // The semaphore is owned by the GPU job, not released when enqueued.
     state.config.gpu_policy = GpuPolicy::PreferGpu;
-    let busy = state.gpu_slots.clone().acquire_owned().await?;
+    let busy = state.gpu_admission.acquire("test:busy").await?;
     {
         let pending = state.route_anubis("fast", classic.clone(), 1, Instant::now());
         tokio::pin!(pending);
@@ -845,11 +919,17 @@ async fn sha256_gpu_policy_idle_busy_queued_and_forced() -> anyhow::Result<()> {
         .await?;
     assert_eq!(recovered.backend, "gpu", "GPU should be reusable");
 
+    verify_cerberus_gpu_policy(&mut state).await?;
+    Ok(())
+}
+
+#[cfg(feature = "gpu")]
+async fn verify_cerberus_gpu_policy(state: &mut AppState) -> anyhow::Result<()> {
     let cerberus = serde_json::json!({
         "challenge": "gpu-policy-cerberus",
         "difficulty": 2,
-        "nonce": 3959614364_u64,
-        "ts": 1759954402_u64,
+        "nonce": 3_959_614_364_u64,
+        "ts": 1_759_954_402_u64,
         "signature": "testing",
         "version": "0.4.9"
     });
