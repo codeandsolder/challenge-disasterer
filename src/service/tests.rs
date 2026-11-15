@@ -10,22 +10,20 @@ use axum::{Json, extract::State, http::StatusCode};
 /// single-threaded Tokio runtime continue serving unrelated requests.
 #[cfg(feature = "gpu")]
 #[tokio::test(flavor = "current_thread")]
-async fn gpu_blocking_task_keeps_runtime_responsive() -> anyhow::Result<()> {
+async fn persistent_gpu_worker_keeps_runtime_responsive_and_closes() -> anyhow::Result<()> {
     use std::time::Duration;
 
-    let (tx, mut rx) = mpsc::channel::<oneshot::Sender<()>>(1);
+    let (tx, rx) = mpsc::channel::<oneshot::Sender<()>>(1);
     let (entered_tx, entered_rx) = oneshot::channel();
-    // A tracked blocking task must be able to run while a single-threaded
-    // Tokio core runtime continues serving timers and requests.
-    tokio::spawn(async move {
-        if let Some(finished) = rx.recv().await {
-            let _ = spawn_blocking_gpu(move || {
-                let _ = entered_tx.send(());
-                std::thread::sleep(Duration::from_millis(350));
-                let _ = finished.send(());
-            })
-            .await;
+    let mut entered_tx = Some(entered_tx);
+    // An owned, long-lived blocking-pool task must not stall a single-threaded
+    // Tokio executor; dropping the sender must also terminate the worker.
+    let worker = spawn_gpu_worker(rx, move |finished| {
+        if let Some(entered) = entered_tx.take() {
+            let _ = entered.send(());
         }
+        std::thread::sleep(Duration::from_millis(350));
+        let _ = finished.send(());
     });
 
     let (finished_tx, finished_rx) = oneshot::channel();
@@ -40,6 +38,9 @@ async fn gpu_blocking_task_keeps_runtime_responsive() -> anyhow::Result<()> {
     .await?;
     finished_rx.await?;
     drop(tx);
+    // Make worker lifetime deterministic. This also guards against the
+    // shutdown race that affected the earlier detached std::thread design.
+    tokio::time::timeout(Duration::from_secs(2), worker).await??;
     Ok(())
 }
 
