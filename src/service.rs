@@ -337,17 +337,24 @@ impl AppState {
                 Ok(mut gpu) => {
                     let implementations = gpu.implementations();
                     info!(adapter = %gpu.adapter(), ?implementations, "HashX GPU backend ready");
-                    let (tx, mut rx) = mpsc::channel::<HashxGpuJob>(128);
-                    tokio::spawn(async move {
-                        while let Some(job) = rx.recv().await {
-                            let _ = job.started.send(Instant::now());
-                            let result = gpu.solve_with_implementation(
-                                &job.challenge,
-                                job.implementation.as_deref(),
-                            );
-                            let _ = job.result.send(result);
-                        }
-                    });
+                    let (tx, rx) = mpsc::channel::<HashxGpuJob>(128);
+                    // HashX performs synchronous Vulkan/CUDA polling, so it must
+                    // not occupy a Tokio async executor thread while solving.
+                    drop(spawn_gpu_worker(rx, move |job| {
+                        let HashxGpuJob {
+                            _gpu_permit: gpu_permit,
+                            challenge,
+                            implementation,
+                            started,
+                            result,
+                        } = job;
+                        let _ = started.send(Instant::now());
+                        let answer =
+                            gpu.solve_with_implementation(&challenge, implementation.as_deref());
+                        // The reply must not race the global GPU permit release.
+                        drop(gpu_permit);
+                        let _ = result.send(answer);
+                    }));
                     (Some(tx), true, implementations)
                 }
                 Err(err) => {

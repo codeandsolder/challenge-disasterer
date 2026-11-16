@@ -126,6 +126,29 @@ async fn persistent_gpu_worker_keeps_runtime_responsive_and_closes() -> anyhow::
     Ok(())
 }
 
+/// A finished GPU reply implies that its shared admission permit is free.
+/// This is important for back-to-back requests and also on client cancellation.
+#[cfg(feature = "gpu")]
+#[tokio::test]
+async fn gpu_worker_releases_permit_before_reply() -> anyhow::Result<()> {
+    let admission = GpuAdmission::new();
+    let (tx, rx) = mpsc::channel::<(GpuPermit, oneshot::Sender<()>)>(1);
+    let worker = spawn_gpu_worker(rx, move |(permit, done)| {
+        drop(permit);
+        let _ = done.send(());
+    });
+    let permit = admission.acquire("anubis-hashx").await?;
+    assert_eq!(admission.snapshot().running_requests, 1);
+    let (done_tx, done_rx) = oneshot::channel();
+    tx.send((permit, done_tx)).await?;
+    done_rx.await?;
+    assert_eq!(admission.snapshot().running_requests, 0);
+    assert!(admission.try_acquire("protocol:friendlycaptcha").is_some());
+    drop(tx);
+    worker.await?;
+    Ok(())
+}
+
 /// Queue visibility works without physical GPU initialization: tests the
 /// actual public /stats schema while a different GPU family holds the gate.
 #[cfg(feature = "gpu")]
