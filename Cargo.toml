@@ -58,4 +58,4 @@ todo = "deny"
 unimplemented = "deny"
 
 [workspace.dependencies]
-hashwx = { git = "https://github.com/codeandsolder/hashwx-rs", rev = "d4d9bcff1f4817fa09770bff755b81bd2f74be53", default-features = false, features = ["native", "hashx"] }
+hashwx = { git = "https://github.com/codeandsolder/hashwx-rs", rev = "18ac274f3b6e66a33fd9f1c4884978e7e3c89cab", default-features = false, features = ["native", "hashx"] }
