@@ -85,7 +85,7 @@ dependencies = [
 [[package]]
 name = "anubis-argon2"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=ddd388423396af261f67cc130d4938ab979b53d7#ddd388423396af261f67cc130d4938ab979b53d7"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=f14a3a3527439f93c976c9de0930534fe86e1aea#f14a3a3527439f93c976c9de0930534fe86e1aea"
 dependencies = [
  "blake2 0.11.0",
 ]
@@ -142,6 +142,17 @@ dependencies = [
  "compression-core",
  "pin-project-lite",
  "tokio",
+]
+
+[[package]]
+name = "async-lock"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0876700b0d007ad25d5508865a4259c3af9af6d296bf663a0d586d0bc3369f6f"
+dependencies = [
+ "event-listener",
+ "event-listener-strategy",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -417,7 +428,7 @@ dependencies = [
  "bytemuck",
  "challenge-hashx",
  "challenge-protocols",
- "challenge-solvers",
+ "challenge-solvers 0.1.0 (git+https://github.com/codeandsolder/challenge-solvers?rev=ddd388423396af261f67cc130d4938ab979b53d7)",
  "clap",
  "hex",
  "reqwest",
@@ -474,7 +485,7 @@ name = "challenge-disasterer-simd-width-bench"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "challenge-solvers",
+ "challenge-solvers 0.1.0 (git+https://github.com/codeandsolder/challenge-solvers?rev=ddd388423396af261f67cc130d4938ab979b53d7)",
  "serde_json",
 ]
 
@@ -485,7 +496,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "challenge-protocols",
- "challenge-solvers",
+ "challenge-solvers 0.1.0 (git+https://github.com/codeandsolder/challenge-solvers?rev=ddd388423396af261f67cc130d4938ab979b53d7)",
  "clap",
  "hashwx 0.1.0 (git+https://github.com/codeandsolder/hashwx-rs?rev=d4d9bcff1f4817fa09770bff755b81bd2f74be53)",
  "num-bigint 0.5.1",
@@ -503,7 +514,7 @@ dependencies = [
 name = "challenge-disasterer-wasm-simd128-bench"
 version = "0.1.0"
 dependencies = [
- "challenge-solvers",
+ "challenge-solvers 0.1.0 (git+https://github.com/codeandsolder/challenge-solvers?rev=ddd388423396af261f67cc130d4938ab979b53d7)",
  "serde_json",
 ]
 
@@ -525,14 +536,14 @@ dependencies = [
 [[package]]
 name = "challenge-protocols"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=ddd388423396af261f67cc130d4938ab979b53d7#ddd388423396af261f67cc130d4938ab979b53d7"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=f14a3a3527439f93c976c9de0930534fe86e1aea#f14a3a3527439f93c976c9de0930534fe86e1aea"
 dependencies = [
  "anubis-argon2",
  "anyhow",
  "argon2-rust",
  "base64 0.22.1",
  "blake2 0.11.0",
- "challenge-solvers",
+ "challenge-solvers 0.1.0 (git+https://github.com/codeandsolder/challenge-solvers?rev=f14a3a3527439f93c976c9de0930534fe86e1aea)",
  "equix",
  "getrandom 0.3.4",
  "hashwx 0.1.0 (git+https://github.com/codeandsolder/hashwx-rs?rev=9c69f0f8a30d4528c46c39ce1972eea1cde8e177)",
@@ -554,6 +565,25 @@ name = "challenge-solvers"
 version = "0.1.0"
 source = "git+https://github.com/codeandsolder/challenge-solvers?rev=ddd388423396af261f67cc130d4938ab979b53d7#ddd388423396af261f67cc130d4938ab979b53d7"
 dependencies = [
+ "blake3",
+ "bytemuck",
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "futures-channel",
+ "pbkdf2",
+ "semver",
+ "serde",
+ "sha1",
+ "sha2 0.11.1",
+ "wgpu",
+]
+
+[[package]]
+name = "challenge-solvers"
+version = "0.1.0"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=f14a3a3527439f93c976c9de0930534fe86e1aea#f14a3a3527439f93c976c9de0930534fe86e1aea"
+dependencies = [
+ "async-lock",
  "blake3",
  "bytemuck",
  "cfg-if",
@@ -1028,6 +1058,26 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "event-listener"
+version = "5.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
+dependencies = [
+ "parking",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "event-listener-strategy"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
+dependencies = [
+ "event-listener",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -2098,6 +2148,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "parking"
+version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2682,7 +2738,7 @@ dependencies = [
 [[package]]
 name = "scrypt-fast"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=ddd388423396af261f67cc130d4938ab979b53d7#ddd388423396af261f67cc130d4938ab979b53d7"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=f14a3a3527439f93c976c9de0930534fe86e1aea#f14a3a3527439f93c976c9de0930534fe86e1aea"
 dependencies = [
  "pbkdf2",
  "scrypt",
