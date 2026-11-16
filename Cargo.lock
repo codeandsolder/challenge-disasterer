@@ -521,7 +521,7 @@ dependencies = [
 [[package]]
 name = "challenge-hashx"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=f14a3a3527439f93c976c9de0930534fe86e1aea#f14a3a3527439f93c976c9de0930534fe86e1aea"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=ef5381742a9c7120b28d1106866cf072cbc5e3f7#ef5381742a9c7120b28d1106866cf072cbc5e3f7"
 dependencies = [
  "anyhow",
  "bytemuck",

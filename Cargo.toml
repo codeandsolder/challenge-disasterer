@@ -14,7 +14,7 @@ axum = "0.8"
 bytemuck = { version = "1", features = ["derive"], optional = true }
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
-challenge-hashx = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "f14a3a3527439f93c976c9de0930534fe86e1aea", default-features = false }
+challenge-hashx = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "ef5381742a9c7120b28d1106866cf072cbc5e3f7", default-features = false }
 challenge-solvers = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "f14a3a3527439f93c976c9de0930534fe86e1aea", default-features = false, features = ["std", "runtime-dispatch", "all-challenges"] }
 challenge-protocols = { git = "https://github.com/codeandsolder/challenge-solvers", rev = "f14a3a3527439f93c976c9de0930534fe86e1aea", default-features = false }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
