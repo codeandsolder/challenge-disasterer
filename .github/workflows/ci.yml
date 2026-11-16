@@ -22,6 +22,7 @@ jobs:
       timeout-minutes: 15
       command: |
         ./tools/ci/check-rust-toolchain.sh
+        ./tools/ci/check-solver-pins.sh
         cargo test --locked -p challenge-disasterer --all-features
 
   rust-tools:
