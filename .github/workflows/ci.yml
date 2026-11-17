@@ -18,7 +18,7 @@ jobs:
     name: Application Rust (shared sccache)
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@902094bd4b69dc21860a6253bbc819542a2acfa3 # main
     with:
-      rust-toolchain: "nightly-2026-11-13"
+      rust-toolchain: "nightly-2026-11-17"
       timeout-minutes: 15
       command: |
         ./tools/ci/check-rust-toolchain.sh
@@ -29,7 +29,7 @@ jobs:
     name: Rust tools (shared sccache)
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@902094bd4b69dc21860a6253bbc819542a2acfa3 # main
     with:
-      rust-toolchain: "nightly-2026-11-13"
+      rust-toolchain: "nightly-2026-11-17"
       rust-components: "rustfmt"
       timeout-minutes: 15
       command: |
@@ -44,7 +44,7 @@ jobs:
     name: Solver matrix Rust (shared sccache)
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@902094bd4b69dc21860a6253bbc819542a2acfa3 # main
     with:
-      rust-toolchain: "nightly-2026-11-13"
+      rust-toolchain: "nightly-2026-11-17"
       timeout-minutes: 15
       command: |
         ./tools/ci/check-rust-toolchain.sh
