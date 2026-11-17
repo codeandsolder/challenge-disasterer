@@ -20,4 +20,4 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-current = { package = "challenge-solvers", git = "https://github.com/codeandsolder/challenge-solvers", rev = "8517dc6b1cc70acc6ebbe39a07e993c556b46d7b", default-features = true, features = ["compare-64bit"] }
+current = { package = "challenge-solvers", git = "https://github.com/codeandsolder/challenge-solvers", rev = "541aeae2463318ca88a5a3aebabcb01edebca3a1", default-features = true, features = ["compare-64bit"] }

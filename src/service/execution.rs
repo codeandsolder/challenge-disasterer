@@ -514,6 +514,11 @@ impl AppState {
                 Ok(None) => {
                     tracing::debug!(solver, "GPU occupied; routing hash work to CPU");
                 }
+                Err(err) if err.is::<classic_pow::InvalidRequest>() => {
+                    // Malformed input cannot become valid by retrying it on
+                    // another compute device. Preserve request provenance.
+                    return Err(err);
+                }
                 Err(err) => {
                     tracing::warn!(solver, %err, "automatic hash WGPU failed; routing to CPU");
                 }

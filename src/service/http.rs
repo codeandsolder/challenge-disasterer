@@ -398,9 +398,17 @@ pub async fn solve(
             Ok(Json(response))
         }
         Err(err) => {
-            state.stats.write().await.record_failure();
+            // The protocol library tags its actual parsing failures; a
+            // backend failure, nonce exhaustion or unavailable resource has
+            // different provenance and must not be guessed from its text.
+            let status = if err.is::<crate::classic_pow::InvalidRequest>() {
+                StatusCode::BAD_REQUEST
+            } else {
+                state.stats.write().await.record_failure();
+                StatusCode::SERVICE_UNAVAILABLE
+            };
             Err((
-                StatusCode::SERVICE_UNAVAILABLE,
+                status,
                 Json(ErrorResponse {
                     error: err.to_string(),
                 }),
