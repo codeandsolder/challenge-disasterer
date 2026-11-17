@@ -85,7 +85,7 @@ dependencies = [
 [[package]]
 name = "anubis-argon2"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=ef5381742a9c7120b28d1106866cf072cbc5e3f7#ef5381742a9c7120b28d1106866cf072cbc5e3f7"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=8517dc6b1cc70acc6ebbe39a07e993c556b46d7b#8517dc6b1cc70acc6ebbe39a07e993c556b46d7b"
 dependencies = [
  "blake2 0.11.0",
 ]
@@ -498,7 +498,7 @@ dependencies = [
  "challenge-protocols",
  "challenge-solvers",
  "clap",
- "hashwx 0.1.0 (git+https://github.com/codeandsolder/hashwx-rs?rev=18ac274f3b6e66a33fd9f1c4884978e7e3c89cab)",
+ "hashwx",
  "num-bigint 0.5.1",
  "pbkdf2",
  "rayon",
@@ -521,12 +521,12 @@ dependencies = [
 [[package]]
 name = "challenge-hashx"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=ef5381742a9c7120b28d1106866cf072cbc5e3f7#ef5381742a9c7120b28d1106866cf072cbc5e3f7"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=8517dc6b1cc70acc6ebbe39a07e993c556b46d7b#8517dc6b1cc70acc6ebbe39a07e993c556b46d7b"
 dependencies = [
  "anyhow",
  "bytemuck",
  "cudarc",
- "hashwx 0.1.0 (git+https://github.com/codeandsolder/hashwx-rs?rev=9c69f0f8a30d4528c46c39ce1972eea1cde8e177)",
+ "hashwx",
  "hex",
  "serde",
  "tracing",
@@ -536,7 +536,7 @@ dependencies = [
 [[package]]
 name = "challenge-protocols"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=ef5381742a9c7120b28d1106866cf072cbc5e3f7#ef5381742a9c7120b28d1106866cf072cbc5e3f7"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=8517dc6b1cc70acc6ebbe39a07e993c556b46d7b#8517dc6b1cc70acc6ebbe39a07e993c556b46d7b"
 dependencies = [
  "anubis-argon2",
  "anyhow",
@@ -546,7 +546,7 @@ dependencies = [
  "challenge-solvers",
  "equix",
  "getrandom 0.3.4",
- "hashwx 0.1.0 (git+https://github.com/codeandsolder/hashwx-rs?rev=9c69f0f8a30d4528c46c39ce1972eea1cde8e177)",
+ "hashwx",
  "hex",
  "itoa",
  "num-traits",
@@ -563,7 +563,7 @@ dependencies = [
 [[package]]
 name = "challenge-solvers"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=ef5381742a9c7120b28d1106866cf072cbc5e3f7#ef5381742a9c7120b28d1106866cf072cbc5e3f7"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=8517dc6b1cc70acc6ebbe39a07e993c556b46d7b#8517dc6b1cc70acc6ebbe39a07e993c556b46d7b"
 dependencies = [
  "async-lock",
  "blake3",
@@ -1308,18 +1308,6 @@ dependencies = [
 name = "hashwx"
 version = "0.1.0"
 source = "git+https://github.com/codeandsolder/hashwx-rs?rev=18ac274f3b6e66a33fd9f1c4884978e7e3c89cab#18ac274f3b6e66a33fd9f1c4884978e7e3c89cab"
-dependencies = [
- "arrayvec",
- "blake2 0.10.6",
- "dynasm",
- "dynasmrt",
- "rand_core",
-]
-
-[[package]]
-name = "hashwx"
-version = "0.1.0"
-source = "git+https://github.com/codeandsolder/hashwx-rs?rev=9c69f0f8a30d4528c46c39ce1972eea1cde8e177#9c69f0f8a30d4528c46c39ce1972eea1cde8e177"
 dependencies = [
  "arrayvec",
  "blake2 0.10.6",
@@ -2720,7 +2708,7 @@ dependencies = [
 [[package]]
 name = "scrypt-fast"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=ef5381742a9c7120b28d1106866cf072cbc5e3f7#ef5381742a9c7120b28d1106866cf072cbc5e3f7"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=8517dc6b1cc70acc6ebbe39a07e993c556b46d7b#8517dc6b1cc70acc6ebbe39a07e993c556b46d7b"
 dependencies = [
  "pbkdf2",
  "scrypt",

@@ -55,6 +55,25 @@
       "groupName": "Pinned Rust nightly and CI callers",
       "groupSlug": "rust-nightly-and-ci",
       "automerge": false
+    },
+    {
+      "description": "All application, protocol and benchmark consumers of the challenge-solvers git monorepo must update together",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchPackageNames": [
+        "challenge-solvers",
+        "challenge-hashx",
+        "challenge-protocols",
+        "anubis-argon2",
+        "scrypt-fast"
+      ],
+      "matchUpdateTypes": [
+        "digest"
+      ],
+      "groupName": "Reusable challenge-solvers git revision",
+      "groupSlug": "challenge-solvers-suite",
+      "automerge": false
     }
   ],
   "customManagers": [
