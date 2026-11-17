@@ -132,7 +132,7 @@ dependencies = [
 [[package]]
 name = "challenge-solvers"
 version = "0.1.0"
-source = "git+https://github.com/codeandsolder/challenge-solvers?rev=8517dc6b1cc70acc6ebbe39a07e993c556b46d7b#8517dc6b1cc70acc6ebbe39a07e993c556b46d7b"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=841a73a31dbf53366f01873cb80ae305c116a84d#841a73a31dbf53366f01873cb80ae305c116a84d"
 dependencies = [
  "blake3",
  "cfg-if",

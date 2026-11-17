@@ -88,6 +88,105 @@ async fn real_http_server_timing_covers_extraction_and_compute() -> anyhow::Resu
     Ok(())
 }
 
+/// All classic solvers have one typed parsing boundary. Bad client payloads
+/// must map to 400 without spending compute; genuine search exhaustion is 503.
+#[tokio::test]
+async fn classic_http_bad_request_vs_backend_failure() -> anyhow::Result<()> {
+    let state = Arc::new(
+        AppState::initialize(Config {
+            cpu_workers: 2,
+            cpu_workers_per_request: 1,
+            kdf_memory_budget_mib: Some(128),
+            cpu_calibration_hashes: 8_192,
+            #[cfg(feature = "gpu")]
+            gpu_calibration_hashes: 8_192,
+            gpu_enabled: false,
+            gpu_policy: GpuPolicy::CpuOnly,
+            routing_calibration: None,
+        })
+        .await?,
+    );
+    let malformed = [
+        ("cerberus", serde_json::json!({})),
+        (
+            "goaway",
+            serde_json::json!({"challenge": "bad", "difficulty": 1}),
+        ),
+        (
+            "capjs",
+            serde_json::json!({"token": "x", "format": 2,
+                "challenges": [
+                    {"protocol": "rsw", "payload": {"N": "11", "x": "2", "t": 1}},
+                    {"protocol": "sha256-pow", "payload": {"salt": "x", "target": "wrong"}}
+                ]
+            }),
+        ),
+        (
+            "mcaptcha",
+            serde_json::json!({"config": {
+            "string": "x", "salt": "s", "difficulty_factor": 0
+        }, "key": "k"}),
+        ),
+        (
+            "haphash",
+            serde_json::json!({"prefix": "p", "difficulty": 65}),
+        ),
+        (
+            "altcha",
+            serde_json::json!({"parameters": {
+                "algorithm": "SCRYPT", "cost": 15, "keyLength": 16,
+                "keyPrefix": "", "nonce": "00", "salt": "00"
+            }}),
+        ),
+        ("linear", serde_json::json!({"seed": "bad"})),
+        ("friendlycaptcha", serde_json::json!("not a valid puzzle")),
+        (
+            "tor-hs-v1",
+            serde_json::json!({"blinded_id": "bad", "seed_b64": "bad", "effort": 1}),
+        ),
+        ("pow-bot-deterrent", serde_json::json!("not base64")),
+    ];
+    for (solver, challenge) in malformed {
+        let outcome = super::http::solve(
+            State(state.clone()),
+            Json(SolveRequest {
+                solver: solver.to_owned(),
+                algorithm: None,
+                implementation: Some("safe".to_owned()),
+                batch_size_hint: 1,
+                challenge,
+            }),
+        )
+        .await;
+        let Err((status, Json(error))) = outcome else {
+            anyhow::bail!("{solver} invalid input was accepted");
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{solver}: {}", error.error);
+    }
+    let exhausted = super::http::solve(
+        State(state),
+        Json(SolveRequest {
+            solver: "altcha".to_owned(),
+            algorithm: None,
+            implementation: Some("safe".to_owned()),
+            batch_size_hint: 1,
+            challenge: serde_json::json!({
+                "algorithm": "SHA-256",
+                "challenge": "00".repeat(32),
+                "maxnumber": 0,
+                "salt": "valid",
+                "signature": "signed"
+            }),
+        }),
+    )
+    .await;
+    let Err((status, Json(_))) = exhausted else {
+        anyhow::bail!("one-attempt ALTCHA control challenge unexpectedly succeeded");
+    };
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    Ok(())
+}
+
 /// GPU readbacks block their OS thread; a tracked blocking task must let a
 /// single-threaded Tokio runtime continue serving unrelated requests.
 #[cfg(feature = "gpu")]
