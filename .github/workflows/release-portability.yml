@@ -12,7 +12,7 @@ jobs:
     name: Pinned-nightly CPU-only service
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@902094bd4b69dc21860a6253bbc819542a2acfa3 # main
     with:
-      rust-toolchain: "nightly-2026-11-13"
+      rust-toolchain: "nightly-2026-11-17"
       validation-tier: release
       rustflags: ""
       timeout-minutes: 25
@@ -25,7 +25,7 @@ jobs:
     name: Standalone benchmark tools (release-only)
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@902094bd4b69dc21860a6253bbc819542a2acfa3 # main
     with:
-      rust-toolchain: "nightly-2026-11-13"
+      rust-toolchain: "nightly-2026-11-17"
       validation-tier: release
       rustflags: ""
       timeout-minutes: 15
