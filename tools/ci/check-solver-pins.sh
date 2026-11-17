@@ -40,7 +40,7 @@ echo "Solver git dependency invariant OK: ${!revisions[*]} ($seen occurrences)"
 # The service and reusable GPU crates must compile against one authoritative
 # HashWX revision. Checking only direct solver git pins cannot detect a
 # transitive HashWX revision drift in the reusable solver's Cargo.toml.
-graph="$(cargo metadata --locked --format-version 1)" || exit 1
+graph="$(cargo metadata --locked --all-features --format-version 1)" || exit 1
 hashwx_sources="$(jq -r '
   .packages[] | select(.name == "hashwx") | (.source // "")
 ' <<<"$graph")" || exit 1
