@@ -36,3 +36,24 @@ if ((seen == 0 || ${#revisions[@]} != 1)); then
   exit 1
 fi
 echo "Solver git dependency invariant OK: ${!revisions[*]} ($seen occurrences)"
+
+# The service and reusable GPU crates must compile against one authoritative
+# HashWX revision. Checking only direct solver git pins cannot detect a
+# transitive HashWX revision drift in the reusable solver's Cargo.toml.
+graph="$(cargo metadata --locked --format-version 1)" || exit 1
+hashwx_sources="$(jq -r '
+  .packages[] | select(.name == "hashwx") | (.source // "")
+' <<<"$graph")" || exit 1
+if [[ -z "$hashwx_sources" || "$hashwx_sources" == *$'\n'* ]]; then
+  echo "Expected exactly one resolved HashWX package; got: $hashwx_sources" >&2
+  exit 1
+fi
+if [[ ! "$hashwx_sources" =~ ^git\+https://github\.com/codeandsolder/hashwx-rs\?rev=([0-9a-f]{40})#([0-9a-f]{40})$ ]]; then
+  echo "HashWX must be pinned to a full git commit: $hashwx_sources" >&2
+  exit 1
+fi
+if [[ "${BASH_REMATCH[1]}" != "${BASH_REMATCH[2]}" ]]; then
+  echo "HashWX requested revision differs from resolved commit: $hashwx_sources" >&2
+  exit 1
+fi
+echo "HashWX graph invariant OK: ${BASH_REMATCH[1]}"
