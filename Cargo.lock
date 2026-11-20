@@ -428,7 +428,7 @@ dependencies = [
  "bytemuck",
  "challenge-hashx",
  "challenge-protocols",
- "challenge-solvers",
+ "challenge-solvers 0.1.0 (git+https://github.com/codeandsolder/challenge-solvers?rev=149d60b61b5490cd2d6d91a7a48ed2305d85c339)",
  "clap",
  "hex",
  "reqwest",
@@ -485,7 +485,7 @@ name = "challenge-disasterer-simd-width-bench"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "challenge-solvers",
+ "challenge-solvers 0.1.0 (git+https://github.com/codeandsolder/challenge-solvers?rev=149d60b61b5490cd2d6d91a7a48ed2305d85c339)",
  "serde_json",
 ]
 
@@ -496,7 +496,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "challenge-protocols",
- "challenge-solvers",
+ "challenge-solvers 0.1.0 (git+https://github.com/codeandsolder/challenge-solvers?rev=149d60b61b5490cd2d6d91a7a48ed2305d85c339)",
  "clap",
  "hashwx",
  "num-bigint 0.5.1",
@@ -514,7 +514,7 @@ dependencies = [
 name = "challenge-disasterer-wasm-simd128-bench"
 version = "0.1.0"
 dependencies = [
- "challenge-solvers",
+ "challenge-solvers 0.1.0 (git+https://github.com/codeandsolder/challenge-solvers?rev=149d60b61b5490cd2d6d91a7a48ed2305d85c339)",
  "serde_json",
 ]
 
@@ -543,7 +543,7 @@ dependencies = [
  "argon2-rust",
  "base64 0.22.1",
  "blake2 0.11.0",
- "challenge-solvers",
+ "challenge-solvers 0.1.0 (git+https://github.com/codeandsolder/challenge-solvers?rev=841a73a31dbf53366f01873cb80ae305c116a84d)",
  "equix",
  "getrandom 0.3.4",
  "hashwx",
@@ -558,6 +558,25 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.11.1",
+]
+
+[[package]]
+name = "challenge-solvers"
+version = "0.1.0"
+source = "git+https://github.com/codeandsolder/challenge-solvers?rev=149d60b61b5490cd2d6d91a7a48ed2305d85c339#149d60b61b5490cd2d6d91a7a48ed2305d85c339"
+dependencies = [
+ "async-lock",
+ "blake3",
+ "bytemuck",
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "futures-channel",
+ "pbkdf2",
+ "semver",
+ "serde",
+ "sha1",
+ "sha2 0.11.1",
+ "wgpu",
 ]
 
 [[package]]
