@@ -498,7 +498,7 @@ dependencies = [
  "challenge-protocols",
  "challenge-solvers",
  "clap",
- "hashwx",
+ "hashwx 0.1.0 (git+https://github.com/codeandsolder/hashwx-rs?rev=7128184039a204e4b62badecc769800626f1b36b)",
  "num-bigint 0.5.1",
  "pbkdf2",
  "rayon",
@@ -526,7 +526,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "cudarc",
- "hashwx",
+ "hashwx 0.1.0 (git+https://github.com/codeandsolder/hashwx-rs?rev=18ac274f3b6e66a33fd9f1c4884978e7e3c89cab)",
  "hex",
  "serde",
  "tracing",
@@ -546,7 +546,7 @@ dependencies = [
  "challenge-solvers",
  "equix",
  "getrandom 0.3.4",
- "hashwx",
+ "hashwx 0.1.0 (git+https://github.com/codeandsolder/hashwx-rs?rev=18ac274f3b6e66a33fd9f1c4884978e7e3c89cab)",
  "hex",
  "itoa",
  "num-traits",
@@ -1308,6 +1308,18 @@ dependencies = [
 name = "hashwx"
 version = "0.1.0"
 source = "git+https://github.com/codeandsolder/hashwx-rs?rev=18ac274f3b6e66a33fd9f1c4884978e7e3c89cab#18ac274f3b6e66a33fd9f1c4884978e7e3c89cab"
+dependencies = [
+ "arrayvec",
+ "blake2 0.10.6",
+ "dynasm",
+ "dynasmrt",
+ "rand_core",
+]
+
+[[package]]
+name = "hashwx"
+version = "0.1.0"
+source = "git+https://github.com/codeandsolder/hashwx-rs?rev=7128184039a204e4b62badecc769800626f1b36b#7128184039a204e4b62badecc769800626f1b36b"
 dependencies = [
  "arrayvec",
  "blake2 0.10.6",
