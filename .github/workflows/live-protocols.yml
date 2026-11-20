@@ -143,7 +143,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: "1.27.x"
       - name: Verify Cerberus ${{ matrix.upstream_ref }} (${{ matrix.implementation }})
@@ -175,7 +175,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
           echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: "1.27.x"
       - name: Verify against current go-away (${{ matrix.implementation }})
