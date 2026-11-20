@@ -23,8 +23,6 @@ jobs:
       - name: Check out challenge-disasterer
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@44b5080c6771a2b91fdda295e1d43886b53a4af5 # main
 
       - name: Check out live Anubis main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -52,6 +50,9 @@ jobs:
           cargo --version
           rustup toolchain install 1.99.0 --profile minimal
           rustup target add wasm32-unknown-unknown --toolchain 1.99.0
+
+      - name: Setup canonical sccache
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@079cb96347f3dee5a628baaed46e63055c80efa5 # main
 
       - name: Install Anubis asset compressors
         run: sudo apt-get update -qq && sudo apt-get install -y brotli zstd
@@ -82,4 +83,4 @@ jobs:
 
       - name: Finalize canonical sccache
         if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@44b5080c6771a2b91fdda295e1d43886b53a4af5 # main
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@079cb96347f3dee5a628baaed46e63055c80efa5 # main
