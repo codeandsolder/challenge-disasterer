@@ -61,19 +61,33 @@
       "matchManagers": [
         "cargo"
       ],
-      "matchPackageNames": [
-        "challenge-solvers",
-        "challenge-hashx",
-        "challenge-protocols",
-        "anubis-argon2",
-        "scrypt-fast"
-      ],
       "matchUpdateTypes": [
         "digest"
       ],
       "groupName": "Reusable challenge-solvers git revision",
       "groupSlug": "challenge-solvers-suite",
-      "automerge": false
+      "automerge": false,
+      "matchDepNames": [
+        "challenge-solvers",
+        "challenge-hashx",
+        "challenge-protocols",
+        "anubis-argon2",
+        "scrypt-fast",
+        "current"
+      ]
+    },
+    {
+      "description": "HashWX is a transitive shared dependency: bump challenge-solvers first and coordinate application pins, never update the direct pin alone",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchDepNames": [
+        "hashwx"
+      ],
+      "matchUpdateTypes": [
+        "digest"
+      ],
+      "enabled": false
     }
   ],
   "customManagers": [
