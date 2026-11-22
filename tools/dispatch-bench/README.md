@@ -8,9 +8,9 @@ control would itself affect the whole-program optimization under investigation.
 Build three separate *release executables* from the same source and pinned
 solver, saving a copy of each executable before changing its feature set:
 
-    cargo +nightly-2026-11-03 build --locked --release --manifest-path tools/dispatch-bench/Cargo.toml --no-default-features --features typed
-    cargo +nightly-2026-11-03 build --locked --release --manifest-path tools/dispatch-bench/Cargo.toml --no-default-features --features erased
-    cargo +nightly-2026-11-03 build --locked --release --manifest-path tools/dispatch-bench/Cargo.toml --features erased
+    cargo build --locked --release --manifest-path tools/dispatch-bench/Cargo.toml --no-default-features --features typed
+    cargo build --locked --release --manifest-path tools/dispatch-bench/Cargo.toml --no-default-features --features erased
+    cargo build --locked --release --manifest-path tools/dispatch-bench/Cargo.toml --features erased
 
 The third command compiles both typed and erased into one executable. All
 three use ThinLTO with one codegen unit. No build changes production kernels.
