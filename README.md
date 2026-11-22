@@ -124,6 +124,15 @@ cargo +nightly-2026-11-03 run --locked --release \
   --mode throughput --samples 5 --limit 1120000
 ```
 
+The optional GPU experiments are benchmark CLI subcommands, not configuration-driven
+ignored tests. Use the matrix binary's `--help` and each subcommand's `--help`
+to see the typed parameters and defaults. Scrypt ROMix and full KDF experiments
+accept named shader selections and predefined shape selectors; the SHA-256
+experiments accept explicit trial and work-budget options. Invalid selections
+are rejected before GPU initialization. The ordinary matrix arguments apply
+only when no experiment subcommand is present. These experiments use local
+deterministic inputs; protocol correctness regression tests remain separate.
+
 The direct matrix deliberately separates two questions that must not be conflated:
 
 - **correctness:** normal protocol targets; every returned proof is checked against the protocol condition and the live harness subsequently submits it to the authoritative implementation;
