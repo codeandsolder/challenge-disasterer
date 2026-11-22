@@ -6,7 +6,7 @@ publish = false
 
 [features]
 default = ["gpu"]
-gpu = ["challenge-solvers/gpu"]
+gpu = ["challenge-solvers/gpu", "dep:rayon", "dep:scrypt"]
 
 [dependencies]
 argon2 = "0.6.0"
@@ -23,9 +23,8 @@ sha2 = "0.11"
 pbkdf2 = "0.13"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
-[dev-dependencies]
-rayon = "1.12"
-scrypt = "0.12"
+rayon = { version = "1.12", optional = true }
+scrypt = { version = "0.12", optional = true }
 
 [lints]
 workspace = true
