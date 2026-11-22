@@ -840,8 +840,7 @@ async fn scrypt_batched_passwords_gpu_independent_reference() -> Result<()> {
                     .map(|i| {
                         i.to_le_bytes()[0]
                             .wrapping_mul(23)
-                            .wrapping_addcandidate
-                            .to_le_bytes()[0]
+                            .wrapping_add(candidate.to_le_bytes()[0])
                     })
                     .collect()
             })
@@ -916,7 +915,7 @@ async fn scrypt_batched_passwords_release_economics() -> Result<()> {
         let passwords: Vec<Vec<u8>> = (0..count)
             .map(|candidate| {
                 (0_u8..65)
-                    .map(|i| i.wrapping_mul(17).wrapping_addcandidate.to_le_bytes()[0])
+                    .map(|i| i.wrapping_mul(17).wrapping_add(candidate.to_le_bytes()[0]))
                     .collect()
             })
             .collect();
