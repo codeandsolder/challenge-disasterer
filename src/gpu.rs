@@ -53,7 +53,7 @@ impl GpuSolver {
     /// Reuse the negotiated device and queue from the persistent general WGPU
     /// context while retaining dedicated Anubis shader, input and readback
     /// buffers. The service's GPU permit serializes both workers.
-    #[must_use]
+    #[must_use = "the returned backend owns the initialized GPU resources"]
     pub fn from_shared_context(context: &GpuContext) -> Self {
         Self::from_device(
             context.device().clone(),
