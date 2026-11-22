@@ -592,55 +592,9 @@ async fn scrypt_romix_wgpu_phase_timestamps() -> Result<()> {
         include_str!("../fixtures/scrypt_romix_vec4_fc56391.wgsl"),
     );
     let directed = ScryptRomixGpu::new(&gpu);
-    let interleaved = ScryptRomixGpu::new_from_wgsl(
-        &gpu,
-        include_str!("../fixtures/scrypt_romix_interleaved_scratch.wgsl"),
-    );
-    let tiled32 = ScryptRomixGpu::new_from_wgsl(
-        &gpu,
-        include_str!("../fixtures/scrypt_romix_tiled_scratch_32.wgsl"),
-    );
-    let tiled64 = ScryptRomixGpu::new_from_wgsl(
-        &gpu,
-        include_str!("../fixtures/scrypt_romix_tiled_scratch_64.wgsl"),
-    );
-    let variants = [
-        ("merged-vec4-fc56391", &baseline),
-        ("directed", &directed),
-        ("interleaved-scratch", &interleaved),
-        ("tiled-scratch-32", &tiled32),
-        ("tiled-scratch-64", &tiled64),
-    ];
-    let pair_string = std::env::var("SCRYPT_PROFILE_AB_PAIR")
-        .unwrap_or_else(|_| "merged-vec4-fc56391,directed".to_owned());
-    let names: Vec<&str> = pair_string.split(',').collect();
-    anyhow::ensure!(
-        names.len() >= 2
-            && names
-                .iter()
-                .enumerate()
-                .all(|(index, name)| !names[..index].contains(name)),
-        "SCRYPT_PROFILE_AB_PAIR must specify at least two distinct shader names"
-    );
-    let pair: Vec<_> = names
-        .into_iter()
-        .map(|name| {
-            variants
-                .iter()
-                .copied()
-                .find(|variant| variant.0 == name)
-                .ok_or_else(|| anyhow::anyhow!("unknown scrypt shader variant: {name}"))
-        })
-        .collect::<Result<_>>()?;
-    let trials = std::env::var("SCRYPT_PROFILE_TRIALS")
-        .ok()
-        .map(|value| value.parse::<u32>())
-        .transpose()?
-        .unwrap_or(5);
-    anyhow::ensure!(trials > 0, "SCRYPT_PROFILE_TRIALS must be positive");
+    let pair = [("merged-vec4-fc56391", &baseline), ("directed", &directed)];
+    let trials = 5_u32;
     let salt: Vec<u8> = (0_u8..53).map(|i| i.wrapping_mul(31)).collect();
-    let filter = std::env::var("SCRYPT_PROFILE_SHAPES").ok();
-    let mut selected = 0;
     for (n, r, lanes) in [
         (64_u32, 1_u32, 1_usize),
         (64, 1, 64),
@@ -653,13 +607,6 @@ async fn scrypt_romix_wgpu_phase_timestamps() -> Result<()> {
         (1024, 8, 256),
     ] {
         let shape = format!("{n}/{r}/{lanes}");
-        if filter
-            .as_deref()
-            .is_some_and(|value| !value.split(',').any(|part| part == shape))
-        {
-            continue;
-        }
-        selected += 1;
         let block_bytes = usize::try_from(r)?
             .checked_mul(128)
             .context("scrypt profile block size overflow")?;
@@ -720,10 +667,6 @@ async fn scrypt_romix_wgpu_phase_timestamps() -> Result<()> {
             }
         }
     }
-    assert!(
-        selected > 0,
-        "SCRYPT_PROFILE_SHAPES selects no profile cases"
-    );
     Ok(())
 }
 
@@ -973,44 +916,15 @@ async fn sha256_fast_gpu_hard_limits_are_exact() -> Result<()> {
 async fn sha256_concurrent_cpu_gpu_crossover() -> Result<()> {
     use rayon::prelude::*;
 
-    let threads = std::env::var("SHA256_CROSSOVER_THREADS")
-        .ok()
-        .map(|value| value.parse::<usize>())
-        .transpose()?
-        .unwrap_or(8);
-    let request_counts = std::env::var("SHA256_CROSSOVER_REQUEST_COUNTS")
-        .unwrap_or_else(|_| "1,2,4,8,16".to_owned());
-    let request_counts: Vec<usize> = request_counts
-        .split(',')
-        .map(str::parse)
-        .collect::<std::result::Result<_, _>>()?;
-    anyhow::ensure!(
-        !request_counts.is_empty() && request_counts.iter().all(|count| *count > 0),
-        "independent-request counts must be positive"
-    );
-    let max_requests = *request_counts
+    let threads = 8_usize;
+    let request_counts = [1_usize, 2, 4, 8, 16];
+    let max_requests = request_counts
         .iter()
+        .copied()
         .max()
         .context("at least one request count required")?;
-    let trials = std::env::var("SHA256_CROSSOVER_TRIALS")
-        .ok()
-        .map(|value| value.parse::<u32>())
-        .transpose()?
-        .unwrap_or(5);
-    anyhow::ensure!(
-        threads > 0 && trials > 0,
-        "CPU threads and trials must be positive"
-    );
-    let budgets = std::env::var("SHA256_CROSSOVER_BUDGETS")
-        .unwrap_or_else(|_| "1,64,1024,8192,65536,262144,1048576".to_owned());
-    let budgets: Vec<u64> = budgets
-        .split(',')
-        .map(str::parse)
-        .collect::<std::result::Result<_, _>>()?;
-    anyhow::ensure!(
-        !budgets.is_empty() && budgets.iter().all(|budget| *budget > 0),
-        "crossover candidate budgets must be positive"
-    );
+    let trials = 5_u32;
+    let budgets = [1_u64, 64, 1024, 8192, 65_536, 262_144, 1_048_576];
 
     let gpu = challenge_solvers::gpu::GpuContext::create().await?;
     gpu.warm_up().await?;
@@ -1134,21 +1048,8 @@ async fn sha256_gpu_majority_interleaved() -> Result<()> {
 
     let baseline = GpuContext::create().await?;
     let or_majority = baseline.with_alternative_majority();
-    let samples = std::env::var("SHA256_MAJORITY_AB_TRIALS")
-        .ok()
-        .map(|value| value.parse::<u32>())
-        .transpose()?
-        .unwrap_or(10);
-    anyhow::ensure!(samples > 0, "SHA256_MAJORITY_AB_TRIALS must be positive");
-    let limit = std::env::var("SHA256_MAJORITY_AB_LIMIT")
-        .ok()
-        .map(|value| value.parse::<u64>())
-        .transpose()?
-        .unwrap_or(1_048_576);
-    anyhow::ensure!(
-        limit > 0 && limit.is_multiple_of(8192),
-        "SHA256_MAJORITY_AB_LIMIT must be a positive multiple of 8192"
-    );
+    let samples = 10_u32;
+    let limit = 1_048_576_u64;
     anyhow::ensure!(baseline.adapter() == or_majority.adapter());
     baseline.warm_up().await?;
     or_majority.warm_up().await?;
@@ -1256,45 +1157,8 @@ async fn scrypt_full_kdf_interleaved_ab() -> Result<()> {
         include_str!("../fixtures/scrypt_romix_vec4_fc56391.wgsl"),
     );
     let directed = ScryptKdfGpu::new(&gpu);
-    let interleaved = ScryptKdfGpu::new_from_romix_wgsl(
-        &gpu,
-        include_str!("../fixtures/scrypt_romix_interleaved_scratch.wgsl"),
-    );
-    let tiled32 = ScryptKdfGpu::new_from_romix_wgsl(
-        &gpu,
-        include_str!("../fixtures/scrypt_romix_tiled_scratch_32.wgsl"),
-    );
-    let tiled64 = ScryptKdfGpu::new_from_romix_wgsl(
-        &gpu,
-        include_str!("../fixtures/scrypt_romix_tiled_scratch_64.wgsl"),
-    );
-    let variants = [
-        ("merged-vec4-fc56391", &baseline),
-        ("directed", &directed),
-        ("interleaved-scratch", &interleaved),
-        ("tiled-scratch-32", &tiled32),
-        ("tiled-scratch-64", &tiled64),
-    ];
-    let pair_string = std::env::var("SCRYPT_KDF_AB_PAIR")
-        .unwrap_or_else(|_| "merged-vec4-fc56391,directed".to_owned());
-    let names: Vec<&str> = pair_string.split(',').collect();
-    anyhow::ensure!(
-        names.len() == 2 && names[0] != names[1],
-        "SCRYPT_KDF_AB_PAIR must specify two distinct shader names"
-    );
-    let pair: Vec<_> = names
-        .into_iter()
-        .map(|name| {
-            variants
-                .iter()
-                .copied()
-                .find(|variant| variant.0 == name)
-                .ok_or_else(|| anyhow::anyhow!("unknown scrypt shader variant: {name}"))
-        })
-        .collect::<Result<_>>()?;
+    let pair = [("merged-vec4-fc56391", &baseline), ("directed", &directed)];
     let salt: Vec<u8> = (0_u8..59).map(|i| i.wrapping_mul(23)).collect();
-    let filter = std::env::var("SCRYPT_KDF_AB_SHAPES").ok();
-    let mut selected = 0;
     for (n, r, p, count) in [
         (64_u32, 1_u32, 1_u32, 1_usize),
         (64, 1, 1, 64),
@@ -1307,13 +1171,6 @@ async fn scrypt_full_kdf_interleaved_ab() -> Result<()> {
         (256, 8, 4, 8),
     ] {
         let shape = format!("{n}/{r}/{p}/{count}");
-        if filter
-            .as_deref()
-            .is_some_and(|value| !value.split(',').any(|part| part == shape))
-        {
-            continue;
-        }
-        selected += 1;
         let passwords: Vec<Vec<u8>> = (0..count)
             .map(|index| {
                 (0..(65 + index % 3))
@@ -1386,10 +1243,6 @@ async fn scrypt_full_kdf_interleaved_ab() -> Result<()> {
             }
         }
     }
-    assert!(
-        selected > 0,
-        "SCRYPT_KDF_AB_SHAPES selects no benchmark cases"
-    );
     Ok(())
 }
 
