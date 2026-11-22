@@ -90,7 +90,7 @@ impl FromStr for KdfShape {
 }
 
 #[derive(ClapArgs, Debug)]
-pub(super) struct RomixOptions {
+pub struct RomixOptions {
     /// Shader variants to compare, in initial execution order.
     #[arg(
         long,
@@ -107,7 +107,7 @@ pub(super) struct RomixOptions {
 }
 
 #[derive(ClapArgs, Debug)]
-pub(super) struct KdfOptions {
+pub struct KdfOptions {
     /// Two distinct shader variants to compare.
     #[arg(
         long,
@@ -122,7 +122,7 @@ pub(super) struct KdfOptions {
 }
 
 #[derive(ClapArgs, Debug)]
-pub(super) struct CrossoverOptions {
+pub struct CrossoverOptions {
     #[arg(long, default_value = "8")]
     threads: NonZeroUsize,
     #[arg(long, value_delimiter = ',', default_value = "1,2,4,8,16")]
@@ -138,7 +138,7 @@ pub(super) struct CrossoverOptions {
 }
 
 #[derive(ClapArgs, Debug)]
-pub(super) struct MajorityOptions {
+pub struct MajorityOptions {
     #[arg(long, default_value = "10")]
     trials: NonZeroU32,
     #[arg(long, default_value = "1048576")]
@@ -146,7 +146,7 @@ pub(super) struct MajorityOptions {
 }
 
 #[derive(Subcommand, Debug)]
-pub(super) enum Experiment {
+pub enum Experiment {
     ScryptRomix(RomixOptions),
     ScryptKdf(KdfOptions),
     Sha256Crossover(CrossoverOptions),
@@ -221,7 +221,11 @@ impl Experiment {
         Ok(())
     }
 
-    pub(super) async fn run(mut self) -> Result<()> {
+    #[expect(
+        clippy::future_not_send,
+        reason = "CLI experiment is awaited directly on the main thread; upstream WGPU initialization returns a local future"
+    )]
+    pub async fn run(mut self) -> Result<()> {
         self.validate()?;
         match self {
             Self::ScryptRomix(options) => scrypt_romix_wgpu_phase_timestamps(options).await,
@@ -234,6 +238,10 @@ impl Experiment {
 
 /// Interleaved hardware timestamp comparison of merged vec4 and directed
 /// `ROMix` revisions, with full `RustCrypto` RFC7914 key verification.
+#[expect(
+    clippy::future_not_send,
+    reason = "WGPU context initialization returns a local future; the experiment never spawns this future onto another thread"
+)]
 async fn scrypt_romix_wgpu_phase_timestamps(options: RomixOptions) -> Result<()> {
     use challenge_solvers::gpu::{GpuContext, ScryptRomixGpu};
 
@@ -371,6 +379,10 @@ async fn gpu_solve(
 ///
 /// The measured CPU alternatives include their own solver construction.
 /// The GPU includes real queue submissions and readbacks for each request.
+#[expect(
+    clippy::future_not_send,
+    reason = "WGPU context initialization returns a local future; the experiment never spawns this future onto another thread"
+)]
 async fn sha256_concurrent_cpu_gpu_crossover(options: CrossoverOptions) -> Result<()> {
     use rayon::prelude::*;
 
@@ -473,6 +485,10 @@ async fn sha256_concurrent_cpu_gpu_crossover(options: CrossoverOptions) -> Resul
 /// Compare equivalent SHA-256 majority formulas across all GPU protocol
 /// families with the same device, queue, work budget and live solver paths.
 /// Each pair uses identical challenge bytes, rotating execution order.
+#[expect(
+    clippy::future_not_send,
+    reason = "WGPU context initialization returns a local future; the experiment never spawns this future onto another thread"
+)]
 async fn sha256_gpu_majority_interleaved(options: MajorityOptions) -> Result<()> {
     use challenge_solvers::gpu::GpuContext;
 
@@ -570,7 +586,7 @@ async fn run_sha256_majority_case(
 
 fn kdf_variants(
     gpu: &challenge_solvers::gpu::GpuContext,
-) -> [(Shader, challenge_solvers::gpu::ScryptKdfGpu); 5] {
+) -> [(Shader, challenge_solvers::gpu::ScryptKdfGpu<'_>); 5] {
     use challenge_solvers::gpu::ScryptKdfGpu;
     let baseline = ScryptKdfGpu::new_from_romix_wgsl(
         gpu,
@@ -601,6 +617,10 @@ fn kdf_variants(
 /// Same-device paired benchmark of complete GPU PBKDF2/ROMix/PBKDF2
 /// using the exact merged vec4 shader and the directed candidate shader.
 /// Every full derived key is checked against independent `RustCrypto` scrypt.
+#[expect(
+    clippy::future_not_send,
+    reason = "WGPU context initialization returns a local future; the experiment never spawns this future onto another thread"
+)]
 async fn scrypt_full_kdf_interleaved_ab(options: KdfOptions) -> Result<()> {
     use challenge_solvers::gpu::GpuContext;
     use rayon::prelude::*;
