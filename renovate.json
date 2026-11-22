@@ -44,19 +44,6 @@
       "allowedVersions": "<0.5"
     },
     {
-      "description": "Update the canonical rust-toolchain.toml and all five shared CI callers in one reviewed PR",
-      "matchManagers": [
-        "rust-toolchain",
-        "custom.regex"
-      ],
-      "matchPackageNames": [
-        "rust"
-      ],
-      "groupName": "Pinned Rust nightly and CI callers",
-      "groupSlug": "rust-nightly-and-ci",
-      "automerge": false
-    },
-    {
       "description": "All application, protocol and benchmark consumers of the challenge-solvers git monorepo must update together",
       "matchManagers": [
         "cargo"
@@ -88,21 +75,6 @@
         "digest"
       ],
       "enabled": false
-    }
-  ],
-  "customManagers": [
-    {
-      "customType": "regex",
-      "description": "Synchronize pinned Rust nightlies used by the shared CI and release workflows",
-      "managerFilePatterns": [
-        "/^\\.github\\/workflows\\/(ci|release-portability)\\.yml$/"
-      ],
-      "matchStrings": [
-        "rust-toolchain:\\s+\"(?<currentValue>nightly-\\d{4}-\\d{2}-\\d{2})\""
-      ],
-      "depNameTemplate": "rust",
-      "datasourceTemplate": "rust-version",
-      "versioningTemplate": "rust-release-channel"
     }
   ]
 }
