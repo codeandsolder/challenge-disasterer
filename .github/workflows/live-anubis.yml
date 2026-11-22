@@ -45,14 +45,20 @@ jobs:
           cache: npm
           cache-dependency-path: target/anubis-live/package-lock.json
 
+      - name: Resolve native quarantined Rust
+        id: compiler
+        uses: codeandsolder/ci-workflows/.github/actions/resolve-rust-toolchain@ce8f8a2849c8cc0ce221e4cb283a4bef0de4a01a # main
+
       - name: Set up Rust
         run: |
-          cargo --version
-          rustup toolchain install 1.99.0 --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain 1.99.0
+          rustup show
+          rustc --version
+          rustup target add wasm32-unknown-unknown
 
       - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@097cc824fc551bce6708700117f796c746689faa # main
+        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@ce8f8a2849c8cc0ce221e4cb283a4bef0de4a01a # main
+        with:
+          rust-toolchain: "${{ steps.compiler.outputs.channel }}"
 
       - name: Install Anubis asset compressors
         run: sudo apt-get update -qq && sudo apt-get install -y brotli zstd
@@ -61,7 +67,8 @@ jobs:
         working-directory: target/anubis-live
         run: |
           npm ci --ignore-scripts
-          RUSTUP_TOOLCHAIN=1.99.0 npm run assets
+          # Explicitly use the same compiler even if upstream adds its own pin.
+          rustup run "${{ steps.compiler.outputs.channel }}" npm run assets
           go build -o ../anubis-live-bin ./cmd/anubis
 
       - name: Build challenge-disasterer and E2E wrapper
@@ -83,4 +90,4 @@ jobs:
 
       - name: Finalize canonical sccache
         if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@097cc824fc551bce6708700117f796c746689faa # main
+        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@ce8f8a2849c8cc0ce221e4cb283a4bef0de4a01a # main
