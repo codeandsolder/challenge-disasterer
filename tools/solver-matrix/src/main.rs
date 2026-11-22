@@ -2,6 +2,8 @@
 
 mod cpu;
 #[cfg(feature = "gpu")]
+mod experiments;
+#[cfg(feature = "gpu")]
 mod gpu;
 #[cfg(test)]
 mod tests;
@@ -49,6 +51,16 @@ enum Protocol {
 }
 
 #[derive(Parser, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
+struct Cli {
+    #[command(flatten)]
+    matrix: Args,
+    #[cfg(feature = "gpu")]
+    #[command(subcommand)]
+    experiment: Option<experiments::Experiment>,
+}
+
+#[derive(clap::Args, Debug)]
 struct Args {
     /// Fresh deterministic challenge instances per protocol/backend.
     #[arg(long, default_value_t = 5)]
@@ -275,7 +287,12 @@ fn rate(work: u64, ns: u128) -> f64 {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let cli = Cli::parse();
+    #[cfg(feature = "gpu")]
+    if let Some(experiment) = cli.experiment {
+        return experiment.run().await;
+    }
+    let args = cli.matrix;
     if args.list_gpu_adapters {
         #[cfg(feature = "gpu")]
         {
