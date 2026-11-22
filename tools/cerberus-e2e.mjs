@@ -1,5 +1,5 @@
-const [serviceUrl = "http://127.0.0.1:17427", cerberusUrl = "http://127.0.0.1:17429/protected.iso"] = process.argv.slice(2);
-const implementation = process.env.CHALLENGE_IMPLEMENTATION ?? "auto";
+const [serviceUrl, cerberusUrl, implementation, expectedVersion] = process.argv.slice(2);
+if (process.argv.length !== 6 || !serviceUrl || !cerberusUrl || !implementation || !expectedVersion) throw new Error("usage: node cerberus-e2e.mjs SERVICE_URL CERBERUS_URL IMPLEMENTATION EXPECTED_VERSION");
 
 function attr(html, name) {
   const match = html.match(new RegExp(`${name}="([^"]*)"`));
@@ -23,8 +23,6 @@ async function issueAndSolve() {
   const challenge = JSON.parse(attr(html, "x-challenge"));
   const meta = JSON.parse(attr(html, "x-meta"));
   const scriptUrl = new URL(attr(html, "src"), cerberusUrl);
-  const expectedVersion = process.env.CERBERUS_EXPECTED_VERSION;
-  if (!expectedVersion) throw new Error("missing CERBERUS_EXPECTED_VERSION from pinned upstream source");
   const rawVersion = scriptUrl.searchParams.get("v");
   if (rawVersion && rawVersion.replace(/^v/, "") !== expectedVersion) {
     throw new Error(`Cerberus page/source version mismatch: page=${rawVersion} source=${expectedVersion}`);

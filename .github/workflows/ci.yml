@@ -35,6 +35,7 @@ jobs:
         cargo fmt --check
         cargo test --locked -p challenge-disasterer-anubis-e2e
         cargo test --locked -p challenge-disasterer-mcaptcha-e2e
+        cargo test --locked -p challenge-disasterer-fixture-runner
         cargo test --locked -p challenge-disasterer-wasm-simd128-bench
         cargo test --locked -p challenge-disasterer-simd-width-bench
 

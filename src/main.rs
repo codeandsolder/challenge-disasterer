@@ -27,6 +27,9 @@ use tracing::info;
 struct Args {
     #[arg(long, default_value = "127.0.0.1:17417")]
     listen: SocketAddr,
+    /// Emit the actual bound address on stdout, including an OS-assigned port.
+    #[arg(long)]
+    print_listen_address: bool,
     /// Shared CPU worker budget across all requests and solver types.
     #[arg(long, default_value_t = 4)]
     cpu_workers: usize,
@@ -149,7 +152,11 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
         .context("bind")?;
-    info!(listen = %args.listen, "challenge-disasterer ready");
+    let address = listener.local_addr().context("bound listen address")?;
+    if args.print_listen_address {
+        println!("LISTEN_ADDRESS {address}");
+    }
+    info!(listen = %address, "challenge-disasterer ready");
     axum::serve(listener, app).await.context("serve")?;
     Ok(())
 }

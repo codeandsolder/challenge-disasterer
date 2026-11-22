@@ -1,9 +1,8 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const implementation = process.env.CHALLENGE_IMPLEMENTATION ?? "auto";
-const [capRoot, serviceUrl = "http://127.0.0.1:17428"] = process.argv.slice(2);
-if (!capRoot) throw new Error("usage: node capjs-e2e.mjs CAP_ROOT [SERVICE_URL]");
+const [capRoot, serviceUrl, implementation, productionShape] = process.argv.slice(2);
+if (process.argv.length !== 6 || !capRoot || !serviceUrl || !implementation || !["true", "false"].includes(productionShape)) throw new Error("usage: node capjs-e2e.mjs CAP_ROOT SERVICE_URL IMPLEMENTATION PRODUCTION_SHAPE");
 
 const core = await import(pathToFileURL(resolve(capRoot, "core/src/index.js")).href);
 const { generateChallenge, generateRswKeypair, validateChallenge } = core;
@@ -122,7 +121,7 @@ await runV2("mixed", {
   hashwxNoncesPerHash: 16,
 }, `${implementation}+hashwx-native+rsw`);
 
-if (process.env.CAPJS_PRODUCTION_SHAPE === "1") {
+if (productionShape === "true") {
   // Keep this out of the hosted backend matrix: the point is to validate the
   // production workload shape once, not to multiply expensive HashWX work by
   // every implementation selector. Omitting algorithm knobs intentionally tracks

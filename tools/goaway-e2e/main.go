@@ -79,8 +79,8 @@ func assertCapabilities(serviceURL, implementation string) error {
 }
 
 func main() {
-	if len(os.Args) != 3 {
-		panic("usage: goaway-e2e RUNTIME_WASM SERVICE_URL")
+	if len(os.Args) != 4 {
+		panic("usage: goaway-e2e RUNTIME_WASM SERVICE_URL IMPLEMENTATION")
 	}
 	wasmData, err := os.ReadFile(os.Args[1])
 	if err != nil {
@@ -93,23 +93,20 @@ func main() {
 	if err := runner.Compile("goaway-e2e", wasmData); err != nil {
 		panic(err)
 	}
-	implementation := os.Getenv("CHALLENGE_IMPLEMENTATION")
-	if implementation == "" {
-		implementation = "auto"
-	}
+	implementation := os.Args[3]
 	if err := assertCapabilities(serviceURL, implementation); err != nil {
 		panic(err)
 	}
 
 	difficulties := []string{"0", "8", "13", "20"}
 	for _, difficulty := range difficulties {
-		if err := runCase(runner, serviceURL, difficulty); err != nil {
+		if err := runCase(runner, serviceURL, difficulty, implementation); err != nil {
 			panic(err)
 		}
 	}
 }
 
-func runCase(runner *wasm.Runner, serviceURL, difficulty string) error {
+func runCase(runner *wasm.Runner, serviceURL, difficulty, implementation string) error {
 	key := []byte("challenge-disasterer-goaway-e2e-key")
 	parameters := map[string]string{"difficulty": difficulty}
 
@@ -131,10 +128,6 @@ func runCase(runner *wasm.Runner, serviceURL, difficulty string) error {
 		return fmt.Errorf("official MakeChallenge: %w", err)
 	}
 
-	implementation := os.Getenv("CHALLENGE_IMPLEMENTATION")
-	if implementation == "" {
-		implementation = "auto"
-	}
 	payload, _ := json.Marshal(map[string]any{
 		"solver":         "goaway",
 		"implementation": implementation,

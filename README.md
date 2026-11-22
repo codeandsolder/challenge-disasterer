@@ -155,7 +155,7 @@ speculative work. The benchmark uses actual work for throughput and still
 reports the minimal matching counter. Workers are charged against the same CPU
 permit budget as Anubis Argon2id, and each holds one full memoryCost KiB arena.
 
-An opt-in memory-hard benchmark profile is available by setting ALTCHA_BENCH_PRODUCTION_ARGON2=1 before running the ALTCHA benchmark (optionally set ALTCHA_BENCH_ONLY_ARGON2=1 to isolate this algorithm): it adds 64/128 MiB, three-pass, p=1 cases in both counter encodings, and one 64 MiB, three-pass, p=2 case. Each added case deliberately places its solution at counter 7 (eight mandatory lowest-counter checks), although parallel nonce workers may perform additional speculative Argon2 hashes, which are counted independently in the output. The benchmark reports actual fanout using nonce_workers; use alternating comparable host runs for performance decisions.
+An opt-in memory-hard benchmark profile is available with the fixture runner ALTCHA benchmark option `--benchmark-profile production-argon2` (or `production-argon2-only` to isolate this algorithm): it adds 64/128 MiB, three-pass, p=1 cases in both counter encodings, and one 64 MiB, three-pass, p=2 case. Each added case deliberately places its solution at counter 7 (eight mandatory lowest-counter checks), although parallel nonce workers may perform additional speculative Argon2 hashes, which are counted independently in the output. The benchmark reports actual fanout using nonce_workers; use alternating comparable host runs for performance decisions.
 
 Current Anubis also ships WASM `sha256` and `argon2id` challenge algorithms. challenge-disasterer exposes both as native solver routes: `anubis-sha256` reuses the external `challenge-solvers` binary SHA-256 backends (`safe`, `auto`, AVX2, AVX-512 where available, and generalized WGPU), while `anubis-argon2id` uses our specialized portable-SIMD Argon2id engine with parameters and nonce-byte rules matching upstream. The real-Anubis harness submits both proof types back to the current upstream verifier, and the stock-browser benchmark remains as an independent reference.
 
@@ -179,20 +179,27 @@ branch. Routine pull requests do not spawn 25 upstream verifier runners.
 The selected exact revision is built once with canonical sccache and that
 release binary is distributed to all independent protocol checks.
 
-The seven non-Anubis script-driven live-protocol harnesses require `CHALLENGE_SOLVER_BINARY`
-to name an already-built challenge-disasterer executable; they do not compile it.
-Hosted CI builds one CPU-only release executable with canonical sccache and
-distributes that exact-commit artifact to all 25 independent live-protocol
-matrix cases. For local runs, explicitly supply the path to an existing
-CPU/GPU build as appropriate. Relative paths are resolved before the
-harness changes its working directory.
+The five local authoritative fixtures use one native runner, built alongside the exact
+revision solver and mCaptcha adapter. No per-fixture build or environment-variable
+configuration is required. For example, with already-built binaries:
+
+```sh
+challenge-disasterer-fixture-runner --root . --solver-bin target/release/challenge-disasterer \
+  --implementation safe altcha
+```
+
+Use the runner's subcommand help for explicit upstream refs, optional benchmark output,
+and fixture-specific parameters. Startup and command deadlines, temporary files,
+and process groups are owned by the runner; the solver binds an OS-assigned loopback
+port and reports its actual address. The independently packaged public-site checks
+(Linear and optional Debian haphash) and Anubis harness retain their existing interfaces.
 
 - **Anubis:** `ci/live-anubis-e2e.sh` starts the current upstream Anubis server, obtains a live challenge, submits the disasterer proof to Anubis, and requires the resulting authorization cookie to reach a protected upstream.
-- **Cerberus:** `ci/live-cerberus-e2e.sh` builds the official Cerberus Caddy plugin, obtains a real challenge page, submits the proof to its real `/answer` endpoint, and requires its approval cookie to pass the protected route. The hardware runner executes current upstream plus `v0.4.9` through `v0.4.5` for every available backend, covering the recent compatibility range and the decimal/binary-format boundary against each release's own authoritative verifier.
-- **go-away:** `ci/live-goaway-e2e.sh` runs the current upstream `js-pow-sha256` WASM runtime and uses its own `MakeChallenge` and `VerifyChallenge` ABI. The verifier's meaningful leading-zero domain is the full SHA-256 width, difficulty `0..=256`, and every CPU/SIMD/SHA-NI/WGPU backend preserves those full-digest semantics. The ordinary `1..=64` range keeps the cheaper first-64-bit compare internally; larger values use the same accelerated hashing kernels with a full-digest predicate. Difficulties above 256 are unsatisfiable and rejected.
-- **Cap.js:** `ci/live-capjs-e2e.sh` uses current `capjs-core` `generateChallenge` and `validateChallenge` for legacy SHA-256 and format-2 SHA-256, RSW, HashWX, and mixed PoW challenges. HashWX production uses the audited `hashwx-rs` native JIT; pinned tevador native JIT and interpreter builds remain independent external benchmark references.
-- **ALTCHA:** `ci/live-altcha-e2e.sh` uses current `altcha-lib` generation and verification across all current v2 KDFs plus still-supported v1 SHA-1/SHA-256/SHA-512. V2 decimal-string counter mode is searched through the full JavaScript safe-integer domain instead of inheriting the official Rust crate's `u32` solver bound.
-- **mCaptcha:** `ci/live-mcaptcha-e2e.sh` validates the native work response with the `mcaptcha_pow_sha256` crate used by mCaptcha itself.
+- **Cerberus:** `fixture-runner cerberus` builds the official Cerberus Caddy plugin, obtains a real challenge page, submits the proof to its real `/answer` endpoint, and requires its approval cookie to pass the protected route. The hardware runner executes current upstream plus `v0.4.9` through `v0.4.5` for every available backend, covering the recent compatibility range and the decimal/binary-format boundary against each release's own authoritative verifier.
+- **go-away:** `fixture-runner goaway` runs the current upstream `js-pow-sha256` WASM runtime and uses its own `MakeChallenge` and `VerifyChallenge` ABI. The verifier's meaningful leading-zero domain is the full SHA-256 width, difficulty `0..=256`, and every CPU/SIMD/SHA-NI/WGPU backend preserves those full-digest semantics. The ordinary `1..=64` range keeps the cheaper first-64-bit compare internally; larger values use the same accelerated hashing kernels with a full-digest predicate. Difficulties above 256 are unsatisfiable and rejected.
+- **Cap.js:** `fixture-runner capjs` uses current `capjs-core` `generateChallenge` and `validateChallenge` for legacy SHA-256 and format-2 SHA-256, RSW, HashWX, and mixed PoW challenges. HashWX production uses the audited `hashwx-rs` native JIT; pinned tevador native JIT and interpreter builds remain independent external benchmark references.
+- **ALTCHA:** `fixture-runner altcha` uses current `altcha-lib` generation and verification across all current v2 KDFs plus still-supported v1 SHA-1/SHA-256/SHA-512. V2 decimal-string counter mode is searched through the full JavaScript safe-integer domain instead of inheriting the official Rust crate's `u32` solver bound.
+- **mCaptcha:** `fixture-runner mcaptcha` validates the native work response with the `mcaptcha_pow_sha256` crate used by mCaptcha itself.
 - **Linear.pub:** `ci/live-linear-e2e.sh` fetches the live site-wide SHA-1 gate, solves the issued 40-hex seed through `/solve`, requires a deliberately invalid cookie to remain blocked, and requires the returned `yX3` cookie to reach the public storefront. The CPU solver uses RustCrypto SHA-1; on GPUs with baseline WGPU support the accelerated solver performs all 80 SHA-1 rounds for the complete valid 40-ASCII-hex-seed plus decimal-u32 nonce domain, verifying every GPU solution independently on CPU. Automatic GPU-first placement remains configurable with the global GPU policy; no shader-int64 feature is required.
 - **haphash:** `ci/live-haphash-e2e.sh` clones current `dgl/haphash`, serves its actual `challenge.html`, and submits proofs to the real HAProxy SHA-256 ACL verifier. HAProxy verifies leading-zero hex nibbles across the full digest, and every CPU/SIMD/SHA-NI/WGPU backend covers the verifier's `0..=64`-nibble domain; `1..=16` retains the cheaper first-64-bit compare internally and larger values use a full-digest predicate. Hosted CI and the hardware matrix both run normal difficulty 4 plus verifier-valid difficulty 0, with the latter deliberately exercising the full-digest backend branch. The stock browser loop is only operational for positive difficulty (its zero-difficulty loop never returns even though HAProxy accepts every proof), so the stock deployable client range is `1..=64`. Values above 64 are unsatisfiable. Hardware runs additionally exercise Debian's live Varnish-derived deployment, whose current wire shape is `SHA256(pow_challenge_cookie_value + ";" + decimal_nonce)` at difficulty 2; the harness deliberately fails if that page shape changes rather than inheriting the obsolete historical client prefix.
 
