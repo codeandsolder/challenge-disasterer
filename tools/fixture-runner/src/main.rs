@@ -4,7 +4,7 @@ mod process;
 use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
-    net::{Ipv4Addr, SocketAddr, TcpListener},
+    net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     num::{NonZeroU32, NonZeroU64},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -231,6 +231,24 @@ impl Run<'_> {
         }
     }
 
+    // A challenge verifier deliberately returns 401/403/redirects until a
+    // valid proof is supplied. Its readiness is a listening TCP socket,
+    // not an HTTP 2xx response; the fixture validates the real protocol.
+    fn wait_verifier(&self, child: &mut GroupChild, log: &Path, address: SocketAddr) -> Result<()> {
+        let start = Instant::now();
+        loop {
+            running(child, log)?;
+            if TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok() {
+                running(child, log)?;
+                return Ok(());
+            }
+            self.supervisor
+                .check(start, Duration::from_secs(self.args.startup_seconds.get()))
+                .with_context(|| format!("waiting for verifier at {address}: {}", log_tail(log)))?;
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     fn start_solver(&self) -> Result<(GroupChild, String)> {
         let log = self.scratch.join("solver.log");
         let address_file = self.scratch.join("solver-address.txt");
@@ -448,7 +466,7 @@ impl Run<'_> {
             &log,
         )?;
         let url = format!("http://127.0.0.1:{port}/protected.iso");
-        self.wait_http(&mut verifier, &log, &url)?;
+        self.wait_verifier(&mut verifier, &log, (Ipv4Addr::LOCALHOST, port).into())?;
         let (_solver, solver_url) = self.start_solver()?;
         self.supervisor.run(
             self.node("cerberus-e2e.mjs")
