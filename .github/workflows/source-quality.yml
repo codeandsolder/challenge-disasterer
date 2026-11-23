@@ -1,0 +1,17 @@
+name: Source quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  source-quality:
+    uses: codeandsolder/ci-workflows/.github/workflows/source-quality.yml@b98983b02b52780f44951e725381b03ea2b57bdb # main

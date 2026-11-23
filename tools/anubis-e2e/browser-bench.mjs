@@ -82,7 +82,7 @@ async function waitForMarker(cdp, marker, timeoutMs) {
       });
       last = result?.result?.value ?? "";
       if (last.includes(marker)) return performance.now() - started;
-    } catch (_) {
+    } catch {
       // Navigation can invalidate an evaluation; retry against the same target.
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
