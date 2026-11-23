@@ -41,7 +41,7 @@ async function verify(issued, solutions) {
   return validateChallenge(secret, { token: issued.token, solutions }, { scope });
 }
 
-function corrupt(protocol, solution) {
+function corrupt(protocol) {
   if (protocol === "sha256-pow") return { nonce: "not-a-number" };
   if (protocol === "rsw") return { y: "0" };
   if (protocol === "hashwx") return { nonce: "18446744073709551616" };
@@ -87,7 +87,7 @@ async function runV2(name, options, expectedImplementation = null) {
   if (!verified.success) throw new Error(`${name} verifier rejected: ${JSON.stringify(verified)}`);
 
   const corrupted = structuredClone(solutions);
-  corrupted[0] = corrupt(issued.challenges[0].protocol, corrupted[0]);
+  corrupted[0] = corrupt(issued.challenges[0].protocol);
   const rejected = await verify(issued, corrupted);
   if (rejected.success) throw new Error(`${name} verifier accepted corrupted solutions`);
   console.log(`Cap.js format2 ${name}: PASS implementation=${body.implementation} solve_ms=${body.solve_ms.toFixed(3)}`);
