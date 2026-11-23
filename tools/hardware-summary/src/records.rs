@@ -1,11 +1,26 @@
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::{Deserialize, Deserializer, Serialize, de};
+use serde_json::{Number, Value};
 
 #[derive(Deserialize)]
 pub(crate) struct Measurement {
     pub(crate) attempted_work: u64,
+    #[serde(deserialize_with = "exact_u128")]
     pub(crate) solve_ns: u128,
+    #[serde(deserialize_with = "json_float")]
     pub(crate) work_per_second: f64,
+}
+
+fn exact_u128<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u128, D::Error> {
+    Number::deserialize(deserializer)?
+        .to_string()
+        .parse()
+        .map_err(de::Error::custom)
+}
+
+fn json_float<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    Number::deserialize(deserializer)?
+        .as_f64()
+        .ok_or_else(|| de::Error::custom("measurement is not a finite f64"))
 }
 
 fn throughput() -> String {
