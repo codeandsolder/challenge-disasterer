@@ -61,4 +61,4 @@ unimplemented = "deny"
 hashwx = { git = "https://github.com/codeandsolder/hashwx-rs", rev = "cbee7de3d3b69a6575861e015e1bc5697fdd27c5", default-features = false, features = ["native", "hashx"] }
 
 [patch.crates-io]
-zlib-rs = { git = "https://github.com/codeandsolder/zlib-rs-fast.git", rev = "3ffe503ac2261d625a1fa9a78999fedeb0cdfc92" }
+zlib-rs = { git = "https://github.com/codeandsolder/zlib-rs-fast.git", rev = "dc04f36ec7907d92933da8c3b68649cfaf0df5e6" }
