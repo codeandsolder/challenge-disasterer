@@ -1,0 +1,2 @@
+{"baseline":"current","protocol":"anubis","variant":"hashx","implementation":"auto","attempted_work":100,"solve_ns":10000000,"work_per_second":10000}
+{"baseline":"legacy","protocol":"anubis","variant":"hashx","implementation":"native","attempted_work":100,"solve_ns":20000000,"work_per_second":5000}

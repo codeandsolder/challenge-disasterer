@@ -1,0 +1,230 @@
+{
+  "hosts": {
+    "alpha": {
+      "schema": 1,
+      "hostname": "alpha",
+      "cpu_model": "example CPU",
+      "parameters": {
+        "samples": 2
+      }
+    },
+    "beta": {
+      "schema": 1,
+      "hostname": "beta",
+      "cpu_model": "other CPU",
+      "parameters": {
+        "samples": 1
+      }
+    }
+  },
+  "results": [
+    {
+      "phase": "correctness",
+      "protocol": "anubis",
+      "variant": "hashx",
+      "implementation": "auto",
+      "accelerator": "cpu",
+      "host": "alpha",
+      "gpu_adapter": null,
+      "work_budget": null,
+      "samples": 2,
+      "all_target_conditions_valid": false,
+      "median_solve_ms": 1.5,
+      "median_work_per_second": 4000.0,
+      "median_attempted_work": 5.5
+    },
+    {
+      "phase": "throughput",
+      "protocol": "altcha",
+      "variant": "sha256",
+      "implementation": "auto",
+      "accelerator": "cpu",
+      "host": "alpha",
+      "gpu_adapter": null,
+      "work_budget": 100,
+      "samples": 1,
+      "all_target_conditions_valid": true,
+      "median_solve_ms": 10.0,
+      "median_work_per_second": 10000,
+      "median_attempted_work": 100
+    },
+    {
+      "phase": "throughput",
+      "protocol": "anubis",
+      "variant": "hashx",
+      "implementation": "auto",
+      "accelerator": "cpu",
+      "host": "alpha",
+      "gpu_adapter": null,
+      "work_budget": 100,
+      "samples": 2,
+      "all_target_conditions_valid": true,
+      "median_solve_ms": 15.0,
+      "median_work_per_second": 7500.0,
+      "median_attempted_work": 100.0
+    },
+    {
+      "phase": "throughput",
+      "protocol": "anubis",
+      "variant": "hashx",
+      "implementation": "auto",
+      "accelerator": "cpu",
+      "host": "alpha",
+      "gpu_adapter": null,
+      "work_budget": 200,
+      "samples": 1,
+      "all_target_conditions_valid": true,
+      "median_solve_ms": 10.0,
+      "median_work_per_second": 20000,
+      "median_attempted_work": 200
+    },
+    {
+      "phase": "throughput",
+      "protocol": "anubis",
+      "variant": "hashx",
+      "implementation": "auto",
+      "accelerator": "cpu",
+      "host": "beta",
+      "gpu_adapter": null,
+      "work_budget": 100,
+      "samples": 1,
+      "all_target_conditions_valid": true,
+      "median_solve_ms": 5.0,
+      "median_work_per_second": 20000,
+      "median_attempted_work": 100
+    },
+    {
+      "phase": "throughput",
+      "protocol": "anubis",
+      "variant": "hashx",
+      "implementation": "safe",
+      "accelerator": "cpu",
+      "host": "alpha",
+      "gpu_adapter": null,
+      "work_budget": 100,
+      "samples": 1,
+      "all_target_conditions_valid": true,
+      "median_solve_ms": 25.0,
+      "median_work_per_second": 4000,
+      "median_attempted_work": 100
+    },
+    {
+      "phase": "throughput",
+      "protocol": "anubis",
+      "variant": "hashx",
+      "implementation": "wgpu",
+      "accelerator": "gpu",
+      "host": "alpha",
+      "gpu_adapter": "GPU-A",
+      "work_budget": 100,
+      "samples": 1,
+      "all_target_conditions_valid": true,
+      "median_solve_ms": 1.0,
+      "median_work_per_second": 100000,
+      "median_attempted_work": 100
+    }
+  ],
+  "preexisting_baselines": [
+    {
+      "host": "alpha",
+      "baseline": "current",
+      "protocol": "anubis",
+      "variant": "hashx",
+      "implementation": "auto",
+      "samples": 1,
+      "median_work_per_second": 10000,
+      "median_solve_ms": 10.0,
+      "median_attempted_work": 100
+    },
+    {
+      "host": "alpha",
+      "baseline": "legacy",
+      "protocol": "anubis",
+      "variant": "hashx",
+      "implementation": "native",
+      "samples": 1,
+      "median_work_per_second": 5000,
+      "median_solve_ms": 20.0,
+      "median_attempted_work": 100
+    }
+  ],
+  "preexisting_comparison": [
+    {
+      "host": "alpha",
+      "protocol": "anubis",
+      "variant": "hashx",
+      "legacy_baseline": "legacy",
+      "legacy_median_work_per_second": 5000,
+      "matched_current_auto_exact_work_ratio": 2.0,
+      "best_current_exact_work_implementation": "auto",
+      "best_current_exact_work_ratio": 1.5
+    }
+  ],
+  "external_baselines": [
+    {
+      "host": "alpha",
+      "baseline": "native-reference",
+      "protocol": "anubis",
+      "variant": "hashx",
+      "implementation": "compiled",
+      "accelerator": "cpu",
+      "gpu_adapter": null,
+      "comparison_scope": "primitive-ceiling",
+      "samples": 1,
+      "median_work_per_second": 8000,
+      "median_solve_ms": 12.5,
+      "median_attempted_work": 100
+    },
+    {
+      "host": "alpha",
+      "baseline": "official",
+      "protocol": "altcha",
+      "variant": "sha256",
+      "implementation": "reference",
+      "accelerator": "cpu",
+      "gpu_adapter": null,
+      "comparison_scope": "protocol-reference",
+      "samples": 1,
+      "median_work_per_second": 5000,
+      "median_solve_ms": 20.0,
+      "median_attempted_work": 100
+    },
+    {
+      "host": "alpha",
+      "baseline": "opencl-reference",
+      "protocol": "anubis",
+      "variant": "hashx",
+      "implementation": "kernel",
+      "accelerator": "gpu",
+      "gpu_adapter": "GPU-A",
+      "comparison_scope": "protocol-kernel-reference",
+      "samples": 1,
+      "median_work_per_second": 100000,
+      "median_solve_ms": 1.0,
+      "median_attempted_work": 100
+    }
+  ],
+  "paired_hashx": [
+    {
+      "host": "alpha",
+      "difficulty": 4,
+      "implementation": "compiled",
+      "samples": 2,
+      "mean_solver_ms": 0.25
+    }
+  ],
+  "anubis_benchmarks": [
+    {
+      "host": "alpha",
+      "algorithm": "hashx",
+      "solver": "auto",
+      "backend": "cpu",
+      "implementation": null,
+      "difficulty": 4,
+      "samples": 2,
+      "avg_answer_ms": 0.5,
+      "effective_h_s": 2000.0,
+      "mean_solver_ms": 0.25
+    }
+  ]
+}

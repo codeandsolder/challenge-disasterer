@@ -1,0 +1,3 @@
+unrelated log line
+PAIRED_HASHX difficulty=4 implementation=compiled n=2 mean_solver_ms=0.250
+BENCH algorithm=hashx solver=auto backend=cpu implementation=- difficulty=4 n=2 avg_answer_ms=0.500 effective_h_s=2000.000 effective_mh_s=0.002 mean_solver_ms=0.250

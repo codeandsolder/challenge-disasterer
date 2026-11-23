@@ -1,0 +1,2 @@
+{"row_kind":"solver","phase":"throughput","protocol":"altcha","variant":"sha256","implementation":"auto","accelerator":"cpu","attempted_work":100,"solve_ns":10000000,"work_per_second":10000,"target_condition_ok":true}
+{"row_kind":"external","baseline":"official","protocol":"altcha","variant":"sha256","implementation":"reference","accelerator":"cpu","comparison_scope":"protocol-reference","attempted_work":100,"solve_ns":20000000,"work_per_second":5000}
