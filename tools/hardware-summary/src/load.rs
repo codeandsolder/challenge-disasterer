@@ -166,7 +166,7 @@ fn logs(run: &Path, host: &str) -> Result<(Vec<PairedHashx>, Vec<AnubisBenchmark
     Ok((pairs, benchmarks))
 }
 
-pub(crate) fn run(dir: &Path) -> Result<Run> {
+pub fn run(dir: &Path) -> Result<Run> {
     let metadata: Value = serde_json::from_slice(&fs::read(dir.join("metadata.json"))?)
         .with_context(|| format!("invalid metadata in {}", dir.display()))?;
     let host = metadata

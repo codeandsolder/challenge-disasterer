@@ -220,7 +220,7 @@ fn comparisons<'a>(
 }
 
 #[derive(Default)]
-pub(crate) struct Collector {
+pub struct Collector {
     hosts: BTreeMap<String, Value>,
     solver: BTreeMap<SolverKey, SolverGroup>,
     baseline: BTreeMap<BaselineKey, Vec<Measurement>>,
@@ -230,7 +230,7 @@ pub(crate) struct Collector {
 }
 
 impl Collector {
-    pub(crate) fn add(&mut self, run: Run) {
+    pub fn add(&mut self, run: Run) {
         let Run {
             metadata,
             host,
@@ -286,7 +286,7 @@ impl Collector {
         }
     }
 
-    pub(crate) fn finish(self) -> Result<Value> {
+    pub fn finish(self) -> Result<Value> {
         let results = self
             .solver
             .into_iter()
@@ -318,7 +318,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exact_integer_and_half_integer_medians_above_float_precision() {
+    fn exact_integer_and_half_integer_medians_above_float_precision() -> Result<()> {
         let a = 9_007_199_254_740_992_u64;
         let b = a + 1;
         let rows = [a, b].map(|attempted_work| Measurement {
@@ -326,12 +326,13 @@ mod tests {
             solve_ns: 1000,
             work_per_second: 10.0,
         });
-        let stats = statistics(&rows).unwrap();
+        let stats = statistics(&rows)?;
         assert_eq!(
             stats.median_attempted_work.to_string(),
             "9007199254740992.5"
         );
-        assert_eq!(stats.median_solve_ms, 0.001);
+        assert!((stats.median_solve_ms - 0.001).abs() < f64::EPSILON);
+        Ok(())
     }
 
     #[test]
@@ -354,25 +355,31 @@ mod acceptance {
     // The frozen legacy reference uses JSON integers for odd medians and
     // binary64 values for even medians. Numeric equality suffices for this
     // small corpus; exact large integer arithmetic is tested separately.
-    fn normalize_numbers(value: &mut Value) {
+    fn normalize_numbers(value: &mut Value) -> Result<()> {
         match value {
             Value::Number(number) => {
-                *number = Number::from_f64(number.as_f64().unwrap()).unwrap();
+                *number = Number::from_f64(
+                    number
+                        .as_f64()
+                        .context("fixture number not representable")?,
+                )
+                .context("fixture number not finite")?;
             }
-            Value::Array(array) => array.iter_mut().for_each(normalize_numbers),
-            Value::Object(object) => object.values_mut().for_each(normalize_numbers),
+            Value::Array(array) => array.iter_mut().try_for_each(normalize_numbers)?,
+            Value::Object(object) => object.values_mut().try_for_each(normalize_numbers)?,
             _ => {}
         }
+        Ok(())
     }
 
     #[test]
-    fn all_input_families_match_frozen_python_reference() {
+    fn all_input_families_match_frozen_python_reference() -> Result<()> {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
         let mut collector = Collector::default();
         for name in ["run-a", "run-b"] {
-            collector.add(load::run(&fixtures.join(name)).unwrap());
+            collector.add(load::run(&fixtures.join(name))?);
         }
-        let mut actual = collector.finish().unwrap();
+        let mut actual = collector.finish()?;
         // The new exact-work identity is intentionally exposed for all
         // fixed-work groups and every distinct historical implementation.
         for section in [
@@ -380,8 +387,12 @@ mod acceptance {
             "preexisting_comparison",
             "external_baselines",
         ] {
-            for row in actual[section].as_array_mut().unwrap() {
-                let row = row.as_object_mut().unwrap();
+            for row in actual
+                .get_mut(section)
+                .and_then(Value::as_array_mut)
+                .context("missing summary array")?
+            {
+                let row = row.as_object_mut().context("summary row not an object")?;
                 assert!(row.remove("work_budget").is_some());
                 if section == "preexisting_comparison" {
                     assert!(row.remove("legacy_implementation").is_some());
@@ -389,14 +400,15 @@ mod acceptance {
             }
         }
         let mut expected: Value =
-            serde_json::from_str(include_str!("../fixtures/python-reference.json")).unwrap();
-        normalize_numbers(&mut actual);
-        normalize_numbers(&mut expected);
+            serde_json::from_str(include_str!("../fixtures/python-reference.json"))?;
+        normalize_numbers(&mut actual)?;
+        normalize_numbers(&mut expected)?;
         assert_eq!(actual, expected);
+        Ok(())
     }
 
     #[test]
-    fn separate_budgets_and_legacy_implementations_never_collapse() {
+    fn separate_budgets_and_legacy_implementations_never_collapse() -> Result<()> {
         let mut collector = Collector::default();
         let baseline = [
             ("legacy", "one", 100, 10.0),
@@ -430,8 +442,10 @@ mod acceptance {
             benchmarks: Vec::new(),
             baseline,
         });
-        let summary = collector.finish().unwrap();
-        let comparisons = summary["preexisting_comparison"].as_array().unwrap();
+        let summary = collector.finish()?;
+        let comparisons = summary["preexisting_comparison"]
+            .as_array()
+            .context("missing comparison array")?;
         assert_eq!(comparisons.len(), 3);
         assert_eq!(comparisons[0]["work_budget"], 100);
         assert_eq!(
@@ -444,5 +458,6 @@ mod acceptance {
             Some(2.0)
         );
         assert_eq!(comparisons[2]["legacy_implementation"], "two");
+        Ok(())
     }
 }
