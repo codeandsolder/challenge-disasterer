@@ -1,0 +1,36 @@
+{
+  auto_https off
+  admin off
+  cerberus {
+    difficulty 4
+    max_pending 128
+    access_per_approval 8
+    block_ttl "24h"
+    pending_ttl "1h"
+    approval_ttl "1h"
+    max_mem_usage "64MiB"
+    cookie_name "cerberus-auth"
+    header_name "X-Cerberus-Status"
+    title "Cerberus E2E"
+    mail "nobody@example.invalid"
+    prefix_cfg 20 64
+  }
+}
+
+http://127.0.0.1:@PORT@ {
+  handle_path /.cerberus/* {
+    cerberus_endpoint
+  }
+
+  @protected {
+    path /protected.iso
+  }
+
+  cerberus @protected {
+    base_url "/.cerberus"
+  }
+
+  handle /protected.iso {
+    respond "challenge-disasterer-cerberus-e2e-ok"
+  }
+}

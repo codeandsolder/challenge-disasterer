@@ -39,14 +39,17 @@ jobs:
       - name: Setup canonical sccache
         uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@097cc824fc551bce6708700117f796c746689faa # main
 
-      - name: Build one CPU-only release executable
-        run: cargo build --locked --release --no-default-features --bin challenge-disasterer
+      - name: Build exact-revision CPU solver and fixture tools
+        run: cargo build --locked --release --no-default-features -p challenge-disasterer -p challenge-disasterer-fixture-runner -p challenge-disasterer-mcaptcha-e2e
 
       - name: Upload exact-revision executable
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: challenge-disasterer-cpu-${{ github.sha }}
-          path: target/release/challenge-disasterer
+          path: |
+            target/release/challenge-disasterer
+            target/release/challenge-disasterer-fixture-runner
+            target/release/challenge-disasterer-mcaptcha-e2e
           if-no-files-found: error
           retention-days: 1
 
@@ -72,18 +75,15 @@ jobs:
           name: challenge-disasterer-cpu-${{ github.sha }}
           path: ${{ runner.temp }}/challenge-disasterer
 
-      - name: Prepare solver executable
-        run: |
-          chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
-          echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
+      - name: Prepare fixture executables
+        run: chmod +x "$RUNNER_TEMP/challenge-disasterer/"challenge-disasterer*
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
       - name: Verify against current ALTCHA (${{ matrix.implementation }})
-        env:
-          CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
-        run: ./ci/live-altcha-e2e.sh
+        run: |
+          "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer-fixture-runner" --root "$GITHUB_WORKSPACE" --solver-bin "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" --implementation "${{ matrix.implementation }}" altcha
 
   capjs:
     needs: solver-binary
@@ -103,18 +103,15 @@ jobs:
           name: challenge-disasterer-cpu-${{ github.sha }}
           path: ${{ runner.temp }}/challenge-disasterer
 
-      - name: Prepare solver executable
-        run: |
-          chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
-          echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
+      - name: Prepare fixture executables
+        run: chmod +x "$RUNNER_TEMP/challenge-disasterer/"challenge-disasterer*
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
       - name: Verify against current Cap.js (${{ matrix.implementation }})
-        env:
-          CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
-        run: ./ci/live-capjs-e2e.sh
+        run: |
+          "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer-fixture-runner" --root "$GITHUB_WORKSPACE" --solver-bin "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" --implementation "${{ matrix.implementation }}" capjs
 
   cerberus:
     needs: solver-binary
@@ -135,10 +132,8 @@ jobs:
           name: challenge-disasterer-cpu-${{ github.sha }}
           path: ${{ runner.temp }}/challenge-disasterer
 
-      - name: Prepare solver executable
-        run: |
-          chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
-          echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
+      - name: Prepare fixture executables
+        run: chmod +x "$RUNNER_TEMP/challenge-disasterer/"challenge-disasterer*
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
@@ -147,10 +142,8 @@ jobs:
         with:
           go-version: "1.27.x"
       - name: Verify Cerberus ${{ matrix.upstream_ref }} (${{ matrix.implementation }})
-        env:
-          CERBERUS_REF: ${{ matrix.upstream_ref }}
-          CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
-        run: ./ci/live-cerberus-e2e.sh
+        run: |
+          "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer-fixture-runner" --root "$GITHUB_WORKSPACE" --solver-bin "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" --implementation "${{ matrix.implementation }}" cerberus --upstream-ref "${{ matrix.upstream_ref }}"
 
   goaway:
     needs: solver-binary
@@ -170,18 +163,15 @@ jobs:
           name: challenge-disasterer-cpu-${{ github.sha }}
           path: ${{ runner.temp }}/challenge-disasterer
 
-      - name: Prepare solver executable
-        run: |
-          chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
-          echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
+      - name: Prepare fixture executables
+        run: chmod +x "$RUNNER_TEMP/challenge-disasterer/"challenge-disasterer*
 
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: "1.27.x"
       - name: Verify against current go-away (${{ matrix.implementation }})
-        env:
-          CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
-        run: ./ci/live-goaway-e2e.sh
+        run: |
+          "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer-fixture-runner" --root "$GITHUB_WORKSPACE" --solver-bin "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" --implementation "${{ matrix.implementation }}" goaway
 
   haphash:
     needs: solver-binary
@@ -267,22 +257,9 @@ jobs:
           name: challenge-disasterer-cpu-${{ github.sha }}
           path: ${{ runner.temp }}/challenge-disasterer
 
-      - name: Prepare solver executable
-        run: |
-          chmod +x "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer"
-          echo "CHALLENGE_SOLVER_BINARY=$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" >> "$GITHUB_ENV"
+      - name: Prepare fixture executables
+        run: chmod +x "$RUNNER_TEMP/challenge-disasterer/"challenge-disasterer*
 
-      - name: Setup canonical sccache
-        uses: codeandsolder/ci-workflows/.github/actions/setup-sccache@097cc824fc551bce6708700117f796c746689faa # main
-      - name: Set up Rust
-        run: cargo --version
-      - name: Install ripgrep
-        run: sudo apt-get update -qq && sudo apt-get install -y ripgrep
       - name: Verify against mCaptcha verifier (${{ matrix.implementation }})
-        env:
-          CHALLENGE_IMPLEMENTATION: ${{ matrix.implementation }}
-        run: ./ci/live-mcaptcha-e2e.sh
-
-      - name: Finalize canonical sccache
-        if: always()
-        uses: codeandsolder/ci-workflows/.github/actions/finalize-sccache@097cc824fc551bce6708700117f796c746689faa # main
+        run: |
+          "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer-fixture-runner" --root "$GITHUB_WORKSPACE" --solver-bin "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer" --implementation "${{ matrix.implementation }}" mcaptcha --verifier-bin "$RUNNER_TEMP/challenge-disasterer/challenge-disasterer-mcaptcha-e2e"

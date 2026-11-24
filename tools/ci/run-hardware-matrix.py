@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import IO
 
 ROOT = Path(__file__).resolve().parents[2]
+NATIVE_FIXTURES = {"altcha", "capjs", "cerberus", "goaway", "mcaptcha"}
 LIVE = (
     "altcha",
     "capjs",
@@ -425,6 +426,32 @@ def main() -> int:
         statuses["external-baselines"] = result.returncode
 
     if args.live:
+        fixture_build = run(
+            [
+                "cargo",
+                "build",
+                "--locked",
+                "--release",
+                "-p",
+                "challenge-disasterer",
+                "-p",
+                "challenge-disasterer-fixture-runner",
+                "-p",
+                "challenge-disasterer-mcaptcha-e2e",
+                "--message-format=json-render-diagnostics",
+                *([] if args.gpu else ["--no-default-features"]),
+            ],
+            stdout=subprocess.PIPE,
+        )
+        statuses["build-native-fixtures"] = fixture_build.returncode
+        fixture_bins: dict[str, str] = {}
+        if fixture_build.returncode == 0:
+            for line in fixture_build.stdout.splitlines():
+                message = json.loads(line)
+                if message.get("reason") == "compiler-artifact" and message.get(
+                    "executable"
+                ):
+                    fixture_bins[message["target"]["name"]] = message["executable"]
         for name in LIVE:
             script = ROOT / "ci" / f"live-{name}-e2e.sh"
             if name == "anubis":
@@ -475,6 +502,9 @@ def main() -> int:
                         browser_reference_pending = False
                 continue
 
+            if name in NATIVE_FIXTURES and fixture_build.returncode != 0:
+                statuses[f"live-{name}-build"] = fixture_build.returncode
+                continue
             cases = classic_implementations(
                 name, args.all_implementations, bool(gpu_adapters)
             )
@@ -513,38 +543,65 @@ def main() -> int:
                             )
                             suffix = f"{name}{variant_suffix}{protocol_suffix}-{implementation}{adapter_suffix}"
                             env = os.environ.copy()
-                            env["CHALLENGE_IMPLEMENTATION"] = implementation
                             if adapter is not None:
                                 env["WGPU_ADAPTER_NAME"] = adapter
-                            if upstream_ref is not None:
-                                env["CERBERUS_REF"] = upstream_ref
-                            if haphash_difficulty is not None:
-                                env["HAPHASH_DIFFICULTY"] = haphash_difficulty
-                            if (
-                                name == "haphash"
-                                and haphash_difficulty is None
-                                and args.haphash_debian_live
-                            ):
-                                env["HAPHASH_DEBIAN_LIVE"] = "1"
-                            if (
-                                name == "capjs"
-                                and implementation == "auto"
-                                and adapter is None
-                            ):
-                                env["CAPJS_PRODUCTION_SHAPE"] = "1"
-                            if (
-                                name == "altcha"
-                                and implementation == "auto"
-                                and adapter is None
-                                and args.cpu
-                            ):
-                                env["ALTCHA_BENCH_OUT"] = str(
-                                    out / "altcha-current.jsonl"
-                                )
-                                env["ALTCHA_BENCH_SAMPLES"] = str(args.samples)
+                            if name in NATIVE_FIXTURES:
+                                command = [
+                                    fixture_bins["challenge-disasterer-fixture-runner"],
+                                    "--root",
+                                    str(ROOT),
+                                    "--solver-bin",
+                                    fixture_bins["challenge-disasterer"],
+                                    "--implementation",
+                                    implementation,
+                                    name,
+                                ]
+                                if upstream_ref is not None:
+                                    command.extend(["--upstream-ref", upstream_ref])
+                                if name == "mcaptcha":
+                                    command.extend(
+                                        [
+                                            "--verifier-bin",
+                                            fixture_bins[
+                                                "challenge-disasterer-mcaptcha-e2e"
+                                            ],
+                                        ]
+                                    )
+                                if (
+                                    name == "capjs"
+                                    and implementation == "auto"
+                                    and adapter is None
+                                ):
+                                    command.append("--production-shape")
+                                if (
+                                    name == "altcha"
+                                    and implementation == "auto"
+                                    and adapter is None
+                                    and args.cpu
+                                ):
+                                    command.extend(
+                                        [
+                                            "--benchmark-output",
+                                            str(out / "altcha-current.jsonl"),
+                                            "--benchmark-samples",
+                                            str(args.samples),
+                                        ]
+                                    )
+                            else:
+                                # Separate pre-existing public-site compatibility checks.
+                                command = [str(script)]
+                                env["CHALLENGE_IMPLEMENTATION"] = implementation
+                                if haphash_difficulty is not None:
+                                    env["HAPHASH_DIFFICULTY"] = haphash_difficulty
+                                if (
+                                    name == "haphash"
+                                    and haphash_difficulty is None
+                                    and args.haphash_debian_live
+                                ):
+                                    env["HAPHASH_DEBIAN_LIVE"] = "1"
                             with (out / f"live-{suffix}.log").open("wb") as log:
                                 result = run(
-                                    [str(script)],
+                                    command,
                                     env=env,
                                     stdout=log,
                                     stderr=subprocess.STDOUT,

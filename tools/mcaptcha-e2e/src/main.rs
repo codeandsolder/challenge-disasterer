@@ -70,16 +70,19 @@ fn main() -> Result<()> {
         return benchmark_fixed(sample, limit);
     }
 
+    ensure!(
+        args.len() == 3 && args[1] == "--implementation",
+        "usage: mcaptcha-e2e --implementation NAME"
+    );
+    let expected_implementation = &args[2];
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
         .context("read response")?;
     let response: ServiceResponse =
         serde_json::from_str(&input).context("parse service response")?;
-    let expected_implementation =
-        std::env::var("CHALLENGE_IMPLEMENTATION").unwrap_or_else(|_| "auto".to_owned());
     ensure!(
-        response.implementation == expected_implementation,
+        response.implementation == *expected_implementation,
         "service silently used a different mCaptcha implementation: expected {expected_implementation}, got {}",
         response.implementation
     );

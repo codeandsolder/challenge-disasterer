@@ -5,8 +5,12 @@ import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 
-const [altchaRoot, serviceUrl = "http://127.0.0.1:17427", samplesArg = "1"] = process.argv.slice(2);
-if (!altchaRoot) throw new Error("usage: node altcha-bench.mjs ALTCHA_ROOT [SERVICE_URL] [SAMPLES]");
+const [altchaRoot, serviceUrl, samplesArg, profile] = process.argv.slice(2);
+if (process.argv.length !== 6 || !altchaRoot || !serviceUrl || !["standard", "production-argon2", "argon2-only", "production-argon2-only"].includes(profile)) {
+  throw new Error("usage: node altcha-bench.mjs ALTCHA_ROOT SERVICE_URL SAMPLES PROFILE");
+}
+const productionArgon2 = profile === "production-argon2" || profile === "production-argon2-only";
+const onlyArgon2 = profile === "argon2-only" || profile === "production-argon2-only";
 const samples = Number(samplesArg);
 if (!Number.isInteger(samples) || samples < 1) throw new Error("SAMPLES must be a positive integer");
 
@@ -46,7 +50,7 @@ const configs = [
 
 // Production-shape memory-hard rows are opt-in: 64-128 MiB x 3 passes are
 // expensive enough to distort the ordinary quick compatibility matrix.
-if (process.env.ALTCHA_BENCH_PRODUCTION_ARGON2 === "1") {
+if (productionArgon2) {
   for (const memoryCost of [65_536, 131_072]) {
     for (const counterMode of ["uint32", "string"]) {
       configs.push({
@@ -113,7 +117,7 @@ async function callService(challenge, counterMode) {
   return body;
 }
 
-const activeConfigs = process.env.ALTCHA_BENCH_ONLY_ARGON2 === "1"
+const activeConfigs = onlyArgon2
   ? configs.filter((config) => config.algorithm === "ARGON2ID")
   : configs;
 
@@ -206,7 +210,7 @@ for (let sample = 0; sample < samples; sample++) {
   }
 }
 
-if (process.env.ALTCHA_BENCH_ONLY_ARGON2 !== "1") {
+if (!onlyArgon2) {
 const v1Secret = "challenge-disasterer-altcha-bench-v1";
 for (let sample = 0; sample < samples; sample++) {
   for (const algorithm of ["SHA-1", "SHA-256", "SHA-512"]) {

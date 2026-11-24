@@ -1,9 +1,8 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const implementation = process.env.CHALLENGE_IMPLEMENTATION ?? "auto";
-const [altchaRoot, serviceUrl = "http://127.0.0.1:17427"] = process.argv.slice(2);
-if (!altchaRoot) throw new Error("usage: node altcha-e2e.mjs ALTCHA_ROOT [SERVICE_URL]");
+const [altchaRoot, serviceUrl, implementation] = process.argv.slice(2);
+if (process.argv.length !== 5 || !altchaRoot || !serviceUrl || !implementation) throw new Error("usage: node altcha-e2e.mjs ALTCHA_ROOT SERVICE_URL IMPLEMENTATION");
 
 const load = (path) => import(pathToFileURL(resolve(altchaRoot, path)).href);
 const v2 = await load("dist/esm/v2/index.js");
