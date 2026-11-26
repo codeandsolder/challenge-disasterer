@@ -53,7 +53,6 @@
       ],
       "groupName": "Reusable challenge-solvers git revision",
       "groupSlug": "challenge-solvers-suite",
-      "automerge": false,
       "matchDepNames": [
         "challenge-solvers",
         "challenge-hashx",
