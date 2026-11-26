@@ -1,0 +1,5 @@
+{"phase":"throughput","protocol":"anubis","variant":"hashx","implementation":"auto","accelerator":"cpu","attempted_work":100,"solve_ns":10000000,"work_per_second":10000,"target_condition_ok":true}
+{"phase":"throughput","protocol":"anubis","variant":"hashx","implementation":"auto","accelerator":"cpu","attempted_work":100,"solve_ns":20000000,"work_per_second":5000,"target_condition_ok":true}
+{"protocol":"anubis","variant":"hashx","implementation":"safe","accelerator":"cpu","attempted_work":100,"solve_ns":25000000,"work_per_second":4000}
+{"phase":"throughput","protocol":"anubis","variant":"hashx","implementation":"auto","accelerator":"cpu","attempted_work":200,"solve_ns":10000000,"work_per_second":20000,"target_condition_ok":true}
+{"phase":"throughput","protocol":"anubis","variant":"hashx","implementation":"wgpu","accelerator":"gpu","gpu_adapter":"GPU-A","attempted_work":100,"solve_ns":1000000,"work_per_second":100000,"target_condition_ok":true}

@@ -446,6 +446,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "challenge-disasterer-hardware-summary"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "num-traits",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "challenge-disasterer-http-load"
 version = "0.1.0"
 dependencies = [
